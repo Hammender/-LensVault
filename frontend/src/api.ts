@@ -84,6 +84,16 @@ export async function removePhotoTag(photoId: number, personId: number): Promise
   );
 }
 
+export async function addPhotoTag(photoId: number, personId: number): Promise<PhotoDetail> {
+  return parse<PhotoDetail>(
+    await fetch(`/api/photos/${photoId}/tags`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ person_id: personId })
+    })
+  );
+}
+
 export async function reprocessPhoto(photoId: number): Promise<PhotoDetail> {
   return parse<PhotoDetail>(
     await fetch(`/api/photos/${photoId}/reprocess`, {

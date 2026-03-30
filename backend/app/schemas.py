@@ -101,3 +101,7 @@ class ClusterGroup(BaseModel):
 class AssignClusterRequest(BaseModel):
     person_name: str
     note: str | None = None
+
+
+class AddPhotoTagRequest(BaseModel):
+    person_id: int

@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import Face, Person, Photo, PhotoTag, Task
+from app.models import Face, Person, PersonEmbedding, Photo, PhotoTag, Task
 from app.schemas import (
+    AddPhotoTagRequest,
     AssignClusterRequest,
     ClusterGroup,
     ClusterItem,
@@ -329,6 +330,39 @@ def remove_photo_tag(photo_id: int, person_id: int, db: Session = Depends(get_db
     db.delete(tag)
     db.commit()
     return {"status": "ok"}
+
+
+@app.post("/api/photos/{photo_id}/tags", response_model=PhotoDetail)
+def add_photo_tag(photo_id: int, payload: AddPhotoTagRequest, db: Session = Depends(get_db)) -> PhotoDetail:
+    photo = db.get(Photo, photo_id)
+    if photo is None:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    person = db.get(Person, payload.person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    existing = db.scalar(select(PhotoTag).where(PhotoTag.photo_id == photo_id, PhotoTag.person_id == payload.person_id))
+    if existing is None:
+        db.add(PhotoTag(photo_id=photo_id, person_id=payload.person_id, source="manual"))
+
+    faces = db.scalars(select(Face).where(Face.photo_id == photo_id)).all()
+    if len(faces) == 1:
+        face = faces[0]
+        face.matched_person_id = person.id
+        face.match_score = 1.0
+        face.needs_review = False
+        face.cluster_key = None
+        embedding_exists = db.scalar(
+            select(PersonEmbedding).where(
+                PersonEmbedding.person_id == person.id,
+                PersonEmbedding.source_photo_id == photo_id,
+            )
+        )
+        if embedding_exists is None:
+            db.add(PersonEmbedding(person_id=person.id, vector=face.embedding, source_photo_id=photo_id))
+
+    db.commit()
+    return get_photo(photo_id, db)
 
 
 @app.post("/api/photos/{photo_id}/reprocess", response_model=PhotoDetail)

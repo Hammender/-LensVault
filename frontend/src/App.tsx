@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
-  addSamples,
+  addPhotoTag,
   assignCluster,
   createPerson,
   getPhoto,
@@ -19,7 +19,7 @@ const galleryPageSize = 24;
 
 function formatDate(value: string | null | undefined): string {
   if (!value) {
-    return "No EXIF time";
+    return "æ—  EXIF æ—¶é—´";
   }
   return new Intl.DateTimeFormat("zh-CN", {
     year: "numeric",
@@ -40,7 +40,9 @@ export default function App() {
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [task, setTask] = useState<Task | null>(null);
   const [personName, setPersonName] = useState("");
-  const [samplePersonId, setSamplePersonId] = useState<number | null>(null);
+  const [clusterName, setClusterName] = useState("");
+  const [activeClusterKey, setActiveClusterKey] = useState<string | null>(null);
+  const [manualPersonId, setManualPersonId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -49,12 +51,13 @@ export default function App() {
     [persons, selectedIds]
   );
 
+  const activeCluster = useMemo(
+    () => clusters.find((cluster) => cluster.cluster_key === activeClusterKey) ?? null,
+    [activeClusterKey, clusters]
+  );
+
   async function refreshPersons() {
-    const next = await listPersons();
-    setPersons(next);
-    if (samplePersonId === null && next.length > 0) {
-      setSamplePersonId(next[0].id);
-    }
+    setPersons(await listPersons());
   }
 
   async function refreshPhotos(nextOffset = offset, ids = selectedIds) {
@@ -65,7 +68,17 @@ export default function App() {
   }
 
   async function refreshClusters() {
-    setClusters(await listClusters());
+    const nextClusters = await listClusters();
+    setClusters(nextClusters);
+    if (nextClusters.length === 0) {
+      setActiveClusterKey(null);
+      setClusterName("");
+      return;
+    }
+    if (!nextClusters.some((cluster) => cluster.cluster_key === activeClusterKey)) {
+      setActiveClusterKey(nextClusters[0].cluster_key);
+      setClusterName("");
+    }
   }
 
   useEffect(() => {
@@ -75,7 +88,7 @@ export default function App() {
         await refreshPhotos(0, []);
         await refreshClusters();
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Failed to load app data.");
+        setError(cause instanceof Error ? cause.message : "åŠ è½½åº”ç”¨æ•°æ®å¤±è´¥ã€‚");
       }
     })();
   }, []);
@@ -94,7 +107,7 @@ export default function App() {
           await refreshPersons();
         }
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Task polling failed.");
+        setError(cause instanceof Error ? cause.message : "ä»»åŠ¡è½®è¯¢å¤±è´¥ã€‚");
       }
     }, 1500);
     return () => window.clearInterval(timer);
@@ -107,12 +120,11 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const person = await createPerson(personName.trim());
+      await createPerson(personName.trim());
       setPersonName("");
       await refreshPersons();
-      setSamplePersonId(person.id);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to create person.");
+      setError(cause instanceof Error ? cause.message : "åˆ›å»ºäººç‰©å¤±è´¥ã€‚");
     } finally {
       setBusy(false);
     }
@@ -128,24 +140,7 @@ export default function App() {
       const nextTask = await importPhotos(Array.from(files));
       setTask(nextTask);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to import files.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleSampleUpload(files: FileList | null) {
-    if (!files || files.length === 0 || samplePersonId === null) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await addSamples(samplePersonId, Array.from(files));
-      await refreshPersons();
-      await refreshPhotos(0, selectedIds);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to upload samples.");
+      setError(cause instanceof Error ? cause.message : "å¯¼å…¥æ–‡ä»¶å¤±è´¥ã€‚");
     } finally {
       setBusy(false);
     }
@@ -158,7 +153,7 @@ export default function App() {
     try {
       await refreshPhotos(0, nextIds);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to load gallery.");
+      setError(cause instanceof Error ? cause.message : "åŠ è½½å›¾åº“å¤±è´¥ã€‚");
     }
   }
 
@@ -167,24 +162,25 @@ export default function App() {
     try {
       setSelectedPhoto(await getPhoto(photoId));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to load photo.");
+      setError(cause instanceof Error ? cause.message : "åŠ è½½å›¾ç‰‡è¯¦æƒ…å¤±è´¥ã€‚");
     }
   }
 
-  async function handleAssignCluster(clusterKey: string) {
-    const proposed = window.prompt("ÊäÈëÈËÎïÃû³Æ£¬½«ÕâÒ»×éÈËÁ³¹é²¢µ½¸ÃÈËÎï£º");
-    if (!proposed?.trim()) {
+  async function handleAssignCluster(personLabel?: string) {
+    const targetName = (personLabel ?? clusterName).trim();
+    if (!activeCluster || !targetName) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await assignCluster(clusterKey, proposed.trim());
+      await assignCluster(activeCluster.cluster_key, targetName);
+      setClusterName("");
       await refreshClusters();
       await refreshPersons();
       await refreshPhotos(0, selectedIds);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to assign cluster.");
+      setError(cause instanceof Error ? cause.message : "å½’å¹¶ç°‡å¤±è´¥ã€‚");
     } finally {
       setBusy(false);
     }
@@ -200,7 +196,26 @@ export default function App() {
       await refreshPhotos(offset, selectedIds);
       await refreshPersons();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to remove tag.");
+      setError(cause instanceof Error ? cause.message : "ç§»é™¤æ ‡ç­¾å¤±è´¥ã€‚");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleAddTag(photoId: number) {
+    if (!manualPersonId) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await addPhotoTag(photoId, Number(manualPersonId));
+      setSelectedPhoto(detail);
+      setManualPersonId("");
+      await refreshPhotos(offset, selectedIds);
+      await refreshPersons();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "æ·»åŠ äººç‰©æ ‡ç­¾å¤±è´¥ã€‚");
     } finally {
       setBusy(false);
     }
@@ -215,7 +230,7 @@ export default function App() {
       await refreshClusters();
       await refreshPhotos(offset, selectedIds);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to reprocess photo.");
+      setError(cause instanceof Error ? cause.message : "é‡æ–°è¯†åˆ«å¤±è´¥ã€‚");
     } finally {
       setBusy(false);
     }
@@ -225,109 +240,100 @@ export default function App() {
     <div className="app-shell">
       <div className="ambient ambient-a" />
       <div className="ambient ambient-b" />
+
       <header className="hero">
         <div>
           <p className="eyebrow">Local Face Archive</p>
           <h1>PictureShow</h1>
           <p className="hero-copy">
-            ÓÃ MinIO ·â×°Ô­Í¼£¬ÓÃ±¾µØÄ£ĞÍ×öÊ¶±ğ£¬°ÑÄãµÄË½ÈËÕÕÆ¬¿âÕûÀí³ÉÒ»Ãæ¿ÉÉ¸Ñ¡¡¢¿ÉĞ£Õı¡¢¿É×·ËİµÄ±à¼­Ç½¡£
+            å…ˆå»ºäººç‰©åº“ï¼Œå†æ‰¹é‡å…¥åº“ç…§ç‰‡ã€‚ç³»ç»Ÿä¼šè‡ªåŠ¨åŒ¹é…å·²çŸ¥äººç‰©ï¼Œæœªè¯†åˆ«çš„äººè„¸å•ç‹¬è¿›å…¥å¾…ç¡®è®¤åŒºï¼Œä¸å†æŠŠå»ºåº“å’Œå…¥åº“æ··åœ¨ä¸€èµ·ã€‚
           </p>
         </div>
         <div className="hero-meta">
-          <span>{persons.length} ÈËÎï±êÇ©</span>
-          <span>{total} µ±Ç°¼ìË÷½á¹û</span>
-          <span>{clusters.length} ´ıÈ·ÈÏ´Ø</span>
+          <span>{persons.length} äººç‰©</span>
+          <span>{total} æ£€ç´¢ç»“æœ</span>
+          <span>{clusters.length} å¾…ç¡®è®¤ç°‡</span>
         </div>
       </header>
 
+      <section className="workflow-band reveal-one">
+        <article className="workflow-card panel">
+          <div className="workflow-head">
+            <div>
+              <p className="eyebrow">Step 1</p>
+              <h2>å»ºåº“</h2>
+            </div>
+            <span>è¿™é‡Œåªç®¡ç†äººç‰©åç§°</span>
+          </div>
+          <p className="workflow-copy">
+            æ‰‹åŠ¨åˆ›å»ºäººç‰©æ¡ç›®ï¼Œå…ˆæŠŠä½ çš„å¸¸ç”¨äººç‰©åå•å»ºç«‹èµ·æ¥ã€‚è¿™é‡Œä¸ä¸Šä¼ ç…§ç‰‡ï¼Œä¸åšè¯†åˆ«ï¼Œåªè´Ÿè´£ç»´æŠ¤åº“é‡Œçš„â€œäººâ€ã€‚
+          </p>
+          <div className="create-row">
+            <input
+              value={personName}
+              onChange={(event) => setPersonName(event.target.value)}
+              placeholder="è¾“å…¥äººç‰©åå­—ï¼Œä¾‹å¦‚ï¼šæé›·"
+            />
+            <button onClick={() => void handleCreatePerson()} disabled={busy || !personName.trim()}>
+              åˆ›å»ºäººç‰©
+            </button>
+          </div>
+          <div className="person-list">
+            {persons.map((person) => (
+              <button
+                key={person.id}
+                className={selectedIds.includes(person.id) ? "person-pill active" : "person-pill"}
+                onClick={() => {
+                  const nextIds = selectedIds.includes(person.id)
+                    ? selectedIds.filter((id) => id !== person.id)
+                    : [...selectedIds, person.id];
+                  void handleSelectTags(nextIds);
+                }}
+              >
+                <span>{person.name}</span>
+                <small>{person.photo_count} å¼ </small>
+              </button>
+            ))}
+            {persons.length === 0 && <p className="muted">äººç‰©åº“è¿˜æ˜¯ç©ºçš„ï¼Œå…ˆåˆ›å»ºå‡ ä¸ªåå­—ã€‚</p>}
+          </div>
+        </article>
+
+        <article className="workflow-card panel import-card">
+          <div className="workflow-head">
+            <div>
+              <p className="eyebrow">Step 2</p>
+              <h2>å…¥åº“</h2>
+            </div>
+            <span>ä¸Šä¼ ç…§ç‰‡ï¼Œç³»ç»Ÿè‡ªåŠ¨è¯†åˆ«</span>
+          </div>
+          <p className="workflow-copy">
+            è¿™é‡Œä¸“é—¨åšç…§ç‰‡å…¥åº“ã€‚ä¸Šä¼ ååŸå›¾å†™å…¥ MinIOï¼Œåç«¯è‡ªåŠ¨è¯†åˆ«å·²çŸ¥äººç‰©ï¼›æ— æ³•ç¡®è®¤çš„è„¸ä¼šè¿›å…¥å³ä¾§å¾…ç¡®è®¤å·¥ä½œå°ã€‚
+          </p>
+          <label className="file-drop import-drop">
+            <input type="file" multiple accept="image/*" onChange={(event) => void handleImport(event.target.files)} />
+            <strong>æ‹–å…¥ç…§ç‰‡æˆ–ç‚¹å‡»é€‰æ‹©</strong>
+            <span>æ”¯æŒæ‰¹é‡å¯¼å…¥ï¼Œè¯†åˆ«ä»»åŠ¡ä¼šåœ¨åå°å¼‚æ­¥è¿è¡Œã€‚</span>
+          </label>
+          <div className="task-strip">
+            <div>
+              <strong>ä»»åŠ¡çŠ¶æ€</strong>
+              <p>{task ? task.message ?? task.status : "è¿˜æ²¡æœ‰è¿›è¡Œä¸­çš„å¯¼å…¥ä»»åŠ¡ã€‚"}</p>
+            </div>
+            <div className="task-meter">
+              <span style={{ width: `${Math.round((task?.progress ?? 0) * 100)}%` }} />
+            </div>
+          </div>
+        </article>
+      </section>
+
       <main className="layout-grid">
-        <aside className="left-rail panel reveal-one">
-          <section>
-            <div className="section-head">
-              <p>µ¼ÈëÕÕÆ¬</p>
-              <span>Ô­Í¼Ğ´Èë MinIO</span>
-            </div>
-            <label className="file-drop">
-              <input type="file" multiple accept="image/*" onChange={(event) => void handleImport(event.target.files)} />
-              <strong>ÍÏÈë»òÑ¡ÔñÕÕÆ¬</strong>
-              <span>Ö§³ÖÅúÁ¿ÉÏ´«£¬ºóÌ¨Òì²½Ê¶±ğÓë¾ÛÀà¡£</span>
-            </label>
-          </section>
-
-          <section>
-            <div className="section-head">
-              <p>ĞÂ½¨ÈËÎï</p>
-              <span>ÏÈ½¨¿â£¬ÔÙÎ¹Ñù±¾ÕÕ</span>
-            </div>
-            <div className="stacked-inputs">
-              <input value={personName} onChange={(event) => setPersonName(event.target.value)} placeholder="ÀıÈç£ºÀîÀ×" />
-              <button onClick={() => void handleCreatePerson()} disabled={busy}>´´½¨ÈËÎï</button>
-            </div>
-          </section>
-
-          <section>
-            <div className="section-head">
-              <p>ÈËÎïÑù±¾</p>
-              <span>ÉÏ´«ºó»áĞ´ÈëÈËÎïÌØÕ÷¿â</span>
-            </div>
-            <select value={samplePersonId ?? ""} onChange={(event) => setSamplePersonId(Number(event.target.value))}>
-              {persons.map((person) => (
-                <option key={person.id} value={person.id}>
-                  {person.name}
-                </option>
-              ))}
-            </select>
-            <label className="subtle-upload">
-              <input type="file" multiple accept="image/*" onChange={(event) => void handleSampleUpload(event.target.files)} />
-              Ñ¡ÔñÑù±¾ÕÕ
-            </label>
-          </section>
-
-          <section>
-            <div className="section-head">
-              <p>Ê¶±ğÈÎÎñ</p>
-              <span>ºóÌ¨ÔËĞĞ×´Ì¬</span>
-            </div>
-            {task ? (
-              <div className="task-card">
-                <strong>{task.status}</strong>
-                <div className="progress-bar">
-                  <span style={{ width: `${Math.round(task.progress * 100)}%` }} />
-                </div>
-                <p>{task.message}</p>
-              </div>
-            ) : (
-              <p className="muted">»¹Ã»ÓĞ½øĞĞÖĞµÄµ¼ÈëÈÎÎñ¡£</p>
-            )}
-          </section>
-
-          <section>
-            <div className="section-head">
-              <p>´ıÈ·ÈÏ´Ø</p>
-              <span>½«Î´ÖªÈËÁ³¹é²¢ÃüÃû</span>
-            </div>
-            <div className="cluster-list">
-              {clusters.map((cluster) => (
-                <button key={cluster.cluster_key} className="cluster-card" onClick={() => void handleAssignCluster(cluster.cluster_key)}>
-                  <img src={`${cluster.sample.thumbnail_url}?width=240`} alt={cluster.cluster_key} />
-                  <div>
-                    <strong>{cluster.cluster_key}</strong>
-                    <span>{cluster.count} ÕÅ´ıÈ·ÈÏÈËÁ³</span>
-                  </div>
-                </button>
-              ))}
-              {clusters.length === 0 && <p className="muted">µ±Ç°Ã»ÓĞ´ıÈ·ÈÏ´Ø¡£</p>}
-            </div>
-          </section>
-        </aside>
-
         <section className="gallery-stage reveal-two">
           <div className="stage-topbar panel">
             <div>
-              <p className="eyebrow">Tag Query</p>
-              <h2>ÈËÎïÉ¸Ñ¡</h2>
+              <p className="eyebrow">Gallery</p>
+              <h2>æŒ‰äººç‰©æµè§ˆ</h2>
             </div>
-            <div className="selected-copy">{selectedNames.length ? selectedNames.join(" / ") : "µ±Ç°ÏÔÊ¾È«²¿ÕÕÆ¬"}</div>
+            <div className="selected-copy">{selectedNames.length ? selectedNames.join(" / ") : "å½“å‰æ˜¾ç¤ºå…¨éƒ¨ç…§ç‰‡"}</div>
           </div>
 
           <div className="tag-cloud panel">
@@ -347,6 +353,7 @@ export default function App() {
                 </button>
               );
             })}
+            {persons.length === 0 && <p className="muted">å»ºåº“åï¼Œè¿™é‡Œä¼šæ˜¾ç¤ºå¯ç­›é€‰çš„äººç‰©æ ‡ç­¾ã€‚</p>}
           </div>
 
           <div className="gallery-grid">
@@ -373,7 +380,7 @@ export default function App() {
 
           <div className="pagination-row panel">
             <button disabled={offset === 0} onClick={() => void refreshPhotos(Math.max(0, offset - galleryPageSize), selectedIds)}>
-              ÉÏÒ»Ò³
+              ä¸Šä¸€é¡µ
             </button>
             <span>
               {offset + 1} - {Math.min(offset + galleryPageSize, total)} / {total}
@@ -382,57 +389,125 @@ export default function App() {
               disabled={offset + galleryPageSize >= total}
               onClick={() => void refreshPhotos(offset + galleryPageSize, selectedIds)}
             >
-              ÏÂÒ»Ò³
+              ä¸‹ä¸€é¡µ
             </button>
           </div>
         </section>
 
-        <aside className="right-rail panel reveal-three">
-          <div className="section-head">
-            <p>Ô­Í¼²é¿´Æ÷</p>
-            <span>µã»÷ÖĞ¼äÍ¼Æ¬¿¨Æ¬´ò¿ª</span>
-          </div>
-          {selectedPhoto ? (
-            <>
-              <a className="viewer-image-wrap" href={selectedPhoto.original_url} target="_blank" rel="noreferrer">
-                <img className="viewer-image" src={selectedPhoto.original_url} alt={selectedPhoto.filename} />
-                <span className="viewer-badge">´ò¿ªÔ­Í¼</span>
-              </a>
-              <div className="viewer-meta">
-                <h3>{selectedPhoto.filename}</h3>
-                <p>{selectedPhoto.width} ¡Á {selectedPhoto.height}</p>
-                <p>{formatDate(selectedPhoto.taken_at || selectedPhoto.created_at)}</p>
-              </div>
-              <div className="viewer-tags">
-                {selectedPhoto.tags.map((tag) => (
-                  <button key={tag.person_id} className="viewer-tag" onClick={() => void handleRemoveTag(selectedPhoto.id, tag.person_id)}>
-                    {tag.person_name}
-                  </button>
-                ))}
-              </div>
-              <div className="viewer-actions">
-                <button onClick={() => void handleReprocess(selectedPhoto.id)}>ÖØĞÂÊ¶±ğ</button>
-                <a href={selectedPhoto.original_url} target="_blank" rel="noreferrer">
-                  ĞÂ´°¿ÚÔ­Í¼
-                </a>
-              </div>
-              <div className="face-boxes">
-                {selectedPhoto.faces.map((face) => (
-                  <article key={face.id}>
-                    <strong>{face.cluster_key || "matched"}</strong>
-                    <span>{face.match_score ? `score ${face.match_score.toFixed(3)}` : "´ıÈ·ÈÏ"}</span>
-                  </article>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div className="viewer-empty">
-              <p>ÓÒ²à±£³ÖÔ­Í¼ÊÓ½Ç¡£</p>
-              <span>ÖĞ¼äÇøÓò×öÉ¸Ñ¡ºÍä¯ÀÀ£¬ÓÒ²àÓÃÓÚÎŞÑ¹Ëõ²é¿´ÓëĞŞÕı±êÇ©¡£</span>
+        <aside className="right-rail reveal-three">
+          <section className="panel cluster-workbench">
+            <div className="section-head">
+              <p>å¾…ç¡®è®¤å·¥ä½œå°</p>
+              <span>åªå¤„ç†æœªè¯†åˆ«çš„äººè„¸</span>
             </div>
-          )}
+            <div className="cluster-list cluster-list-inline">
+              {clusters.map((cluster) => (
+                <button
+                  key={cluster.cluster_key}
+                  className={cluster.cluster_key === activeClusterKey ? "cluster-card active" : "cluster-card"}
+                  onClick={() => {
+                    setActiveClusterKey(cluster.cluster_key);
+                    setClusterName("");
+                  }}
+                >
+                  <img src={`${cluster.sample.thumbnail_url}?width=240`} alt={cluster.cluster_key} />
+                  <div>
+                    <strong>{cluster.cluster_key}</strong>
+                    <span>{cluster.count} å¼ å¾…ç¡®è®¤äººè„¸</span>
+                  </div>
+                </button>
+              ))}
+              {clusters.length === 0 && <p className="muted">å½“å‰æ²¡æœ‰å¾…ç¡®è®¤ç°‡ï¼Œè‡ªåŠ¨è¯†åˆ«ç»“æœå·²ç»æ¯”è¾ƒå¹²å‡€ã€‚</p>}
+            </div>
+            {activeCluster && (
+              <div className="cluster-editor">
+                <p className="cluster-editor-title">å°† {activeCluster.cluster_key} å½’å¹¶åˆ°äººç‰©</p>
+                <div className="create-row cluster-editor-row">
+                  <input
+                    value={clusterName}
+                    onChange={(event) => setClusterName(event.target.value)}
+                    placeholder="è¾“å…¥äººç‰©ååå½’å¹¶"
+                  />
+                  <button onClick={() => void handleAssignCluster()} disabled={busy || !clusterName.trim()}>
+                    å½’å¹¶å¹¶å…¥åº“
+                  </button>
+                </div>
+                <div className="quick-assign-row">
+                  {persons.slice(0, 8).map((person) => (
+                    <button key={person.id} className="quick-assign-chip" onClick={() => void handleAssignCluster(person.name)}>
+                      å½’åˆ° {person.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
 
-          {error && <div className="error-box">{error}</div>}
+          <section className="panel viewer-panel">
+            <div className="section-head">
+              <p>åŸå›¾æŸ¥çœ‹å™¨</p>
+              <span>ç‚¹å‡»å›¾åº“å›¾ç‰‡æŸ¥çœ‹</span>
+            </div>
+            {selectedPhoto ? (
+              <>
+                <a className="viewer-image-wrap" href={selectedPhoto.original_url} target="_blank" rel="noreferrer">
+                  <img className="viewer-image" src={selectedPhoto.original_url} alt={selectedPhoto.filename} />
+                  <span className="viewer-badge">æ‰“å¼€åŸå›¾</span>
+                </a>
+                <div className="viewer-meta">
+                  <h3>{selectedPhoto.filename}</h3>
+                  <p>{selectedPhoto.width} Ã— {selectedPhoto.height}</p>
+                  <p>{formatDate(selectedPhoto.taken_at || selectedPhoto.created_at)}</p>
+                </div>
+                <div className="viewer-tags">
+                  {selectedPhoto.tags.map((tag) => (
+                    <button key={tag.person_id} className="viewer-tag" onClick={() => void handleRemoveTag(selectedPhoto.id, tag.person_id)}>
+                      {tag.person_name}
+                    </button>
+                  ))}
+                </div>
+                <div className="manual-tag-panel">
+                  <p>æ‰‹åŠ¨ä¿®æ­£äººç‰©</p>
+                  <div className="manual-tag-row">
+                    <select value={manualPersonId} onChange={(event) => setManualPersonId(event.target.value)}>
+                      <option value="">é€‰æ‹©äººç‰©åæ·»åŠ åˆ°å½“å‰ç…§ç‰‡</option>
+                      {persons
+                        .filter((person) => !selectedPhoto.tags.some((tag) => tag.person_id === person.id))
+                        .map((person) => (
+                          <option key={person.id} value={person.id}>
+                            {person.name}
+                          </option>
+                        ))}
+                    </select>
+                    <button onClick={() => void handleAddTag(selectedPhoto.id)} disabled={busy || !manualPersonId}>
+                      æ·»åŠ äººç‰©
+                    </button>
+                  </div>
+                </div>
+                <div className="viewer-actions">
+                  <button onClick={() => void handleReprocess(selectedPhoto.id)}>é‡æ–°è¯†åˆ«</button>
+                  <a href={selectedPhoto.original_url} target="_blank" rel="noreferrer">
+                    æ–°çª—å£åŸå›¾
+                  </a>
+                </div>
+                <div className="face-boxes">
+                  {selectedPhoto.faces.map((face) => (
+                    <article key={face.id}>
+                      <strong>{face.cluster_key || "matched"}</strong>
+                      <span>{face.match_score ? `score ${face.match_score.toFixed(3)}` : "å¾…ç¡®è®¤"}</span>
+                    </article>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="viewer-empty">
+                <p>æŸ¥çœ‹ç»†èŠ‚æ—¶ï¼Œè¿™é‡Œä¿æŒåŸå›¾è§†è§’ã€‚</p>
+                <span>å·¦è¾¹ç­›é€‰å’Œå…¥åº“ï¼Œå³è¾¹ä¸“æ³¨æŸ¥çœ‹ã€ä¿®æ­£å’Œå¤„ç†å¾…ç¡®è®¤ç°‡ã€‚</span>
+              </div>
+            )}
+
+            {error && <div className="error-box">{error}</div>}
+          </section>
         </aside>
       </main>
     </div>
