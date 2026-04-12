@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PersonCreate(BaseModel):
@@ -15,25 +15,80 @@ class PersonUpdate(BaseModel):
     note: str | None = None
 
 
-class MergePersonsRequest(BaseModel):
-    source_ids: list[int]
-    target_id: int
+class PersonRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+
+
+class PersonBatchDeleteRequest(BaseModel):
+    person_ids: list[int] = Field(min_length=1)
 
 
 class PersonRead(BaseModel):
     id: int
     name: str
+    display_name: str
     note: str | None
-    photo_count: int = 0
+    is_unknown: bool
+    unknown_serial: int | None
+    sample_count: int = 0
+    gallery_photo_count: int = 0
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
-class PhotoTagRead(BaseModel):
+class SamplePhotoRead(BaseModel):
+    id: int
+    filename: str
+    width: int | None
+    height: int | None
+    taken_at: datetime | None
+    status: str
+    error_message: str | None
+    thumbnail_url: str
+    original_url: str
+    created_at: datetime
+
+
+class TagCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
+class TagUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
+class TagRead(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PersonTagCreate(BaseModel):
+    tag_id: int | None = None
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "PersonTagCreate":
+        if bool(self.tag_id) == bool(self.name and self.name.strip()):
+            raise ValueError("Provide either tag_id or name.")
+        if self.name is not None:
+            self.name = self.name.strip()
+        return self
+
+
+class GalleryPersonTagRead(BaseModel):
     person_id: int
     person_name: str
+    is_unknown: bool
     source: str
+
+
+class GalleryTagRead(BaseModel):
+    id: int
+    name: str
 
 
 class FaceRead(BaseModel):
@@ -45,29 +100,29 @@ class FaceRead(BaseModel):
     matched_person_id: int | None
     match_score: float | None
     needs_review: bool
-    cluster_key: str | None
+    vector_collection: str | None
 
 
-class PhotoListItem(BaseModel):
+class GalleryPhotoListItem(BaseModel):
     id: int
     filename: str
     width: int | None
     height: int | None
     taken_at: datetime | None
-    tags: list[PhotoTagRead]
+    persons: list[GalleryPersonTagRead]
+    tags: list[GalleryTagRead]
     thumbnail_url: str
     original_url: str
 
 
-class PhotoDetail(PhotoListItem):
+class GalleryPhotoDetail(GalleryPhotoListItem):
     faces: list[FaceRead]
-    object_key: str
-    content_type: str | None
     created_at: datetime
+    content_type: str | None
 
 
-class PaginatedPhotos(BaseModel):
-    items: list[PhotoListItem]
+class PaginatedGalleryPhotos(BaseModel):
+    items: list[GalleryPhotoListItem]
     total: int
     offset: int
     limit: int
@@ -85,23 +140,22 @@ class TaskRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ClusterItem(BaseModel):
-    cluster_key: str
-    face_ids: list[int]
-    photo_id: int
-    thumbnail_url: str
-
-
-class ClusterGroup(BaseModel):
-    cluster_key: str
-    count: int
-    sample: ClusterItem
-
-
-class AssignClusterRequest(BaseModel):
-    person_name: str
-    note: str | None = None
-
-
-class AddPhotoTagRequest(BaseModel):
+class GalleryPhotoPersonTagCreate(BaseModel):
     person_id: int
+
+
+class GalleryPhotoTagCreate(BaseModel):
+    tag_id: int | None = None
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "GalleryPhotoTagCreate":
+        if bool(self.tag_id) == bool(self.name and self.name.strip()):
+            raise ValueError("Provide either tag_id or name.")
+        if self.name is not None:
+            self.name = self.name.strip()
+        return self
+
+
+class GalleryPhotoBatchDeleteRequest(BaseModel):
+    photo_ids: list[int] = Field(min_length=1)

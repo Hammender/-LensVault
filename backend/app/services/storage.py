@@ -43,3 +43,11 @@ class MinioStorage:
         finally:
             response.close()
             response.release_conn()
+
+    def remove_object(self, object_key: str) -> None:
+        try:
+            self.client.remove_object(self.bucket, object_key)
+        except S3Error as exc:
+            if getattr(exc, "code", "") in {"NoSuchKey", "NoSuchObject"}:
+                return
+            raise RuntimeError(f"MinIO remove object failed: {exc}") from exc

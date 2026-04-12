@@ -1,15 +1,44 @@
 export type Person = {
   id: number;
   name: string;
+  display_name: string;
   note: string | null;
-  photo_count: number;
+  is_unknown: boolean;
+  unknown_serial: number | null;
+  sample_count: number;
+  gallery_photo_count: number;
   created_at: string;
 };
 
-export type PhotoTag = {
+export type SamplePhoto = {
+  id: number;
+  filename: string;
+  width: number | null;
+  height: number | null;
+  taken_at: string | null;
+  status: string;
+  error_message: string | null;
+  thumbnail_url: string;
+  original_url: string;
+  created_at: string;
+};
+
+export type Tag = {
+  id: number;
+  name: string;
+  created_at: string;
+};
+
+export type GalleryPersonTag = {
   person_id: number;
   person_name: string;
+  is_unknown: boolean;
   source: string;
+};
+
+export type GalleryTag = {
+  id: number;
+  name: string;
 };
 
 export type Face = {
@@ -21,29 +50,29 @@ export type Face = {
   matched_person_id: number | null;
   match_score: number | null;
   needs_review: boolean;
-  cluster_key: string | null;
+  vector_collection: string | null;
 };
 
-export type PhotoListItem = {
+export type GalleryPhotoListItem = {
   id: number;
   filename: string;
   width: number | null;
   height: number | null;
   taken_at: string | null;
-  tags: PhotoTag[];
+  persons: GalleryPersonTag[];
+  tags: GalleryTag[];
   thumbnail_url: string;
   original_url: string;
 };
 
-export type PhotoDetail = PhotoListItem & {
+export type GalleryPhotoDetail = GalleryPhotoListItem & {
   faces: Face[];
-  object_key: string;
-  content_type: string | null;
   created_at: string;
+  content_type: string | null;
 };
 
-export type PaginatedPhotos = {
-  items: PhotoListItem[];
+export type PaginatedGalleryPhotos = {
+  items: GalleryPhotoListItem[];
   total: number;
   offset: number;
   limit: number;
@@ -57,15 +86,4 @@ export type Task = {
   progress: number;
   created_at: string;
   updated_at: string;
-};
-
-export type Cluster = {
-  cluster_key: string;
-  count: number;
-  sample: {
-    cluster_key: string;
-    face_ids: number[];
-    photo_id: number;
-    thumbnail_url: string;
-  };
 };

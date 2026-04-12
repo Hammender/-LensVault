@@ -11,14 +11,20 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
-    minio_endpoint: str = "minio:9000"
+    minio_endpoint: str = "127.0.0.1:9000"
     minio_access_key: str = "pictureshow"
     minio_secret_key: str = "pictureshow-secret"
     minio_bucket: str = "photos"
     minio_secure: bool = False
 
+    milvus_host: str = "127.0.0.1"
+    milvus_port: int = 19530
+    milvus_known_collection: str = "pictureshow_known_faces"
+    milvus_unknown_collection: str = "pictureshow_unknown_faces"
+    milvus_vector_dimension: int = 512
+
     face_recognition_threshold: float = 0.45
-    face_cluster_threshold: float = 0.55
+    face_unknown_match_threshold: float = 0.6
     thumbnail_cache_size: int = 256
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
