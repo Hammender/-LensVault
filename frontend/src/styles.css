@@ -231,6 +231,16 @@ button:hover,
   gap: 10px;
 }
 
+.people-sidebar .person-list {
+  max-height: calc(100vh - 360px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.people-main {
+  scroll-margin-top: 18px;
+}
+
 .chip-cloud.compact {
   max-height: 240px;
   overflow: auto;
@@ -239,6 +249,14 @@ button:hover,
 .soft-chip {
   border-radius: 999px;
   background: #fff7ee;
+}
+
+.search-input.subtle {
+  border-color: rgba(128, 91, 71, 0.1);
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--muted);
+  font-size: 0.9rem;
+  padding: 8px 12px;
 }
 
 .gallery-grid,
@@ -253,6 +271,10 @@ button:hover,
   position: relative;
   display: grid;
   gap: 8px;
+}
+
+.rich-card-wrap {
+  grid-column: span 2;
 }
 
 .pending-grid {
@@ -310,6 +332,46 @@ button:hover,
   background: #f2ede4;
 }
 
+.rich-card {
+  padding: 14px;
+}
+
+.rich-card-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 46%) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  min-height: 360px;
+}
+
+.rich-card-layout img {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border-radius: 16px;
+  object-fit: contain;
+  display: block;
+  background: #f6f1e9;
+}
+
+.rich-card-copy {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+.rich-snippet {
+  margin: 0;
+  color: #3d2b24;
+  line-height: 1.55;
+  font-size: 0.95rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 14;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .sample-card img {
   width: 100%;
   height: 220px;
@@ -344,6 +406,10 @@ button:hover,
 .pill.muted {
   background: #f4efe8;
   color: var(--muted);
+}
+
+.system-pill {
+  opacity: 0.84;
 }
 
 .pill.unknown {
@@ -484,6 +550,14 @@ button:hover,
   opacity: 0.82;
 }
 
+.upload-mode-switch {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
 .lightbox-backdrop {
   position: fixed;
   inset: 0;
@@ -506,6 +580,48 @@ button:hover,
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.lightbox-shell.rich-lightbox {
+  width: min(1360px, 94vw);
+  height: min(88vh, 900px);
+}
+
+.rich-lightbox-layout {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.7fr);
+}
+
+.rich-lightbox-image-wrap {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px 24px 24px;
+}
+
+.rich-lightbox-copy {
+  border-left: 1px solid var(--panel-border);
+  background: rgba(255, 249, 243, 0.94);
+  padding: 24px 24px 20px 20px;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.rich-lightbox-copy h3 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.rich-lightbox-copy p {
+  margin: 0;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  color: #3b2a23;
 }
 
 .lightbox-image {
@@ -548,6 +664,12 @@ button:hover,
   right: 10px;
 }
 
+.lightbox-arrow:hover,
+.lightbox-arrow:focus-visible,
+.lightbox-arrow:active {
+  transform: translateY(-50%);
+}
+
 .upload-box {
   display: grid;
   place-items: center;
@@ -565,6 +687,22 @@ button:hover,
 
 .upload-box input {
   display: none;
+}
+
+.rich-text-editor {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.82);
+  padding: 10px 12px;
+  color: var(--text);
+  min-height: 120px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.rich-text-editor.compact {
+  min-height: 96px;
 }
 
 .task-box {
@@ -697,5 +835,42 @@ button:disabled {
 
   .nav-tab {
     width: 100%;
+  }
+
+  .upload-mode-switch {
+    grid-template-columns: 1fr;
+  }
+
+  .rich-card-layout {
+    grid-template-columns: 1fr;
+    min-height: unset;
+  }
+
+  .rich-card-layout img {
+    min-height: 260px;
+  }
+
+  .rich-card-wrap {
+    grid-column: span 1;
+  }
+
+  .lightbox-shell.rich-lightbox {
+    width: min(96vw, 96vw);
+    height: min(92vh, 92vh);
+  }
+
+  .rich-lightbox-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(240px, 48vh) minmax(0, 1fr);
+  }
+
+  .rich-lightbox-image-wrap {
+    padding: 44px 14px 8px;
+  }
+
+  .rich-lightbox-copy {
+    border-left: 0;
+    border-top: 1px solid var(--panel-border);
+    padding: 14px;
   }
 }

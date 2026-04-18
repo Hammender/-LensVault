@@ -49,6 +49,23 @@ def ensure_legacy_columns() -> None:
         if "source" not in columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE gallery_photo_tags ADD COLUMN source VARCHAR(32) DEFAULT 'manual' NOT NULL"))
+    if "gallery_photos" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("gallery_photos")}
+        statements: list[str] = []
+        if "is_rich_text" not in columns:
+            statements.append("ALTER TABLE gallery_photos ADD COLUMN is_rich_text BOOLEAN DEFAULT 0 NOT NULL")
+        if "rich_text" not in columns:
+            statements.append("ALTER TABLE gallery_photos ADD COLUMN rich_text TEXT")
+        if "ocr_status" not in columns:
+            statements.append("ALTER TABLE gallery_photos ADD COLUMN ocr_status VARCHAR(32)")
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
+    if "tags" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("tags")}
+        if "is_system" not in columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE tags ADD COLUMN is_system BOOLEAN DEFAULT 0 NOT NULL"))
 
 
 def get_db() -> Generator[Session, None, None]:

@@ -61,6 +61,7 @@ class TagUpdate(BaseModel):
 class TagRead(BaseModel):
     id: int
     name: str
+    is_system: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -89,6 +90,7 @@ class GalleryPersonTagRead(BaseModel):
 class GalleryTagRead(BaseModel):
     id: int
     name: str
+    is_system: bool
 
 
 class FaceRead(BaseModel):
@@ -109,6 +111,9 @@ class GalleryPhotoListItem(BaseModel):
     width: int | None
     height: int | None
     taken_at: datetime | None
+    is_rich_text: bool
+    rich_text: str | None
+    ocr_status: str | None
     persons: list[GalleryPersonTagRead]
     tags: list[GalleryTagRead]
     thumbnail_url: str
@@ -155,6 +160,10 @@ class GalleryPhotoTagCreate(BaseModel):
         if self.name is not None:
             self.name = self.name.strip()
         return self
+
+
+class GalleryPhotoRichTextUpdate(BaseModel):
+    rich_text: str | None = None
 
 
 class GalleryPhotoBatchDeleteRequest(BaseModel):

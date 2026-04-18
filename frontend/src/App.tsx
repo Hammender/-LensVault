@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   addGalleryPhotoPerson,
@@ -16,12 +16,15 @@ import {
   getGalleryPhoto,
   getTask,
   importGalleryPhotos,
+  importGalleryRichPhotos,
   listGalleryPhotos,
   listPersonSamples,
   listPersons,
   listPersonTags,
   listTags,
   renamePerson,
+  reRecognizeGalleryPhoto,
+  updateGalleryPhotoRichText,
   unbindPersonTag,
   type GalleryUploadMetadata
 } from "./api";
@@ -39,7 +42,10 @@ type PendingGalleryUpload = {
   previewUrl: string;
   personNamesText: string;
   tagNamesText: string;
+  richText: string;
 };
+
+type UploadMode = "normal" | "rich";
 
 const galleryPageSize = 18;
 
@@ -72,7 +78,7 @@ function splitCommaList(input: string): string[] {
   return Array.from(
     new Set(
       input
-        .split(",")
+        .split(/[，,]/)
         .map((item) => item.trim())
         .filter(Boolean)
     )
@@ -97,7 +103,9 @@ export default function App() {
   const [manualPersonId, setManualPersonId] = useState("");
   const [manualTagId, setManualTagId] = useState("");
   const [manualTagName, setManualTagName] = useState("");
+  const [richTextDraft, setRichTextDraft] = useState("");
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
+  const [peopleSearch, setPeopleSearch] = useState("");
   const [peopleBatchDeleteMode, setPeopleBatchDeleteMode] = useState(false);
   const [selectedPersonDeleteIds, setSelectedPersonDeleteIds] = useState<number[]>([]);
   const [samples, setSamples] = useState<SamplePhoto[]>([]);
@@ -111,8 +119,12 @@ export default function App() {
   const [pendingGalleryUploads, setPendingGalleryUploads] = useState<PendingGalleryUpload[]>([]);
   const [batchApplyPersonNames, setBatchApplyPersonNames] = useState("");
   const [batchApplyTagNames, setBatchApplyTagNames] = useState("");
+  const [uploadMode, setUploadMode] = useState<UploadMode>("normal");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const peopleMainRef = useRef<HTMLElement | null>(null);
+
+  const richTag = useMemo(() => tags.find((tag) => tag.name === "图文") ?? null, [tags]);
 
   const filteredPersons = useMemo(() => {
     const keyword = personSearch.trim().toLowerCase();
@@ -129,6 +141,16 @@ export default function App() {
     }
     return tags.filter((tag) => tag.name.toLowerCase().includes(keyword));
   }, [tagSearch, tags]);
+
+  const filteredPeopleInLibrary = useMemo(() => {
+    const keyword = peopleSearch.trim().toLowerCase();
+    if (!keyword) {
+      return persons;
+    }
+    return persons.filter((person) => person.display_name.toLowerCase().includes(keyword));
+  }, [peopleSearch, persons]);
+
+  const unknownPersonCount = useMemo(() => persons.filter((person) => person.is_unknown).length, [persons]);
 
   async function refreshPeople() {
     const nextPersons = await listPersons();
@@ -220,7 +242,9 @@ export default function App() {
   async function openGalleryPhoto(photoId: number) {
     setError(null);
     try {
-      setSelectedPhoto(await getGalleryPhoto(photoId));
+      const detail = await getGalleryPhoto(photoId);
+      setSelectedPhoto(detail);
+      setRichTextDraft(detail.rich_text ?? "");
       setManualPersonId("");
       setManualTagId("");
       setManualTagName("");
@@ -381,6 +405,40 @@ export default function App() {
     }
   }
 
+  async function handleDeleteAllUnknownPersons() {
+    const unknownIds = persons.filter((person) => person.is_unknown).map((person) => person.id);
+    if (unknownIds.length === 0) {
+      return;
+    }
+    if (
+      !window.confirm(
+        `确认删除全部未知人物吗？共 ${unknownIds.length} 人。将删除其样本图、向量数据与关联关系。`
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await batchDeletePersons(unknownIds);
+      setSelectedPersonDeleteIds((current) => current.filter((id) => !unknownIds.includes(id)));
+      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "清空未知人物失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleSelectPerson(person: Person) {
+    setSelectedPerson(person);
+    if (window.matchMedia("(max-width: 1240px)").matches) {
+      window.requestAnimationFrame(() => {
+        peopleMainRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }
+
   async function handleBindPersonTag() {
     if (!selectedPerson || (!personTagSelectId && !personTagName.trim())) {
       return;
@@ -429,7 +487,8 @@ export default function App() {
         file,
         previewUrl: URL.createObjectURL(file),
         personNamesText: "",
-        tagNamesText: ""
+        tagNamesText: "",
+        richText: ""
       }))
     ]);
   }
@@ -484,9 +543,11 @@ export default function App() {
       const files = pendingGalleryUploads.map((item) => item.file);
       const metadata: GalleryUploadMetadata[] = pendingGalleryUploads.map((item) => ({
         person_names: splitCommaList(item.personNamesText),
-        tag_names: splitCommaList(item.tagNamesText)
+        tag_names: splitCommaList(item.tagNamesText),
+        rich_text: uploadMode === "rich" ? item.richText.trim() : undefined
       }));
-      const nextTask = await importGalleryPhotos(files, metadata);
+      const nextTask =
+        uploadMode === "rich" ? await importGalleryRichPhotos(files, metadata) : await importGalleryPhotos(files, metadata);
       setTask(nextTask);
       pendingGalleryUploads.forEach((item) => URL.revokeObjectURL(item.previewUrl));
       setPendingGalleryUploads([]);
@@ -571,6 +632,23 @@ export default function App() {
     }
   }
 
+  async function handleSaveRichText() {
+    if (!selectedPhoto || !selectedPhoto.is_rich_text) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await updateGalleryPhotoRichText(selectedPhoto.id, richTextDraft);
+      setSelectedPhoto(detail);
+      await refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "更新图文文本失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function toggleGalleryBatchDeleteMode() {
     setGalleryBatchDeleteMode((current) => {
       if (current) {
@@ -625,13 +703,30 @@ export default function App() {
     }
   }
 
+  async function handleReRecognize() {
+    if (!selectedPhoto) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await reRecognizeGalleryPhoto(selectedPhoto.id);
+      setSelectedPhoto(detail);
+      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "重新识别失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const availablePersonsForPhoto = selectedPhoto
     ? persons.filter((person) => !selectedPhoto.persons.some((tag) => tag.person_id === person.id))
     : persons;
 
   const availableTagsForPhoto = selectedPhoto
-    ? tags.filter((tag) => !selectedPhoto.tags.some((item) => item.id === tag.id))
-    : tags;
+    ? tags.filter((tag) => !tag.is_system && !selectedPhoto.tags.some((item) => item.id === tag.id))
+    : tags.filter((tag) => !tag.is_system);
 
   const lightboxIndex = lightboxPhotoId === null ? -1 : galleryPhotos.findIndex((photo) => photo.id === lightboxPhotoId);
   const lightboxPhoto = lightboxIndex >= 0 ? galleryPhotos[lightboxIndex] : null;
@@ -713,7 +808,12 @@ export default function App() {
 
             <div className="filter-group">
               <label>按人物筛选</label>
-              <input value={personSearch} onChange={(event) => setPersonSearch(event.target.value)} placeholder="搜索人物名" />
+              <input
+                className="search-input subtle"
+                value={personSearch}
+                onChange={(event) => setPersonSearch(event.target.value)}
+                placeholder="搜索人物名"
+              />
               <div className="chip-cloud">
                 {filteredPersons.map((person) => {
                   const active = selectedPersonIds.includes(person.id);
@@ -738,7 +838,12 @@ export default function App() {
 
             <div className="filter-group">
               <label>按普通标签筛选</label>
-              <input value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} placeholder="搜索标签" />
+              <input
+                className="search-input subtle"
+                value={tagSearch}
+                onChange={(event) => setTagSearch(event.target.value)}
+                placeholder="搜索标签"
+              />
               <div className="chip-cloud">
                 {filteredTags.map((tag) => {
                   const active = selectedTagIds.includes(tag.id);
@@ -782,25 +887,50 @@ export default function App() {
 
             <div className="gallery-grid">
               {galleryPhotos.map((photo) => (
-                <article key={photo.id} className="photo-card-wrap">
-                  <button className="photo-card" onClick={() => openGalleryLightbox(photo.id)}>
-                    <img src={`${photo.thumbnail_url}?width=720`} alt="图库预览" loading="lazy" />
-                    <div className="photo-meta">
-                      <div className="micro-row">
-                        {photo.persons.map((person) => (
-                          <small key={`${photo.id}-p-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
-                            {person.person_name}
-                          </small>
-                        ))}
+                <article key={photo.id} className={photo.is_rich_text ? "photo-card-wrap rich-card-wrap" : "photo-card-wrap"}>
+                  <button className={photo.is_rich_text ? "photo-card rich-card" : "photo-card"} onClick={() => openGalleryLightbox(photo.id)}>
+                    {photo.is_rich_text ? (
+                      <div className="rich-card-layout">
+                        <img src={`${photo.thumbnail_url}?width=720`} alt="图库预览" loading="lazy" />
+                        <div className="rich-card-copy">
+                          <p className="rich-snippet">{photo.rich_text || "未识别到文本，可在详情里手动补录。"}</p>
+                          <div className="micro-row">
+                            {photo.persons.map((person) => (
+                              <small key={`${photo.id}-p-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
+                                {person.person_name}
+                              </small>
+                            ))}
+                          </div>
+                          <div className="micro-row">
+                            {photo.tags.map((tag) => (
+                              <small key={`${photo.id}-t-${tag.id}`} className="pill muted">
+                                #{tag.name}
+                              </small>
+                            ))}
+                          </div>
+                        </div>
                       </div>
-                      <div className="micro-row">
-                        {photo.tags.map((tag) => (
-                          <small key={`${photo.id}-t-${tag.id}`} className="pill muted">
-                            #{tag.name}
-                          </small>
-                        ))}
-                      </div>
-                    </div>
+                    ) : (
+                      <>
+                        <img src={`${photo.thumbnail_url}?width=720`} alt="图库预览" loading="lazy" />
+                        <div className="photo-meta">
+                          <div className="micro-row">
+                            {photo.persons.map((person) => (
+                              <small key={`${photo.id}-p-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
+                                {person.person_name}
+                              </small>
+                            ))}
+                          </div>
+                          <div className="micro-row">
+                            {photo.tags.map((tag) => (
+                              <small key={`${photo.id}-t-${tag.id}`} className="pill muted">
+                                #{tag.name}
+                              </small>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </button>
                   <button
                     className="photo-detail-trigger"
@@ -853,6 +983,9 @@ export default function App() {
               </div>
               <div className="micro-row">
                 <span>{selectedPhoto ? `${selectedPhoto.faces.length} 张脸` : "未选中图片"}</span>
+                <button disabled={busy || !selectedPhoto} onClick={() => void handleReRecognize()}>
+                  重新识别
+                </button>
                 <button disabled={busy || !selectedPhoto} onClick={() => void handleDeleteCurrentPhoto()}>
                   删除当前图
                 </button>
@@ -904,9 +1037,15 @@ export default function App() {
                   <label>普通标签</label>
                   <div className="micro-row wrap">
                     {selectedPhoto.tags.map((tag) => (
-                      <button key={tag.id} className="pill muted action-pill" onClick={() => void handleDeletePhotoTag(tag.id)}>
-                        #{tag.name}
-                      </button>
+                      tag.is_system ? (
+                        <span key={tag.id} className="pill muted">
+                          #{tag.name}
+                        </span>
+                      ) : (
+                        <button key={tag.id} className="pill muted action-pill" onClick={() => void handleDeletePhotoTag(tag.id)}>
+                          #{tag.name}
+                        </button>
+                      )
                     ))}
                   </div>
                   <div className="stack-editor">
@@ -935,6 +1074,24 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+
+                {selectedPhoto.is_rich_text && (
+                  <div className="editor-block">
+                    <label>图文文本（可手动编辑）</label>
+                    <textarea
+                      className="rich-text-editor"
+                      value={richTextDraft}
+                      onChange={(event) => setRichTextDraft(event.target.value)}
+                      placeholder="输入或修正文案内容"
+                    />
+                    <div className="micro-row">
+                      <span>OCR状态：{selectedPhoto.ocr_status ?? "unknown"}</span>
+                      <button disabled={busy} onClick={() => void handleSaveRichText()}>
+                        保存图文文本
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="face-list">
                   {selectedPhoto.faces.map((face) => (
@@ -972,6 +1129,9 @@ export default function App() {
                 >
                   删除选中（{selectedPersonDeleteIds.length}）
                 </button>
+                <button disabled={busy || unknownPersonCount === 0} onClick={() => void handleDeleteAllUnknownPersons()}>
+                  清空未知人物（{unknownPersonCount}）
+                </button>
               </div>
             </div>
 
@@ -982,12 +1142,19 @@ export default function App() {
               </button>
             </div>
 
+            <input
+              className="search-input subtle"
+              value={peopleSearch}
+              onChange={(event) => setPeopleSearch(event.target.value)}
+              placeholder="搜索人物（样本库）"
+            />
+
             <div className="person-list">
-              {persons.map((person) => (
+              {filteredPeopleInLibrary.map((person) => (
                 <article key={person.id} className="person-card-wrap">
                   <button
                     className={selectedPerson?.id === person.id ? "person-card active" : "person-card"}
-                    onClick={() => setSelectedPerson(person)}
+                    onClick={() => handleSelectPerson(person)}
                   >
                     <div>
                       <strong>{person.display_name}</strong>
@@ -1013,10 +1180,11 @@ export default function App() {
                   )}
                 </article>
               ))}
+              {filteredPeopleInLibrary.length === 0 && <div className="empty-card">没有匹配的人物。</div>}
             </div>
           </section>
 
-          <section className="panel people-main">
+          <section ref={peopleMainRef} className="panel people-main">
             {selectedPerson ? (
               <>
                 <div className="section-head">
@@ -1145,10 +1313,31 @@ export default function App() {
               <span>支持批量导入</span>
             </div>
 
+            <div className="upload-mode-switch">
+              <button
+                className={uploadMode === "normal" ? "soft-chip active" : "soft-chip"}
+                onClick={() => setUploadMode("normal")}
+              >
+                普通图片
+              </button>
+              <button className={uploadMode === "rich" ? "soft-chip active" : "soft-chip"} onClick={() => setUploadMode("rich")}>
+                图文图片
+              </button>
+              <small className="tip">
+                {uploadMode === "rich"
+                  ? `将自动打 #图文 标签${richTag ? "" : "（系统会自动创建）"}，并执行 OCR + 人脸识别`
+                  : "沿用普通图片流程：人脸识别 + 人物标签 + 普通标签"}
+              </small>
+            </div>
+
             <label className="upload-box large">
               <input type="file" multiple accept="image/*" onChange={(event) => handlePickGalleryFiles(event.target.files)} />
-              <strong>拖入或选择展示图片</strong>
-              <span>先预览并填写每张图的人物和标签，确认后再统一上传到后端识别。</span>
+              <strong>{uploadMode === "rich" ? "拖入或选择图文图片" : "拖入或选择展示图片"}</strong>
+              <span>
+                {uploadMode === "rich"
+                  ? "先预览并补录文本（可留空走 OCR），确认后再统一上传。"
+                  : "先预览并填写每张图的人物和标签，确认后再统一上传到后端识别。"}
+              </span>
             </label>
 
             {pendingGalleryUploads.length > 0 && (
@@ -1189,6 +1378,14 @@ export default function App() {
                           onChange={(event) => handleUpdatePendingGallery(index, { tagNamesText: event.target.value })}
                           placeholder="普通标签（逗号分隔，可留空）"
                         />
+                        {uploadMode === "rich" && (
+                          <textarea
+                            className="rich-text-editor compact"
+                            value={item.richText}
+                            onChange={(event) => handleUpdatePendingGallery(index, { richText: event.target.value })}
+                            placeholder="图文文本（可留空，后端自动OCR）"
+                          />
+                        )}
                       </div>
                       <button className="ghost-button" onClick={() => handleRemovePendingGallery(index)}>
                         移除
@@ -1239,14 +1436,40 @@ export default function App() {
 
       {lightboxPhoto && (
         <div className="lightbox-backdrop" onClick={() => closeGalleryLightbox()}>
-          <div className="lightbox-shell" onClick={(event) => event.stopPropagation()}>
+          <div className={lightboxPhoto.is_rich_text ? "lightbox-shell rich-lightbox" : "lightbox-shell"} onClick={(event) => event.stopPropagation()}>
             <button className="lightbox-close" onClick={() => closeGalleryLightbox()}>
               关闭
             </button>
             <button className="lightbox-arrow left" disabled={!canGoPrev} onClick={() => goPrevLightbox()}>
               ‹
             </button>
-            <img className="lightbox-image" src={lightboxPhoto.original_url} alt="大图预览" />
+            {lightboxPhoto.is_rich_text ? (
+              <div className="rich-lightbox-layout">
+                <div className="rich-lightbox-image-wrap">
+                  <img className="lightbox-image" src={lightboxPhoto.original_url} alt="图文大图预览" />
+                </div>
+                <aside className="rich-lightbox-copy">
+                  <h3>图文内容</h3>
+                  <p>{lightboxPhoto.rich_text || "未识别到文本，可在右侧详情栏手动补录。"}</p>
+                  <div className="micro-row wrap">
+                    {lightboxPhoto.persons.map((person) => (
+                      <small key={`lb-p-${lightboxPhoto.id}-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
+                        {person.person_name}
+                      </small>
+                    ))}
+                  </div>
+                  <div className="micro-row wrap">
+                    {lightboxPhoto.tags.map((tag) => (
+                      <small key={`lb-t-${lightboxPhoto.id}-${tag.id}`} className="pill muted">
+                        #{tag.name}
+                      </small>
+                    ))}
+                  </div>
+                </aside>
+              </div>
+            ) : (
+              <img className="lightbox-image" src={lightboxPhoto.original_url} alt="大图预览" />
+            )}
             <button className="lightbox-arrow right" disabled={!canGoNext} onClick={() => goNextLightbox()}>
               ›
             </button>

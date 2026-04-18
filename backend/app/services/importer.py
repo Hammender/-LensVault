@@ -17,6 +17,7 @@ from app.core.config import Settings, get_settings
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
 from app.services.face import FaceService
 from app.services.milvus import MilvusVectorStore
+from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
 
 logger = logging.getLogger(__name__)
@@ -51,12 +52,15 @@ class PictureService:
         storage: MinioStorage,
         face_service: FaceService,
         vector_store: MilvusVectorStore,
+        ocr_service: OcrService,
         settings: Settings | None = None,
     ) -> None:
         self.storage = storage
         self.face_service = face_service
         self.vector_store = vector_store
+        self.ocr_service = ocr_service
         self.settings = settings or get_settings()
+        self.rich_text_tag_name = "图文"
 
     def _build_object_key(self, prefix: str, filename: str) -> str:
         suffix = Path(filename).suffix.lower()
@@ -70,6 +74,19 @@ class PictureService:
             db.add(tag)
             db.flush()
         return tag
+
+    def ensure_system_tags(self, db: Session) -> None:
+        rich_tag = db.scalar(select(Tag).where(Tag.name == self.rich_text_tag_name))
+        if rich_tag is None:
+            db.add(Tag(name=self.rich_text_tag_name, is_system=True))
+            db.commit()
+            logger.info("Created system tag name=%s", self.rich_text_tag_name)
+            return
+        if not rich_tag.is_system:
+            rich_tag.is_system = True
+            db.add(rich_tag)
+            db.commit()
+            logger.info("Updated tag to system tag name=%s tag_id=%s", self.rich_text_tag_name, rich_tag.id)
 
     def _ensure_gallery_person_tag(self, db: Session, gallery_photo_id: int, person_id: int, source: str) -> None:
         existing = db.scalar(
@@ -253,6 +270,8 @@ class PictureService:
         payload: bytes,
         content_type: str | None = None,
         tag_names: list[str] | None = None,
+        is_rich_text: bool = False,
+        rich_text: str | None = None,
     ) -> tuple[GalleryPhoto, GalleryImportSummary]:
         summary = GalleryImportSummary()
         logger.info(
@@ -293,9 +312,27 @@ class PictureService:
             width=width,
             height=height,
             taken_at=taken_at,
+            is_rich_text=is_rich_text,
+            rich_text=rich_text.strip() if rich_text else None,
+            ocr_status="manual" if rich_text and rich_text.strip() else None,
         )
         db.add(photo)
         db.flush()
+
+        if is_rich_text:
+            rich_tag = self._find_or_create_tag(db, self.rich_text_tag_name)
+            rich_tag.is_system = True
+            self._ensure_gallery_tag(db, photo.id, rich_tag, source="system")
+            if not photo.rich_text:
+                extracted = self.ocr_service.extract_text(payload)
+                photo.rich_text = extracted
+                photo.ocr_status = "ok" if extracted else "failed"
+                logger.info(
+                    "Gallery rich text OCR completed photo_id=%s status=%s chars=%d",
+                    photo.id,
+                    photo.ocr_status,
+                    len(photo.rich_text or ""),
+                )
 
         for tag_name in tag_names or []:
             if not tag_name.strip():
@@ -605,3 +642,134 @@ class PictureService:
             link.tag
             tags.append(link.tag)
         return sorted(tags, key=lambda item: item.name.lower())
+
+    def re_recognize_gallery_photo(self, db: Session, photo: GalleryPhoto) -> GalleryPhoto:
+        logger.info("Start re_recognize_gallery_photo photo_id=%s", photo.id)
+        payload = self.storage.get_bytes(photo.object_key)
+        old_known_face_ids = [face.id for face in photo.faces if face.vector_collection == "known"]
+        old_unknown_face_ids = [face.id for face in photo.faces if face.vector_collection == "unknown"]
+        self.vector_store.delete_faces(self.settings.milvus_known_collection, old_known_face_ids)
+        self.vector_store.delete_faces(self.settings.milvus_unknown_collection, old_unknown_face_ids)
+        logger.info(
+            "Deleted old vectors photo_id=%s known=%d unknown=%d",
+            photo.id,
+            len(old_known_face_ids),
+            len(old_unknown_face_ids),
+        )
+        old_person_ids = set(tag.person_id for tag in photo.person_tags)
+        for person_id in old_person_ids:
+            link = db.scalar(
+                select(GalleryPhotoPersonTag).where(
+                    GalleryPhotoPersonTag.gallery_photo_id == photo.id,
+                    GalleryPhotoPersonTag.person_id == person_id,
+                )
+            )
+            if link is not None:
+                db.delete(link)
+        logger.info("Cleared old person tags photo_id=%s persons=%d", photo.id, len(old_person_ids))
+        for face in photo.faces:
+            db.delete(face)
+        db.flush()
+
+        summary = GalleryImportSummary()
+        try:
+            detected_faces = self.face_service.detect_faces(payload)
+        except Exception:
+            logger.exception("Re-recognize face detection failed photo_id=%s", photo.id)
+            db.commit()
+            db.refresh(photo)
+            return photo
+        logger.info("Re-recognize detection result photo_id=%s faces=%d", photo.id, len(detected_faces))
+        for detected in detected_faces:
+            try:
+                with db.begin_nested():
+                    matched_person_id, matched_score = self.vector_store.search(
+                        self.settings.milvus_known_collection,
+                        detected.embedding,
+                    )
+                    if matched_score is not None and matched_score >= self.settings.face_recognition_threshold and matched_person_id is not None:
+                        face = FaceRecord(
+                            gallery_photo_id=photo.id,
+                            bbox_left=detected.bbox[0],
+                            bbox_top=detected.bbox[1],
+                            bbox_right=detected.bbox[2],
+                            bbox_bottom=detected.bbox[3],
+                            detection_score=detected.score,
+                            matched_person_id=matched_person_id,
+                            match_score=matched_score,
+                            needs_review=False,
+                            vector_collection="known",
+                        )
+                        db.add(face)
+                        db.flush()
+                        self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, matched_person_id, detected.embedding)
+                        self._ensure_gallery_person_tag(db, photo.id, matched_person_id, "auto")
+                        self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person_id)
+                        summary.known_matches += 1
+                        logger.info(
+                            "Re-recognize known face matched photo_id=%s face_id=%s person_id=%s score=%.4f",
+                            photo.id,
+                            face.id,
+                            matched_person_id,
+                            matched_score,
+                        )
+                        continue
+
+                    unknown_person_id, unknown_score = self.vector_store.search(
+                        self.settings.milvus_unknown_collection,
+                        detected.embedding,
+                    )
+                    if unknown_score is not None and unknown_score >= self.settings.face_unknown_match_threshold and unknown_person_id is not None:
+                        person = db.get(Person, unknown_person_id)
+                        if person is None:
+                            person = self.create_unknown_person(db)
+                            summary.unknown_created += 1
+                        else:
+                            summary.unknown_reused += 1
+                    else:
+                        person = self.create_unknown_person(db)
+                        summary.unknown_created += 1
+
+                    face = FaceRecord(
+                        gallery_photo_id=photo.id,
+                        bbox_left=detected.bbox[0],
+                        bbox_top=detected.bbox[1],
+                        bbox_right=detected.bbox[2],
+                        bbox_bottom=detected.bbox[3],
+                        detection_score=detected.score,
+                        matched_person_id=person.id,
+                        match_score=unknown_score,
+                        needs_review=True,
+                        vector_collection="unknown",
+                    )
+                    db.add(face)
+                    db.flush()
+                    self.vector_store.upsert_face(self.settings.milvus_unknown_collection, face.id, person.id, detected.embedding)
+                    self._ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
+                    self._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
+                    logger.info(
+                        "Re-recognize unknown face indexed photo_id=%s face_id=%s person_id=%s",
+                        photo.id,
+                        face.id,
+                        person.id,
+                    )
+            except Exception:
+                logger.exception("Re-recognize face process failed photo_id=%s", photo.id)
+                continue
+
+        db.commit()
+        db.refresh(photo)
+        photo.person_tags
+        photo.tags
+        for tag in photo.person_tags:
+            tag.person
+        for tag_link in photo.tags:
+            tag_link.tag
+        logger.info(
+            "Completed re_recognize_gallery_photo photo_id=%s known=%d unknown_created=%d unknown_reused=%d",
+            photo.id,
+            summary.known_matches,
+            summary.unknown_created,
+            summary.unknown_reused,
+        )
+        return photo

@@ -199,6 +199,7 @@ export async function deleteGalleryPhotoTag(photoId: number, tagId: number): Pro
 export type GalleryUploadMetadata = {
   person_names: string[];
   tag_names: string[];
+  rich_text?: string;
 };
 
 export async function importGalleryPhotos(files: File[], metadata: GalleryUploadMetadata[]): Promise<Task> {
@@ -213,6 +214,36 @@ export async function importGalleryPhotos(files: File[], metadata: GalleryUpload
   );
 }
 
+export async function importGalleryRichPhotos(files: File[], metadata: GalleryUploadMetadata[]): Promise<Task> {
+  const form = new FormData();
+  files.forEach((file) => form.append("files", file));
+  form.append("metadata_json", JSON.stringify(metadata));
+  return parse<Task>(
+    await fetch("/api/gallery/rich-photos/import", {
+      method: "POST",
+      body: form
+    })
+  );
+}
+
+export async function updateGalleryPhotoRichText(photoId: number, richText: string): Promise<GalleryPhotoDetail> {
+  return parse<GalleryPhotoDetail>(
+    await fetch(`/api/gallery/photos/${photoId}/rich-text`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify({ rich_text: richText })
+    })
+  );
+}
+
 export async function getTask(taskId: string): Promise<Task> {
   return parse<Task>(await fetch(`/api/tasks/${taskId}`));
+}
+
+export async function reRecognizeGalleryPhoto(photoId: number): Promise<GalleryPhotoDetail> {
+  return parse<GalleryPhotoDetail>(
+    await fetch(`/api/gallery/photos/${photoId}/re-recognize`, {
+      method: "POST"
+    })
+  );
 }

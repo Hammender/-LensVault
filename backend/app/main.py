@@ -20,6 +20,7 @@ from app.schemas import (
     GalleryPhotoDetail,
     GalleryPhotoListItem,
     GalleryPhotoBatchDeleteRequest,
+    GalleryPhotoRichTextUpdate,
     GalleryPhotoPersonTagCreate,
     GalleryPhotoTagCreate,
     GalleryTagRead,
@@ -39,6 +40,7 @@ from app.schemas import (
 from app.services.face import FaceService
 from app.services.importer import PictureService
 from app.services.milvus import MilvusVectorStore
+from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
 from app.services.tasks import create_task, fail_incomplete_tasks, update_task
 
@@ -65,7 +67,8 @@ app.add_middleware(
 storage = MinioStorage(settings)
 face_service = FaceService(settings)
 vector_store = MilvusVectorStore(settings)
-picture_service = PictureService(storage, face_service, vector_store, settings)
+ocr_service = OcrService()
+picture_service = PictureService(storage, face_service, vector_store, ocr_service, settings)
 
 
 @app.on_event("startup")
@@ -74,9 +77,19 @@ def on_startup() -> None:
     storage.ensure_bucket()
     vector_store.ensure_collections()
     face_service.warmup()
+    ocr_status = ocr_service.engine_status()
+    logger.info(
+        "OCR engines status rapidocr_ready=%s tesseract_ready=%s rapidocr_error=%s tesseract_error=%s",
+        ocr_status["rapidocr_ready"],
+        ocr_status["tesseract_ready"],
+        ocr_status["rapidocr_error"] or "-",
+        ocr_status["tesseract_error"] or "-",
+    )
     db = SessionLocal()
     try:
+        picture_service.ensure_system_tags(db)
         recovered = fail_incomplete_tasks(db, "gallery_import")
+        recovered += fail_incomplete_tasks(db, "gallery_rich_import")
         if recovered > 0:
             logger.warning("Recovered interrupted gallery tasks count=%d", recovered)
     finally:
@@ -99,13 +112,19 @@ def _gallery_photo_to_list_item(photo: GalleryPhoto) -> GalleryPhotoListItem:
         )
         for tag in sorted(photo.person_tags, key=lambda item: (item.person.is_unknown, item.person.display_name.lower()))
     ]
-    tags = [GalleryTagRead(id=item.tag.id, name=item.tag.name) for item in sorted(photo.tags, key=lambda link: link.tag.name.lower())]
+    tags = [
+        GalleryTagRead(id=item.tag.id, name=item.tag.name, is_system=item.tag.is_system)
+        for item in sorted(photo.tags, key=lambda link: link.tag.name.lower())
+    ]
     return GalleryPhotoListItem(
         id=photo.id,
         filename=photo.filename,
         width=photo.width,
         height=photo.height,
         taken_at=photo.taken_at,
+        is_rich_text=photo.is_rich_text,
+        rich_text=photo.rich_text,
+        ocr_status=photo.ocr_status,
         persons=persons,
         tags=tags,
         thumbnail_url=f"/api/gallery/photos/{photo.id}/thumbnail",
@@ -187,8 +206,10 @@ def _parse_tag_names(raw: list[str] | None) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-def _parse_gallery_metadata(raw: str | None, file_count: int) -> list[dict[str, list[str]]]:
-    defaults = [{"person_names": [], "tag_names": []} for _ in range(file_count)]
+def _parse_gallery_metadata(raw: str | None, file_count: int) -> list[dict[str, list[str] | str | None]]:
+    defaults: list[dict[str, list[str] | str | None]] = [
+        {"person_names": [], "tag_names": [], "rich_text": None} for _ in range(file_count)
+    ]
     if not raw:
         return defaults
     try:
@@ -206,15 +227,19 @@ def _parse_gallery_metadata(raw: str | None, file_count: int) -> list[dict[str, 
             defaults[index]["person_names"] = [str(name).strip() for name in person_names if str(name).strip()]
         if isinstance(tag_names, list):
             defaults[index]["tag_names"] = [str(name).strip() for name in tag_names if str(name).strip()]
+        rich_text = item.get("rich_text")
+        if rich_text is not None:
+            defaults[index]["rich_text"] = str(rich_text).strip() or None
     return defaults
 
 
 def _process_gallery_import_task(
     task_id: str,
     uploads: list[tuple[str, bytes, str | None]],
-    metadata_by_index: list[dict[str, list[str]]],
+    metadata_by_index: list[dict[str, list[str] | str | None]],
+    rich_mode: bool,
 ) -> None:
-    logger.info("Gallery import task started task_id=%s files=%d", task_id, len(uploads))
+    logger.info("Gallery import task started task_id=%s files=%d rich_mode=%s", task_id, len(uploads), rich_mode)
     db = SessionLocal()
     try:
         update_task(db, task_id, status="running", progress=0.05, message="正在识别上传图片")
@@ -240,9 +265,11 @@ def _process_gallery_import_task(
                 filename,
                 payload,
                 content_type,
-                metadata.get("tag_names", []),
+                metadata.get("tag_names", []),  # type: ignore[arg-type]
+                rich_mode,
+                metadata.get("rich_text"),  # type: ignore[arg-type]
             )
-            for raw_name in metadata.get("person_names", []):
+            for raw_name in metadata.get("person_names", []):  # type: ignore[assignment]
                 person_name = raw_name.strip()
                 if not person_name:
                     continue
@@ -530,6 +557,8 @@ def delete_tag(tag_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
     tag = db.get(Tag, tag_id)
     if tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.is_system:
+        raise HTTPException(status_code=400, detail="System tag cannot be deleted")
     db.delete(tag)
     db.commit()
     return {"status": "ok"}
@@ -544,14 +573,34 @@ async def import_gallery_photos(
 ) -> TaskRead:
     uploads = [(file.filename, await file.read(), file.content_type) for file in files]
     metadata = _parse_gallery_metadata(metadata_json, len(uploads))
-    task = create_task(db, "gallery_import", f"已排队 {len(uploads)} 张图片")
+    task = create_task(db, "gallery_import", f"已排队 {len(uploads)} 张普通图片")
     logger.info(
-        "Gallery import enqueued task_id=%s files=%d metadata_items=%d",
+        "Gallery import enqueued task_id=%s files=%d metadata_items=%d rich_mode=false",
         task.id,
         len(uploads),
         len(metadata),
     )
-    background_tasks.add_task(_process_gallery_import_task, task.id, uploads, metadata)
+    background_tasks.add_task(_process_gallery_import_task, task.id, uploads, metadata, False)
+    return TaskRead.model_validate(task)
+
+
+@app.post("/api/gallery/rich-photos/import", response_model=TaskRead)
+async def import_gallery_rich_photos(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    metadata_json: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+) -> TaskRead:
+    uploads = [(file.filename, await file.read(), file.content_type) for file in files]
+    metadata = _parse_gallery_metadata(metadata_json, len(uploads))
+    task = create_task(db, "gallery_rich_import", f"已排队 {len(uploads)} 张图文图片")
+    logger.info(
+        "Gallery rich import enqueued task_id=%s files=%d metadata_items=%d rich_mode=true",
+        task.id,
+        len(uploads),
+        len(metadata),
+    )
+    background_tasks.add_task(_process_gallery_import_task, task.id, uploads, metadata, True)
     return TaskRead.model_validate(task)
 
 
@@ -732,6 +781,32 @@ def delete_gallery_photo_tag(photo_id: int, tag_id: int, db: Session = Depends(g
     )
     if link is None:
         raise HTTPException(status_code=404, detail="Tag not found")
+    if link.tag.is_system:
+        raise HTTPException(status_code=400, detail="System tag cannot be removed")
     db.delete(link)
     db.commit()
     return get_gallery_photo(photo_id, db)
+
+
+@app.patch("/api/gallery/photos/{photo_id}/rich-text", response_model=GalleryPhotoDetail)
+def update_gallery_photo_rich_text(photo_id: int, payload: GalleryPhotoRichTextUpdate, db: Session = Depends(get_db)) -> GalleryPhotoDetail:
+    photo = db.get(GalleryPhoto, photo_id)
+    if photo is None:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    if not photo.is_rich_text:
+        raise HTTPException(status_code=400, detail="Photo is not rich-text type")
+    value = (payload.rich_text or "").strip()
+    photo.rich_text = value or None
+    photo.ocr_status = "manual" if value else "empty"
+    db.add(photo)
+    db.commit()
+    return get_gallery_photo(photo_id, db)
+
+
+@app.post("/api/gallery/photos/{photo_id}/re-recognize", response_model=GalleryPhotoDetail)
+def re_recognize_gallery_photo(photo_id: int, db: Session = Depends(get_db)) -> GalleryPhotoDetail:
+    photo = db.get(GalleryPhoto, photo_id)
+    if photo is None:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    photo = picture_service.re_recognize_gallery_photo(db, photo)
+    return _gallery_photo_to_detail(photo)

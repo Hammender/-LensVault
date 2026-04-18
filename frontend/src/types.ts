@@ -26,6 +26,7 @@ export type SamplePhoto = {
 export type Tag = {
   id: number;
   name: string;
+  is_system: boolean;
   created_at: string;
 };
 
@@ -39,6 +40,7 @@ export type GalleryPersonTag = {
 export type GalleryTag = {
   id: number;
   name: string;
+  is_system: boolean;
 };
 
 export type Face = {
@@ -59,6 +61,9 @@ export type GalleryPhotoListItem = {
   width: number | null;
   height: number | null;
   taken_at: string | null;
+  is_rich_text: boolean;
+  rich_text: string | null;
+  ocr_status: string | null;
   persons: GalleryPersonTag[];
   tags: GalleryTag[];
   thumbnail_url: string;
