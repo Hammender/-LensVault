@@ -179,3 +179,14 @@ class Task(Base):
         onupdate=datetime.utcnow,
         nullable=False,
     )
+
+
+class UploadHistory(Base):
+    __tablename__ = "upload_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    upload_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # "gallery" | "rich"
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)

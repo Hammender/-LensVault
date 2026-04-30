@@ -643,6 +643,35 @@ class PictureService:
             tags.append(link.tag)
         return sorted(tags, key=lambda item: item.name.lower())
 
+    def re_recognize_unknown_gallery_photos(self, db: Session) -> dict[str, int]:
+        photo_ids = db.scalars(
+            select(func.distinct(GalleryPhotoPersonTag.gallery_photo_id))
+            .join(Person, Person.id == GalleryPhotoPersonTag.person_id)
+            .where(Person.is_unknown.is_(True))
+            .order_by(GalleryPhotoPersonTag.gallery_photo_id.asc())
+        ).all()
+        succeeded = 0
+        failed = 0
+        for photo_id in photo_ids:
+            photo = db.get(GalleryPhoto, photo_id)
+            if photo is None:
+                failed += 1
+                continue
+            try:
+                self.re_recognize_gallery_photo(db, photo)
+                succeeded += 1
+            except Exception:
+                failed += 1
+                db.rollback()
+                logger.exception("Re-recognize unknown batch failed photo_id=%s", photo_id)
+        logger.info(
+            "Completed re_recognize_unknown_gallery_photos matched=%d succeeded=%d failed=%d",
+            len(photo_ids),
+            succeeded,
+            failed,
+        )
+        return {"total": len(photo_ids), "succeeded": succeeded, "failed": failed}
+
     def re_recognize_gallery_photo(self, db: Session, photo: GalleryPhoto) -> GalleryPhoto:
         logger.info("Start re_recognize_gallery_photo photo_id=%s", photo.id)
         payload = self.storage.get_bytes(photo.object_key)

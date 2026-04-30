@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db import Base, SessionLocal, engine, ensure_legacy_columns, get_db
-from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, SamplePhoto, Tag, Task
+from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, SamplePhoto, Tag, Task, UploadHistory
 from app.schemas import (
     FaceRead,
     GalleryPersonTagRead,
@@ -29,13 +29,16 @@ from app.schemas import (
     PersonCreate,
     PersonRead,
     PersonRenameRequest,
+    PersonStatistics,
     PersonTagCreate,
     PersonUpdate,
     SamplePhotoRead,
     TagCreate,
     TagRead,
+    TagStatistics,
     TagUpdate,
     TaskRead,
+    UploadHistoryRead,
 )
 from app.services.face import FaceService
 from app.services.importer import PictureService
@@ -318,6 +321,26 @@ def _process_gallery_import_task(
             f"复用 {total_unknown_reused} 个未知人物，重复跳过 {total_duplicated} 张"
         )
         update_task(db, task_id, status="completed", progress=1.0, message=final_message)
+        # 记录上传历史
+        try:
+            history = UploadHistory(
+                upload_type="rich" if rich_mode else "gallery",
+                total_count=total,
+                success_count=total - total_duplicated,
+                duplicate_count=total_duplicated,
+            )
+            db.add(history)
+            db.commit()
+            logger.info(
+                "Upload history recorded upload_type=%s total=%d success=%d duplicate=%d",
+                "rich" if rich_mode else "gallery",
+                total,
+                total - total_duplicated,
+                total_duplicated,
+            )
+        except Exception:
+            logger.exception("Failed to record upload history")
+            db.rollback()
         logger.info(
             "Gallery import task completed task_id=%s known=%d unknown_created=%d unknown_reused=%d duplicated=%d",
             task_id,
@@ -810,3 +833,140 @@ def re_recognize_gallery_photo(photo_id: int, db: Session = Depends(get_db)) -> 
         raise HTTPException(status_code=404, detail="Photo not found")
     photo = picture_service.re_recognize_gallery_photo(db, photo)
     return _gallery_photo_to_detail(photo)
+
+
+@app.post("/api/gallery/photos/re-recognize-unknown")
+def re_recognize_unknown_gallery_photos(db: Session = Depends(get_db)) -> dict[str, int]:
+    return picture_service.re_recognize_unknown_gallery_photos(db)
+
+
+@app.get("/api/statistics/tags", response_model=list[TagStatistics])
+def get_tag_statistics(
+    is_system: bool | None = Query(default=None, description="Filter by system tag status"),
+    db: Session = Depends(get_db),
+) -> list[TagStatistics]:
+    """Get photo count statistics for each tag."""
+    query = (
+        select(
+            Tag.id,
+            Tag.name,
+            Tag.is_system,
+            func.count(GalleryPhotoTag.gallery_photo_id).label("photo_count"),
+        )
+        .outerjoin(GalleryPhotoTag, Tag.id == GalleryPhotoTag.tag_id)
+        .group_by(Tag.id)
+    )
+    if is_system is not None:
+        query = query.where(Tag.is_system == is_system)
+    results = db.execute(query).all()
+    return [
+        TagStatistics(
+            tag_id=row.id,
+            tag_name=row.name,
+            is_system=row.is_system,
+            photo_count=row.photo_count,
+        )
+        for row in results
+    ]
+
+
+@app.get("/api/statistics/upload-history", response_model=list[UploadHistoryRead])
+def get_upload_history(
+    upload_type: str | None = Query(default=None, description="Filter by upload type: gallery or rich"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> list[UploadHistoryRead]:
+    """Get upload history records."""
+    query = select(UploadHistory).order_by(UploadHistory.created_at.desc())
+    if upload_type:
+        query = query.where(UploadHistory.upload_type == upload_type)
+    query = query.offset(offset).limit(limit)
+    results = db.scalars(query).all()
+    return [UploadHistoryRead.model_validate(r) for r in results]
+
+
+@app.get("/api/statistics/upload-summary")
+def get_upload_summary(
+    db: Session = Depends(get_db),
+) -> dict:
+    """Get summary statistics of uploads."""
+    total_uploads = db.scalar(select(func.count(UploadHistory.id)))
+    total_photos = db.scalar(select(func.sum(UploadHistory.total_count))) or 0
+    total_success = db.scalar(select(func.sum(UploadHistory.success_count))) or 0
+    total_duplicates = db.scalar(select(func.sum(UploadHistory.duplicate_count))) or 0
+    
+    by_type = {}
+    for upload_type in ["gallery", "rich"]:
+        count = db.scalar(
+            select(func.count(UploadHistory.id)).where(UploadHistory.upload_type == upload_type)
+        )
+        photos = db.scalar(
+            select(func.sum(UploadHistory.total_count)).where(UploadHistory.upload_type == upload_type)
+        ) or 0
+        by_type[upload_type] = {"count": count, "photos": photos}
+    
+    return {
+        "total_uploads": total_uploads,
+        "total_photos": total_photos,
+        "total_success": total_success,
+        "total_duplicates": total_duplicates,
+        "by_type": by_type,
+    }
+
+
+@app.get("/api/statistics/persons", response_model=list[PersonStatistics])
+def get_person_statistics(
+    is_unknown: bool | None = Query(default=None, description="Filter by unknown person status"),
+    db: Session = Depends(get_db),
+) -> list[PersonStatistics]:
+    """Get photo count statistics for each person."""
+    # Create subqueries for counts to avoid cartesian product inflation
+    photo_count_sq = (
+        select(
+            GalleryPhotoPersonTag.person_id,
+            func.count(GalleryPhotoPersonTag.gallery_photo_id).label("count")
+        )
+        .group_by(GalleryPhotoPersonTag.person_id)
+        .subquery()
+    )
+    
+    sample_count_sq = (
+        select(
+            SamplePhoto.person_id,
+            func.count(SamplePhoto.id).label("count")
+        )
+        .group_by(SamplePhoto.person_id)
+        .subquery()
+    )
+
+    query = (
+        select(
+            Person.id,
+            Person.name,
+            Person.display_name,
+            Person.is_unknown,
+            func.coalesce(photo_count_sq.c.count, 0).label("photo_count"),
+            func.coalesce(sample_count_sq.c.count, 0).label("sample_count"),
+        )
+        .outerjoin(photo_count_sq, Person.id == photo_count_sq.c.person_id)
+        .outerjoin(sample_count_sq, Person.id == sample_count_sq.c.person_id)
+    )
+    
+    if is_unknown is not None:
+        query = query.where(Person.is_unknown == is_unknown)
+    
+    query = query.order_by(Person.is_unknown.asc(), func.coalesce(photo_count_sq.c.count, 0).desc())
+    results = db.execute(query).all()
+    
+    return [
+        PersonStatistics(
+            person_id=row.id,
+            person_name=row.name,
+            display_name=row.display_name,
+            is_unknown=row.is_unknown,
+            photo_count=row.photo_count,
+            sample_count=row.sample_count,
+        )
+        for row in results
+    ]

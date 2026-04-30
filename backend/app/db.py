@@ -67,7 +67,6 @@ def ensure_legacy_columns() -> None:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE tags ADD COLUMN is_system BOOLEAN DEFAULT 0 NOT NULL"))
 
-
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:

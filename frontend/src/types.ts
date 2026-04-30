@@ -92,3 +92,39 @@ export type Task = {
   created_at: string;
   updated_at: string;
 };
+
+export type TagStatistics = {
+  tag_id: number;
+  tag_name: string;
+  is_system: boolean;
+  photo_count: number;
+};
+
+export type PersonStatistics = {
+  person_id: number;
+  person_name: string;
+  display_name: string;
+  is_unknown: boolean;
+  photo_count: number;
+  sample_count: number;
+};
+
+export type UploadHistory = {
+  id: number;
+  upload_type: string;
+  total_count: number;
+  success_count: number;
+  duplicate_count: number;
+  created_at: string;
+};
+
+export type UploadSummary = {
+  total_uploads: number;
+  total_photos: number;
+  total_success: number;
+  total_duplicates: number;
+  by_type: {
+    gallery: { count: number; photos: number };
+    rich: { count: number; photos: number };
+  };
+};

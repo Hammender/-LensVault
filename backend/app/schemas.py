@@ -168,3 +168,30 @@ class GalleryPhotoRichTextUpdate(BaseModel):
 
 class GalleryPhotoBatchDeleteRequest(BaseModel):
     photo_ids: list[int] = Field(min_length=1)
+
+
+class TagStatistics(BaseModel):
+    tag_id: int
+    tag_name: str
+    is_system: bool
+    photo_count: int
+
+
+class UploadHistoryRead(BaseModel):
+    id: int
+    upload_type: str
+    total_count: int
+    success_count: int
+    duplicate_count: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PersonStatistics(BaseModel):
+    person_id: int
+    person_name: str
+    display_name: str
+    is_unknown: bool
+    photo_count: int
+    sample_count: int

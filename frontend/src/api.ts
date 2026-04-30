@@ -4,7 +4,11 @@ import type {
   Person,
   SamplePhoto,
   Tag,
-  Task
+  Task,
+  TagStatistics,
+  PersonStatistics,
+  UploadHistory,
+  UploadSummary
 } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
@@ -246,4 +250,46 @@ export async function reRecognizeGalleryPhoto(photoId: number): Promise<GalleryP
       method: "POST"
     })
   );
+}
+
+export async function reRecognizeUnknownGalleryPhotos(): Promise<{ total: number; succeeded: number; failed: number }> {
+  return parse<{ total: number; succeeded: number; failed: number }>(
+    await fetch("/api/gallery/photos/re-recognize-unknown", {
+      method: "POST"
+    })
+  );
+}
+
+export async function getTagStatistics(isSystem?: boolean): Promise<TagStatistics[]> {
+  const url = new URL("/api/statistics/tags", window.location.origin);
+  if (typeof isSystem === "boolean") {
+    url.searchParams.set("is_system", String(isSystem));
+  }
+  return parse<TagStatistics[]>(await fetch(url.pathname + url.search));
+}
+
+export async function getUploadHistory(
+  uploadType?: string,
+  limit: number = 50,
+  offset: number = 0
+): Promise<UploadHistory[]> {
+  const url = new URL("/api/statistics/upload-history", window.location.origin);
+  if (uploadType) {
+    url.searchParams.set("upload_type", uploadType);
+  }
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("offset", String(offset));
+  return parse<UploadHistory[]>(await fetch(url.pathname + url.search));
+}
+
+export async function getPersonStatistics(isUnknown?: boolean): Promise<PersonStatistics[]> {
+  const url = new URL("/api/statistics/persons", window.location.origin);
+  if (typeof isUnknown === "boolean") {
+    url.searchParams.set("is_unknown", String(isUnknown));
+  }
+  return parse<PersonStatistics[]>(await fetch(url.pathname + url.search));
+}
+
+export async function getUploadSummary(): Promise<UploadSummary> {
+  return parse<UploadSummary>(await fetch("/api/statistics/upload-summary"));
 }
