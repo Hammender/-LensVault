@@ -4,9 +4,11 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
+import json
 import logging
 from pathlib import Path
 from uuid import uuid4
+from zipfile import ZipFile
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -802,3 +804,159 @@ class PictureService:
             summary.unknown_reused,
         )
         return photo
+
+    def import_persons_from_zip(self, db: Session, zip_bytes: bytes, progress_callback=None) -> dict:
+        logger.info("Start person import from zip bytes=%d", len(zip_bytes))
+        result = {"created_persons": 0, "existing_persons": 0, "added_samples": 0, "skipped_samples": 0, "tags_added": 0}
+
+        with ZipFile(BytesIO(zip_bytes)) as zf:
+            manifest = json.loads(zf.read("metadata.json"))
+            total_persons = len(manifest.get("persons", []))
+            total_samples = sum(len(p.get("samples", [])) for p in manifest.get("persons", []))
+
+            processed_samples = 0
+            for person_index, person_data in enumerate(manifest["persons"]):
+                person_name = person_data["name"].strip()
+                existing = db.scalar(select(Person).where(Person.name == person_name))
+
+                if existing is None:
+                    person = Person(
+                        name=person_name,
+                        display_name=person_data.get("display_name", person_name),
+                        note=person_data.get("note"),
+                        is_unknown=False,
+                    )
+                    db.add(person)
+                    db.flush()
+                    result["created_persons"] += 1
+                    logger.info("Created person from import name=%s person_id=%s", person_name, person.id)
+                else:
+                    person = existing
+                    result["existing_persons"] += 1
+                    logger.info("Matched existing person name=%s person_id=%s", person_name, person.id)
+
+                for tag_name in person_data.get("tags", []):
+                    tag = self._find_or_create_tag(db, tag_name.strip())
+                    existing_link = db.scalar(
+                        select(PersonTag).where(PersonTag.person_id == person.id, PersonTag.tag_id == tag.id)
+                    )
+                    if existing_link is None:
+                        db.add(PersonTag(person_id=person.id, tag_id=tag.id))
+                        result["tags_added"] += 1
+                db.flush()
+
+                samples_dir = f"samples/{person_name}"
+                for sample_data in person_data.get("samples", []):
+                    sha256 = sample_data["sha256"]
+                    duplicate = db.scalar(select(SamplePhoto).where(SamplePhoto.sha256 == sha256))
+                    if duplicate is not None:
+                        result["skipped_samples"] += 1
+                        processed_samples += 1
+                        if progress_callback:
+                            progress_callback(processed_samples, total_samples)
+                        continue
+
+                    filename = sample_data["filename"]
+                    content_type = sample_data.get("content_type")
+                    zip_path = f"{samples_dir}/{filename}"
+
+                    try:
+                        payload = zf.read(zip_path)
+                    except KeyError:
+                        logger.warning("Sample file not found in zip path=%s", zip_path)
+                        result["skipped_samples"] += 1
+                        processed_samples += 1
+                        if progress_callback:
+                            progress_callback(processed_samples, total_samples)
+                        continue
+
+                    width = sample_data.get("width")
+                    height = sample_data.get("height")
+                    taken_at = None
+                    if sample_data.get("taken_at"):
+                        try:
+                            taken_at = datetime.fromisoformat(sample_data["taken_at"])
+                        except (ValueError, TypeError):
+                            pass
+
+                    object_key = self._build_object_key("samples", filename)
+                    self.storage.put_bytes(object_key, payload, content_type)
+                    sample_photo = SamplePhoto(
+                        person_id=person.id,
+                        filename=filename,
+                        content_type=content_type,
+                        sha256=sha256,
+                        object_key=object_key,
+                        width=width,
+                        height=height,
+                        taken_at=taken_at,
+                        status="processing",
+                    )
+                    db.add(sample_photo)
+                    db.flush()
+
+                    try:
+                        detected_faces = self.face_service.detect_faces(payload)
+                    except Exception as exc:
+                        logger.exception("Sample face detection failed person_id=%s filename=%s", person.id, filename)
+                        sample_photo.status = "error"
+                        sample_photo.error_message = str(exc)
+                        result["added_samples"] += 1
+                        processed_samples += 1
+                        if progress_callback:
+                            progress_callback(processed_samples, total_samples)
+                        continue
+
+                    if len(detected_faces) == 0:
+                        sample_photo.status = "no_face"
+                        sample_photo.error_message = "未检测到人脸"
+                        result["added_samples"] += 1
+                        processed_samples += 1
+                        if progress_callback:
+                            progress_callback(processed_samples, total_samples)
+                        continue
+
+                    if len(detected_faces) != 1:
+                        sample_photo.status = "multi_face"
+                        sample_photo.error_message = f"检测到 {len(detected_faces)} 张人脸，仅支持单人样本"
+                        result["added_samples"] += 1
+                        processed_samples += 1
+                        if progress_callback:
+                            progress_callback(processed_samples, total_samples)
+                        continue
+
+                    detected = detected_faces[0]
+                    face = FaceRecord(
+                        sample_photo_id=sample_photo.id,
+                        bbox_left=detected.bbox[0],
+                        bbox_top=detected.bbox[1],
+                        bbox_right=detected.bbox[2],
+                        bbox_bottom=detected.bbox[3],
+                        detection_score=detected.score,
+                        matched_person_id=person.id,
+                        match_score=1.0,
+                        needs_review=False,
+                        vector_collection="known",
+                    )
+                    db.add(face)
+                    db.flush()
+                    self.vector_store.upsert_face(
+                        self.settings.milvus_known_collection, face.id, person.id, detected.embedding
+                    )
+                    sample_photo.status = "ready"
+                    result["added_samples"] += 1
+                    processed_samples += 1
+                    if progress_callback:
+                        progress_callback(processed_samples, total_samples)
+
+                db.commit()
+
+        logger.info(
+            "Completed person import created=%d existing=%d added=%d skipped=%d tags=%d",
+            result["created_persons"],
+            result["existing_persons"],
+            result["added_samples"],
+            result["skipped_samples"],
+            result["tags_added"],
+        )
+        return result

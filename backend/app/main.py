@@ -13,7 +13,18 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db import Base, SessionLocal, engine, ensure_legacy_columns, get_db
-from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, SamplePhoto, Tag, Task, UploadHistory
+from app.models import (
+    FaceRecord,
+    GalleryPhoto,
+    GalleryPhotoPersonTag,
+    GalleryPhotoTag,
+    Person,
+    PersonTag,
+    SamplePhoto,
+    Tag,
+    Task,
+    UploadHistory,
+)
 from app.schemas import (
     FaceRead,
     GalleryPersonTagRead,
@@ -93,6 +104,7 @@ def on_startup() -> None:
         picture_service.ensure_system_tags(db)
         recovered = fail_incomplete_tasks(db, "gallery_import")
         recovered += fail_incomplete_tasks(db, "gallery_rich_import")
+        recovered += fail_incomplete_tasks(db, "person_import")
         if recovered > 0:
             logger.warning("Recovered interrupted gallery tasks count=%d", recovered)
     finally:
@@ -368,6 +380,52 @@ def _process_gallery_import_task(
         logger.debug("Gallery import task db session closed task_id=%s", task_id)
 
 
+def _process_person_import_task(task_id: str, zip_bytes: bytes) -> None:
+    logger.info("Person import task started task_id=%s bytes=%d", task_id, len(zip_bytes))
+    db = SessionLocal()
+    try:
+        update_task(db, task_id, status="running", progress=0.05, message="正在解析导入数据")
+
+        def progress_callback(processed: int, total: int) -> None:
+            progress = 0.05 + 0.9 * (processed / max(total, 1))
+            update_task(
+                db,
+                task_id,
+                status="running",
+                progress=min(progress, 1.0),
+                message=f"正在处理 {processed}/{total} 个样本",
+            )
+
+        result = picture_service.import_persons_from_zip(db, zip_bytes, progress_callback)
+
+        message = (
+            f"导入完成：创建 {result['created_persons']} 个人物，"
+            f"匹配 {result['existing_persons']} 个已有，"
+            f"新增 {result['added_samples']} 个样本，"
+            f"跳过 {result['skipped_samples']} 个重复，"
+            f"绑定 {result['tags_added']} 个标签"
+        )
+        update_task(db, task_id, status="completed", progress=1.0, message=message)
+        logger.info("Person import task completed task_id=%s %s", task_id, message)
+    except Exception as exc:
+        logger.exception("Person import task failed task_id=%s", task_id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Failed to rollback task session task_id=%s", task_id)
+        try:
+            failed_db = SessionLocal()
+            try:
+                update_task(failed_db, task_id, status="failed", message=str(exc))
+            finally:
+                failed_db.close()
+        except Exception:
+            logger.exception("Failed to persist task failed status task_id=%s", task_id)
+    finally:
+        db.close()
+        logger.debug("Person import task db session closed task_id=%s", task_id)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -401,6 +459,82 @@ def batch_delete_persons(payload: PersonBatchDeleteRequest, db: Session = Depend
         return {"deleted": 0}
     deleted = picture_service.delete_persons(db, persons)
     return {"deleted": deleted}
+
+
+@app.get("/api/persons/export")
+def export_persons(db: Session = Depends(get_db)) -> StreamingResponse:
+    from datetime import datetime as dt
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    persons = db.scalars(
+        select(Person).where(Person.is_unknown == False).order_by(Person.display_name)
+    ).all()
+
+    export_persons: list[dict] = []
+    buf = BytesIO()
+
+    with ZipFile(buf, "w", ZIP_DEFLATED) as zf:
+        for person in persons:
+            samples = db.scalars(
+                select(SamplePhoto).where(SamplePhoto.person_id == person.id).order_by(SamplePhoto.filename)
+            ).all()
+            tag_links = db.scalars(select(PersonTag).where(PersonTag.person_id == person.id)).all()
+            tag_names: list[str] = []
+            for tag_link in tag_links:
+                tag_link.tag
+                tag_names.append(tag_link.tag.name)
+
+            export_samples: list[dict] = []
+            for sample in samples:
+                image_bytes = storage.get_bytes(sample.object_key)
+                zip_path = f"samples/{person.name}/{sample.filename}"
+                zf.writestr(zip_path, image_bytes)
+                export_samples.append({
+                    "filename": sample.filename,
+                    "sha256": sample.sha256,
+                    "content_type": sample.content_type,
+                    "object_key": sample.object_key,
+                    "width": sample.width,
+                    "height": sample.height,
+                    "taken_at": sample.taken_at.isoformat() if sample.taken_at else None,
+                })
+
+            export_persons.append({
+                "name": person.name,
+                "display_name": person.display_name,
+                "note": person.note,
+                "is_unknown": person.is_unknown,
+                "tags": sorted(set(tag_names)),
+                "samples": export_samples,
+            })
+
+        manifest = {
+            "version": 1,
+            "exported_at": dt.utcnow().isoformat(),
+            "persons": export_persons,
+        }
+        zf.writestr("metadata.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+
+    buf.seek(0)
+    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="person_samples_{timestamp}.zip"'},
+    )
+
+
+@app.post("/api/persons/import", response_model=TaskRead)
+async def import_persons(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> TaskRead:
+    zip_bytes = await file.read()
+    task = create_task(db, "person_import", "已排队样本库导入")
+    logger.info("Person import enqueued task_id=%s bytes=%d", task.id, len(zip_bytes))
+    background_tasks.add_task(_process_person_import_task, task.id, zip_bytes)
+    return TaskRead.model_validate(task)
 
 
 @app.get("/api/persons/{person_id}", response_model=PersonRead)
@@ -639,6 +773,8 @@ def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskRead:
 def list_gallery_photos(
     person_ids: list[int] = Query(default=[]),
     tag_ids: list[int] = Query(default=[]),
+    exclude_person_ids: list[int] = Query(default=[]),
+    exclude_tag_ids: list[int] = Query(default=[]),
     offset: int = 0,
     limit: int = 24,
     db: Session = Depends(get_db),
@@ -665,6 +801,26 @@ def list_gallery_photos(
         )
         query = query.where(GalleryPhoto.id.in_(select(matched_tags.c.gallery_photo_id)))
         count_query = count_query.where(GalleryPhoto.id.in_(select(matched_tags.c.gallery_photo_id)))
+
+    if exclude_person_ids:
+        excluded_persons = (
+            select(GalleryPhotoPersonTag.gallery_photo_id)
+            .where(GalleryPhotoPersonTag.person_id.in_(exclude_person_ids))
+            .group_by(GalleryPhotoPersonTag.gallery_photo_id)
+            .subquery()
+        )
+        query = query.where(GalleryPhoto.id.notin_(select(excluded_persons.c.gallery_photo_id)))
+        count_query = count_query.where(GalleryPhoto.id.notin_(select(excluded_persons.c.gallery_photo_id)))
+
+    if exclude_tag_ids:
+        excluded_tags = (
+            select(GalleryPhotoTag.gallery_photo_id)
+            .where(GalleryPhotoTag.tag_id.in_(exclude_tag_ids))
+            .group_by(GalleryPhotoTag.gallery_photo_id)
+            .subquery()
+        )
+        query = query.where(GalleryPhoto.id.notin_(select(excluded_tags.c.gallery_photo_id)))
+        count_query = count_query.where(GalleryPhoto.id.notin_(select(excluded_tags.c.gallery_photo_id)))
 
     photos = db.scalars(query.offset(offset).limit(limit)).unique().all()
     for photo in photos:
@@ -773,7 +929,39 @@ def delete_gallery_photo_person(photo_id: int, person_id: int, db: Session = Dep
     )
     if link is None:
         raise HTTPException(status_code=404, detail="Person tag not found")
+    
+    person_tags = db.scalars(select(PersonTag).where(PersonTag.person_id == person_id)).all()
+    tag_ids = [pt.tag_id for pt in person_tags]
+    
     db.delete(link)
+    
+    for tag_id in tag_ids:
+        gallery_tag = db.scalar(
+            select(GalleryPhotoTag).where(
+                GalleryPhotoTag.gallery_photo_id == photo_id,
+                GalleryPhotoTag.tag_id == tag_id,
+            )
+        )
+        if gallery_tag is None or gallery_tag.source != "person":
+            continue
+        
+        still_required = db.scalar(
+            select(func.count(PersonTag.id))
+            .join(Person, Person.id == PersonTag.person_id)
+            .join(
+                GalleryPhotoPersonTag,
+                GalleryPhotoPersonTag.person_id == PersonTag.person_id,
+            )
+            .where(
+                PersonTag.tag_id == tag_id,
+                GalleryPhotoPersonTag.gallery_photo_id == photo_id,
+                PersonTag.person_id != person_id,
+            )
+        ) or 0
+        
+        if still_required == 0:
+            db.delete(gallery_tag)
+    
     db.commit()
     return get_gallery_photo(photo_id, db)
 

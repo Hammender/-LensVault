@@ -195,3 +195,36 @@ class PersonStatistics(BaseModel):
     is_unknown: bool
     photo_count: int
     sample_count: int
+
+
+class ExportSamplePhoto(BaseModel):
+    filename: str
+    sha256: str
+    content_type: str | None = None
+    object_key: str
+    width: int | None = None
+    height: int | None = None
+    taken_at: datetime | None = None
+
+
+class ExportPerson(BaseModel):
+    name: str
+    display_name: str
+    note: str | None = None
+    is_unknown: bool
+    tags: list[str]
+    samples: list[ExportSamplePhoto]
+
+
+class ExportManifest(BaseModel):
+    version: int
+    exported_at: datetime
+    persons: list[ExportPerson]
+
+
+class ImportResult(BaseModel):
+    created_persons: int = 0
+    existing_persons: int = 0
+    added_samples: int = 0
+    skipped_samples: int = 0
+    tags_added: int = 0

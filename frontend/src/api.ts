@@ -130,12 +130,16 @@ export async function createTag(name: string): Promise<Tag> {
 export async function listGalleryPhotos(
   personIds: number[],
   tagIds: number[],
+  excludePersonIds: number[],
+  excludeTagIds: number[],
   offset: number,
   limit: number
 ): Promise<PaginatedGalleryPhotos> {
   const url = new URL("/api/gallery/photos", window.location.origin);
   personIds.forEach((id) => url.searchParams.append("person_ids", String(id)));
   tagIds.forEach((id) => url.searchParams.append("tag_ids", String(id)));
+  excludePersonIds.forEach((id) => url.searchParams.append("exclude_person_ids", String(id)));
+  excludeTagIds.forEach((id) => url.searchParams.append("exclude_tag_ids", String(id)));
   url.searchParams.set("offset", String(offset));
   url.searchParams.set("limit", String(limit));
   return parse<PaginatedGalleryPhotos>(await fetch(url.pathname + url.search));
@@ -292,4 +296,19 @@ export async function getPersonStatistics(isUnknown?: boolean): Promise<PersonSt
 
 export async function getUploadSummary(): Promise<UploadSummary> {
   return parse<UploadSummary>(await fetch("/api/statistics/upload-summary"));
+}
+
+export function getPersonExportUrl(): string {
+  return "/api/persons/export";
+}
+
+export async function importPersonSamples(file: File): Promise<Task> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return parse<Task>(
+    await fetch("/api/persons/import", {
+      method: "POST",
+      body: formData
+    })
+  );
 }

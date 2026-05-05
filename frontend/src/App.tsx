@@ -16,9 +16,11 @@ import {
   deletePerson,
   deletePersonSample,
   getGalleryPhoto,
+  getPersonExportUrl,
   getTask,
   importGalleryPhotos,
   importGalleryRichPhotos,
+  importPersonSamples,
   listGalleryPhotos,
   listPersonSamples,
   listPersons,
@@ -100,9 +102,13 @@ export default function App() {
   const [lightboxPhotoId, setLightboxPhotoId] = useState<number | null>(null);
   const [selectedPersonIds, setSelectedPersonIds] = useState<number[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
+  const [excludePersonIds, setExcludePersonIds] = useState<number[]>([]);
+  const [excludeTagIds, setExcludeTagIds] = useState<number[]>([]);
   const [personSearch, setPersonSearch] = useState("");
   const [tagSearch, setTagSearch] = useState("");
   const [showUnknownPersons, setShowUnknownPersons] = useState(false);
+  const [showExcludePersons, setShowExcludePersons] = useState(false);
+  const [showExcludeTags, setShowExcludeTags] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<GalleryPhotoDetail | null>(null);
   const [manualPersonId, setManualPersonId] = useState("");
   const [manualTagId, setManualTagId] = useState("");
@@ -126,6 +132,8 @@ export default function App() {
   const [batchApplyPersonNames, setBatchApplyPersonNames] = useState("");
   const [batchApplyTagNames, setBatchApplyTagNames] = useState("");
   const [uploadMode, setUploadMode] = useState<UploadMode>("normal");
+  const [importTask, setImportTask] = useState<Task | null>(null);
+  const importFileRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
@@ -176,6 +184,36 @@ export default function App() {
     return sortByPinyinName(tags.filter((tag) => tag.name.toLowerCase().includes(keyword)));
   }, [tagSearch, tags]);
 
+  const excludedFilterPersons = useMemo(
+    () => persons.filter((person) => excludePersonIds.includes(person.id)),
+    [persons, excludePersonIds]
+  );
+
+  const excludedFilterTags = useMemo(
+    () => tags.filter((tag) => excludeTagIds.includes(tag.id)),
+    [tags, excludeTagIds]
+  );
+
+  const availableExcludePersons = useMemo(
+    () => persons.filter((person) => !selectedPersonIds.includes(person.id) && !excludePersonIds.includes(person.id)),
+    [persons, selectedPersonIds, excludePersonIds]
+  );
+
+  const availableExcludeKnownPersons = useMemo(
+    () => availableExcludePersons.filter((person) => !person.is_unknown),
+    [availableExcludePersons]
+  );
+
+  const availableExcludeUnknownPersons = useMemo(
+    () => availableExcludePersons.filter((person) => person.is_unknown),
+    [availableExcludePersons]
+  );
+
+  const availableExcludeTags = useMemo(
+    () => sortByPinyinName(tags.filter((tag) => !selectedTagIds.includes(tag.id) && !excludeTagIds.includes(tag.id))),
+    [tags, selectedTagIds, excludeTagIds]
+  );
+
   const filteredPeopleInLibrary = useMemo(() => {
     const keyword = peopleSearch.trim().toLowerCase();
     if (!keyword) {
@@ -207,8 +245,16 @@ export default function App() {
     setTags(sortByPinyinName(await listTags()));
   }
 
-  async function refreshGallery(nextOffset = galleryOffset, personIds = selectedPersonIds, tagIds = selectedTagIds) {
-    const response = await listGalleryPhotos(personIds, tagIds, nextOffset, galleryPageSize);
+  async function refreshGallery(
+    nextOffset = galleryOffset,
+    personIds = selectedPersonIds,
+    tagIds = selectedTagIds,
+    nextExcludePersonIds?: number[],
+    nextExcludeTagIds?: number[],
+  ) {
+    const epIds = nextExcludePersonIds ?? excludePersonIds;
+    const etIds = nextExcludeTagIds ?? excludeTagIds;
+    const response = await listGalleryPhotos(personIds, tagIds, epIds, etIds, nextOffset, galleryPageSize);
     setGalleryPhotos(response.items);
     setGalleryTotal(response.total);
     setGalleryOffset(response.offset);
@@ -235,7 +281,12 @@ export default function App() {
     const active = selectedPersonIds.includes(personId);
     const next = active ? selectedPersonIds.filter((id) => id !== personId) : [...selectedPersonIds, personId];
     setSelectedPersonIds(next);
-    void refreshGallery(0, next, selectedTagIds);
+    let nextExclude = excludePersonIds;
+    if (!active && excludePersonIds.includes(personId)) {
+      nextExclude = excludePersonIds.filter((id) => id !== personId);
+      setExcludePersonIds(nextExclude);
+    }
+    void refreshGallery(0, next, selectedTagIds, nextExclude, excludeTagIds);
   }
 
   function handleToggleUnknownPersonFilters() {
@@ -249,7 +300,46 @@ export default function App() {
       : Array.from(new Set([...selectedPersonIds, ...targetIds]));
     setSelectedPersonIds(next);
     setShowUnknownPersons(true);
-    void refreshGallery(0, next, selectedTagIds);
+    let nextExclude = excludePersonIds;
+    if (!allFilteredUnknownSelected) {
+      nextExclude = excludePersonIds.filter((id) => !targetIdSet.has(id));
+      setExcludePersonIds(nextExclude);
+    }
+    void refreshGallery(0, next, selectedTagIds, nextExclude, excludeTagIds);
+  }
+
+  function handleToggleExcludePerson(personId: number) {
+    const active = excludePersonIds.includes(personId);
+    let nextExclude: number[];
+    let nextInclude = selectedPersonIds;
+    if (active) {
+      nextExclude = excludePersonIds.filter((id) => id !== personId);
+    } else {
+      nextExclude = [...excludePersonIds, personId];
+      if (selectedPersonIds.includes(personId)) {
+        nextInclude = selectedPersonIds.filter((id) => id !== personId);
+        setSelectedPersonIds(nextInclude);
+      }
+    }
+    setExcludePersonIds(nextExclude);
+    void refreshGallery(0, nextInclude, selectedTagIds, nextExclude, excludeTagIds);
+  }
+
+  function handleToggleExcludeTag(tagId: number) {
+    const active = excludeTagIds.includes(tagId);
+    let nextExclude: number[];
+    let nextInclude = selectedTagIds;
+    if (active) {
+      nextExclude = excludeTagIds.filter((id) => id !== tagId);
+    } else {
+      nextExclude = [...excludeTagIds, tagId];
+      if (selectedTagIds.includes(tagId)) {
+        nextInclude = selectedTagIds.filter((id) => id !== tagId);
+        setSelectedTagIds(nextInclude);
+      }
+    }
+    setExcludeTagIds(nextExclude);
+    void refreshGallery(0, selectedPersonIds, nextInclude, excludePersonIds, nextExclude);
   }
 
   useEffect(() => {
@@ -298,6 +388,29 @@ export default function App() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [selectedPersonIds, selectedTagIds, task]);
+
+  useEffect(() => {
+    if (!importTask || importTask.status === "completed" || importTask.status === "failed") {
+      return undefined;
+    }
+    const timer = window.setInterval(async () => {
+      try {
+        const nextTask = await getTask(importTask.id);
+        setImportTask(nextTask);
+        if (nextTask.status === "completed") {
+          await refreshPeople();
+          setBusy(false);
+        }
+        if (nextTask.status === "failed") {
+          setBusy(false);
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "导入轮询失败。");
+        setBusy(false);
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [importTask]);
 
   async function openGalleryPhoto(photoId: number) {
     setError(null);
@@ -511,6 +624,33 @@ export default function App() {
       setError(cause instanceof Error ? cause.message : "批量重新识别未知人物失败。");
     } finally {
       setBusy(false);
+    }
+  }
+
+  function handleExportPersons() {
+    window.open(getPersonExportUrl(), "_blank");
+  }
+
+  function handlePickImportFile() {
+    importFileRef.current?.click();
+  }
+
+  async function handleImportFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const task = await importPersonSamples(file);
+      setImportTask(task);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "导入失败。");
+      setBusy(false);
+    }
+    if (event.target) {
+      event.target.value = "";
     }
   }
 
@@ -873,7 +1013,7 @@ export default function App() {
       const newOffset = Math.max(0, galleryOffset - galleryPageSize);
       setBusy(true);
       try {
-        const response = await listGalleryPhotos(selectedPersonIds, selectedTagIds, newOffset, galleryPageSize);
+        const response = await listGalleryPhotos(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, newOffset, galleryPageSize);
         setGalleryPhotos(response.items);
         setGalleryTotal(response.total);
         setGalleryOffset(response.offset);
@@ -896,7 +1036,7 @@ export default function App() {
       const newOffset = galleryOffset + galleryPageSize;
       setBusy(true);
       try {
-        const response = await listGalleryPhotos(selectedPersonIds, selectedTagIds, newOffset, galleryPageSize);
+        const response = await listGalleryPhotos(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, newOffset, galleryPageSize);
         setGalleryPhotos(response.items);
         setGalleryTotal(response.total);
         setGalleryOffset(response.offset);
@@ -1077,6 +1217,7 @@ export default function App() {
               <div className="chip-cloud compact scroll-cloud tag-filter-cloud">
                 {filteredTags.map((tag) => {
                   const active = selectedTagIds.includes(tag.id);
+                  const inExclude = excludeTagIds.includes(tag.id);
                   return (
                     <button
                       key={tag.id}
@@ -1084,7 +1225,12 @@ export default function App() {
                       onClick={() => {
                         const next = active ? selectedTagIds.filter((id) => id !== tag.id) : [...selectedTagIds, tag.id];
                         setSelectedTagIds(next);
-                        void refreshGallery(0, selectedPersonIds, next);
+                        let nextExclude = excludeTagIds;
+                        if (!active && excludeTagIds.includes(tag.id)) {
+                          nextExclude = excludeTagIds.filter((id) => id !== tag.id);
+                          setExcludeTagIds(nextExclude);
+                        }
+                        void refreshGallery(0, selectedPersonIds, next, excludePersonIds, nextExclude);
                       }}
                     >
                       #{tag.name}
@@ -1092,6 +1238,132 @@ export default function App() {
                   );
                 })}
                 {filteredTags.length === 0 && <span className="filter-empty">没有匹配的普通标签</span>}
+              </div>
+            </div>
+
+            <div className="filter-group">
+              <label>排除筛选 · 不含所选条件的图片</label>
+
+              <div className="filter-section">
+                <div className="filter-section-toolbar">
+                  <button
+                    className="filter-section-toggle"
+                    onClick={() => setShowExcludePersons((current) => !current)}
+                    type="button"
+                  >
+                    <span>排除的人物</span>
+                    <small>{excludedFilterPersons.length > 0 ? `${excludedFilterPersons.length} 个已选` : `${availableExcludePersons.length} 个可选`}</small>
+                    <b>{showExcludePersons ? "收起" : "展开"}</b>
+                  </button>
+                </div>
+                {showExcludePersons && (
+                  <>
+                    {excludedFilterPersons.length > 0 && (
+                      <div className="filter-section selected-filter-section">
+                        <div className="filter-section-head">
+                          <strong>已选排除</strong>
+                          <span>{excludedFilterPersons.length} 个</span>
+                        </div>
+                        <div className="chip-cloud compact scroll-cloud selected-cloud">
+                          {excludedFilterPersons.map((person) => (
+                            <button
+                              key={person.id}
+                              className={person.is_unknown ? "soft-chip active unknown-chip" : "soft-chip active"}
+                              onClick={() => handleToggleExcludePerson(person.id)}
+                            >
+                              {person.display_name} ✕
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="filter-section">
+                      <div className="filter-section-head">
+                        <strong>正式人物</strong>
+                        <span>{availableExcludeKnownPersons.length} 个</span>
+                      </div>
+                      <div className="chip-cloud compact scroll-cloud known-person-cloud">
+                        {availableExcludeKnownPersons.map((person) => (
+                          <button
+                            key={person.id}
+                            className="soft-chip"
+                            onClick={() => handleToggleExcludePerson(person.id)}
+                          >
+                            {person.display_name}
+                          </button>
+                        ))}
+                        {availableExcludeKnownPersons.length === 0 && <span className="filter-empty">没有可选人物</span>}
+                      </div>
+                    </div>
+                    <div className="filter-section">
+                      <div className="filter-section-head">
+                        <strong>未知人物</strong>
+                        <span>{availableExcludeUnknownPersons.length} 个</span>
+                      </div>
+                      <div className="chip-cloud compact scroll-cloud unknown-person-cloud">
+                        {availableExcludeUnknownPersons.map((person) => (
+                          <button
+                            key={person.id}
+                            className="soft-chip"
+                            onClick={() => handleToggleExcludePerson(person.id)}
+                          >
+                            {person.display_name}
+                          </button>
+                        ))}
+                        {availableExcludeUnknownPersons.length === 0 && <span className="filter-empty">没有可选人物</span>}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="filter-section">
+                <div className="filter-section-toolbar">
+                  <button
+                    className="filter-section-toggle"
+                    onClick={() => setShowExcludeTags((current) => !current)}
+                    type="button"
+                  >
+                    <span>排除的标签</span>
+                    <small>{excludedFilterTags.length > 0 ? `${excludedFilterTags.length} 个已选` : `${availableExcludeTags.length} 个可选`}</small>
+                    <b>{showExcludeTags ? "收起" : "展开"}</b>
+                  </button>
+                </div>
+                {showExcludeTags && (
+                  <>
+                    {excludedFilterTags.length > 0 && (
+                      <div className="filter-section selected-filter-section">
+                        <div className="filter-section-head">
+                          <strong>已选排除</strong>
+                          <span>{excludedFilterTags.length} 个</span>
+                        </div>
+                        <div className="chip-cloud compact scroll-cloud selected-cloud">
+                          {excludedFilterTags.map((tag) => (
+                            <button
+                              key={tag.id}
+                              className="soft-chip active"
+                              onClick={() => handleToggleExcludeTag(tag.id)}
+                            >
+                              #{tag.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="chip-cloud compact scroll-cloud tag-filter-cloud">
+                      {availableExcludeTags.map((tag) => (
+                        <button
+                          key={tag.id}
+                          className="soft-chip"
+                          onClick={() => handleToggleExcludeTag(tag.id)}
+                        >
+                          #{tag.name}
+                        </button>
+                      ))}
+                      {availableExcludeTags.length === 0 && <span className="filter-empty">没有可选标签</span>}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </section>
@@ -1391,6 +1663,35 @@ export default function App() {
                 <button disabled={busy || unknownPersonCount === 0} onClick={() => void handleReRecognizeAllUnknownPhotos()}>
                   一键重新识别所有未知人物
                 </button>
+                <button disabled={busy} onClick={handleExportPersons}>
+                  导出样本库
+                </button>
+                <button disabled={busy} onClick={handlePickImportFile}>
+                  导入样本库
+                </button>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".zip"
+                  style={{ display: "none" }}
+                  onChange={(event) => void handleImportFileChange(event)}
+                />
+                {importTask && importTask.status !== "completed" && importTask.status !== "failed" && (
+                  <div className="task-bar">
+                    <progress value={importTask.progress} max={1}></progress>
+                    <span>{importTask.message}</span>
+                  </div>
+                )}
+                {importTask && importTask.status === "completed" && (
+                  <div className="task-bar success">
+                    <span>{importTask.message}</span>
+                  </div>
+                )}
+                {importTask && importTask.status === "failed" && (
+                  <div className="task-bar error">
+                    <span>导入失败：{importTask.message}</span>
+                  </div>
+                )}
               </div>
             </div>
 
