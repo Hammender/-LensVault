@@ -210,6 +210,16 @@ export type GalleryUploadMetadata = {
   rich_text?: string;
 };
 
+export type GalleryExportScope = "all" | "filtered";
+
+export type GalleryExportOptions = {
+  scope: GalleryExportScope;
+  personIds?: number[];
+  tagIds?: number[];
+  excludePersonIds?: number[];
+  excludeTagIds?: number[];
+};
+
 export async function importGalleryPhotos(files: File[], metadata: GalleryUploadMetadata[]): Promise<Task> {
   const form = new FormData();
   files.forEach((file) => form.append("files", file));
@@ -230,6 +240,27 @@ export async function importGalleryRichPhotos(files: File[], metadata: GalleryUp
     await fetch("/api/gallery/rich-photos/import", {
       method: "POST",
       body: form
+    })
+  );
+}
+
+export function getGalleryExportUrl(options: GalleryExportOptions): string {
+  const url = new URL("/api/gallery/photos/export", window.location.origin);
+  url.searchParams.set("scope", options.scope);
+  options.personIds?.forEach((id) => url.searchParams.append("person_ids", String(id)));
+  options.tagIds?.forEach((id) => url.searchParams.append("tag_ids", String(id)));
+  options.excludePersonIds?.forEach((id) => url.searchParams.append("exclude_person_ids", String(id)));
+  options.excludeTagIds?.forEach((id) => url.searchParams.append("exclude_tag_ids", String(id)));
+  return url.pathname + url.search;
+}
+
+export async function importGalleryExportZip(file: File): Promise<Task> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return parse<Task>(
+    await fetch("/api/gallery/photos/import-zip", {
+      method: "POST",
+      body: formData
     })
   );
 }

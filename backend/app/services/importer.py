@@ -960,3 +960,148 @@ class PictureService:
             result["tags_added"],
         )
         return result
+
+    def import_gallery_from_zip(self, db: Session, zip_bytes: bytes, progress_callback=None) -> dict:
+        logger.info("Start gallery import from zip bytes=%d", len(zip_bytes))
+        result = {
+            "added_photos": 0,
+            "updated_existing": 0,
+            "skipped_photos": 0,
+            "tags_added": 0,
+            "persons_added": 0,
+        }
+
+        with ZipFile(BytesIO(zip_bytes)) as zf:
+            try:
+                manifest = json.loads(zf.read("metadata.json"))
+            except KeyError as exc:
+                raise ValueError("ZIP 中缺少 metadata.json") from exc
+            photos = manifest.get("photos", [])
+            if not isinstance(photos, list):
+                raise ValueError("metadata.json 格式不正确")
+
+            total = len(photos)
+            for index, photo_data in enumerate(photos, start=1):
+                if not isinstance(photo_data, dict):
+                    result["skipped_photos"] += 1
+                    if progress_callback:
+                        progress_callback(index, total)
+                    continue
+
+                zip_paths = photo_data.get("paths") or []
+                if not isinstance(zip_paths, list):
+                    zip_paths = []
+                payload = None
+                for zip_path in zip_paths:
+                    try:
+                        payload = zf.read(str(zip_path))
+                        break
+                    except KeyError:
+                        continue
+                if payload is None:
+                    logger.warning("Gallery zip import skipped missing file photo=%s", photo_data.get("filename"))
+                    result["skipped_photos"] += 1
+                    if progress_callback:
+                        progress_callback(index, total)
+                    continue
+
+                sha256 = photo_data.get("sha256") or hashlib.sha256(payload).hexdigest()
+                photo = db.scalar(select(GalleryPhoto).where(GalleryPhoto.sha256 == sha256))
+                is_existing = photo is not None
+                tag_names = [
+                    str(name).strip()
+                    for name in photo_data.get("tags", [])
+                    if str(name).strip() and str(name).strip() != self.rich_text_tag_name
+                ]
+
+                if photo is None:
+                    filename = str(photo_data.get("filename") or Path(str(zip_paths[0])).name)
+                    photo, summary = self.import_gallery_photo(
+                        db,
+                        filename,
+                        payload,
+                        photo_data.get("content_type"),
+                        tag_names,
+                        bool(photo_data.get("is_rich_text")),
+                        photo_data.get("rich_text"),
+                    )
+                    if summary.duplicated:
+                        result["updated_existing"] += 1
+                    else:
+                        result["added_photos"] += 1
+                else:
+                    result["updated_existing"] += 1
+
+                if photo_data.get("is_rich_text"):
+                    photo.is_rich_text = True
+                    rich_text = photo_data.get("rich_text")
+                    if rich_text is not None:
+                        photo.rich_text = str(rich_text)
+                    if photo_data.get("ocr_status"):
+                        photo.ocr_status = str(photo_data.get("ocr_status"))
+                    rich_tag = self._find_or_create_tag(db, self.rich_text_tag_name)
+                    rich_tag.is_system = True
+                    self._ensure_gallery_tag(db, photo.id, rich_tag, source="system")
+
+                for tag_name in tag_names:
+                    tag = self._find_or_create_tag(db, tag_name)
+                    existing_tag_link = db.scalar(
+                        select(GalleryPhotoTag).where(
+                            GalleryPhotoTag.gallery_photo_id == photo.id,
+                            GalleryPhotoTag.tag_id == tag.id,
+                        )
+                    )
+                    self._ensure_gallery_tag(db, photo.id, tag, source="manual")
+                    if existing_tag_link is None:
+                        result["tags_added"] += 1
+
+                for person_data in photo_data.get("persons", []):
+                    if not isinstance(person_data, dict):
+                        continue
+                    person_name = str(person_data.get("name") or person_data.get("display_name") or "").strip()
+                    if not person_name:
+                        continue
+                    person = db.scalar(select(Person).where(Person.name == person_name))
+                    manifest_is_unknown = bool(person_data.get("is_unknown"))
+                    if person is None:
+                        unknown_serial = self._next_unknown_serial(db) if manifest_is_unknown else None
+                        person = Person(
+                            name=person_name,
+                            display_name=str(person_data.get("display_name") or person_name).strip() or person_name,
+                            note=None,
+                            is_unknown=manifest_is_unknown,
+                            unknown_serial=unknown_serial,
+                        )
+                        db.add(person)
+                        db.flush()
+                    else:
+                        person.display_name = str(person_data.get("display_name") or person.display_name).strip() or person.display_name
+                        person.is_unknown = manifest_is_unknown
+                        if person.is_unknown and person.unknown_serial is None:
+                            person.unknown_serial = self._next_unknown_serial(db)
+                    existing_person_link = db.scalar(
+                        select(GalleryPhotoPersonTag).where(
+                            GalleryPhotoPersonTag.gallery_photo_id == photo.id,
+                            GalleryPhotoPersonTag.person_id == person.id,
+                        )
+                    )
+                    source = str(person_data.get("source") or "import")
+                    self._ensure_gallery_person_tag(db, photo.id, person.id, source)
+                    self._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
+                    if existing_person_link is None:
+                        result["persons_added"] += 1
+
+                db.add(photo)
+                db.commit()
+                if progress_callback:
+                    progress_callback(index, total)
+                logger.info(
+                    "Gallery zip import progress index=%d/%d photo_id=%s existing=%s",
+                    index,
+                    total,
+                    photo.id,
+                    is_existing,
+                )
+
+        logger.info("Completed gallery import from zip result=%s", result)
+        return result

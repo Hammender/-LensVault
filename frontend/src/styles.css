@@ -209,6 +209,122 @@ input:focus, select:focus, textarea:focus {
 
 .section-actions { align-items: center; }
 
+.task-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg);
+  box-shadow: 2px 2px 0px var(--panel-border);
+}
+
+.task-bar progress {
+  width: 120px;
+  max-width: 35%;
+  flex: 0 0 auto;
+}
+
+.task-bar span {
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+
+.task-bar.success {
+  background: #effaf1;
+}
+
+.task-bar.error {
+  background: #fff0f0;
+}
+
+.gallery-task {
+  flex-basis: 100%;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(20, 20, 20, 0.72);
+}
+
+.export-modal {
+  position: relative;
+  width: min(980px, 100%);
+  max-height: min(820px, calc(100vh - 56px));
+  overflow: auto;
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  box-shadow: 8px 8px 0px var(--panel-border);
+  padding: 28px;
+}
+
+.export-choice-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+
+.export-choice-row span {
+  color: var(--muted);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 1rem;
+}
+
+.export-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+.export-filter-grid.disabled {
+  opacity: 0.55;
+}
+
+.export-filter-block {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  padding: 16px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg);
+}
+
+.export-chip-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 10px;
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  padding: 4px;
+}
+
+.export-chip-cloud.compact {
+  max-height: min(32vh, 260px);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--panel-border);
+}
+
 .filter-group, .editor-block {
   display: grid;
   gap: 16px;
@@ -220,6 +336,7 @@ input:focus, select:focus, textarea:focus {
   top: 24px;
   max-height: calc(100vh - 48px);
   overflow: hidden;
+  padding-bottom: 24px;
 }
 
 .filter-panel .section-head {
@@ -329,9 +446,9 @@ input:focus, select:focus, textarea:focus {
 }
 
 .selected-cloud { max-height: 104px; }
-.known-person-cloud { max-height: 168px; }
-.unknown-person-cloud { max-height: 220px; }
-.tag-filter-cloud { max-height: 220px; }
+.known-person-cloud { max-height: min(34vh, 320px); }
+.unknown-person-cloud { max-height: min(38vh, 360px); }
+.tag-filter-cloud { max-height: min(24vh, 220px); }
 
 .filter-empty {
   color: var(--muted);
@@ -892,16 +1009,16 @@ input:focus, select:focus, textarea:focus {
 @media (max-width: 1240px) {
   .gallery-page, .people-page, .upload-page { grid-template-columns: 1fr; }
   .gallery-grid, .sample-grid { grid-template-columns: repeat(3, 1fr); }
+  .export-filter-grid { grid-template-columns: 1fr; }
   .filter-panel {
     position: static;
     max-height: none;
     overflow: visible;
+    padding-bottom: 32px;
   }
-  .known-person-cloud,
-  .unknown-person-cloud,
-  .tag-filter-cloud {
-    max-height: 180px;
-  }
+  .known-person-cloud { max-height: 240px; }
+  .unknown-person-cloud { max-height: 280px; }
+  .tag-filter-cloud { max-height: 170px; }
 }
 
 @media (max-width: 760px) {
@@ -910,6 +1027,11 @@ input:focus, select:focus, textarea:focus {
   .topbar { flex-direction: column; align-items: stretch; gap: 20px; }
   h1 { font-size: 3.5rem; }
   .section-head { flex-direction: column; align-items: stretch; }
+  .modal-backdrop { padding: 16px; }
+  .export-modal { padding: 20px; max-height: calc(100vh - 32px); }
+  .export-chip-cloud,
+  .export-chip-cloud.compact { max-height: 220px; }
+  .modal-actions { justify-content: stretch; flex-wrap: wrap; }
   .rich-card-layout { grid-template-columns: 1fr; min-height: auto; }
   .rich-card-layout img { border-right: none; border-bottom: 2px solid var(--panel-border); height: 300px; }
   .rich-lightbox-layout { flex-direction: column; }
@@ -920,9 +1042,7 @@ input:focus, select:focus, textarea:focus {
     flex-wrap: wrap;
     justify-content: flex-start;
   }
-  .known-person-cloud,
-  .unknown-person-cloud,
-  .tag-filter-cloud {
-    max-height: 150px;
-  }
+  .known-person-cloud { max-height: 190px; }
+  .unknown-person-cloud { max-height: 220px; }
+  .tag-filter-cloud { max-height: 140px; }
 }

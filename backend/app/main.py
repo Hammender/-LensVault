@@ -104,6 +104,7 @@ def on_startup() -> None:
         picture_service.ensure_system_tags(db)
         recovered = fail_incomplete_tasks(db, "gallery_import")
         recovered += fail_incomplete_tasks(db, "gallery_rich_import")
+        recovered += fail_incomplete_tasks(db, "gallery_zip_import")
         recovered += fail_incomplete_tasks(db, "person_import")
         if recovered > 0:
             logger.warning("Recovered interrupted gallery tasks count=%d", recovered)
@@ -246,6 +247,70 @@ def _parse_gallery_metadata(raw: str | None, file_count: int) -> list[dict[str, 
         if rich_text is not None:
             defaults[index]["rich_text"] = str(rich_text).strip() or None
     return defaults
+
+
+def _safe_zip_name(value: str | None, fallback: str) -> str:
+    normalized = (value or "").strip()
+    for char in '<>:"/\\|?*\0':
+        normalized = normalized.replace(char, "_")
+    normalized = normalized.strip(" .")
+    return normalized or fallback
+
+
+def _unique_zip_path(path: str, used_paths: set[str]) -> str:
+    if path not in used_paths:
+        used_paths.add(path)
+        return path
+    stem, dot, suffix = path.rpartition(".")
+    base = stem if dot else path
+    extension = f".{suffix}" if dot else ""
+    counter = 2
+    while True:
+        candidate = f"{base}_{counter}{extension}"
+        if candidate not in used_paths:
+            used_paths.add(candidate)
+            return candidate
+        counter += 1
+
+
+def _apply_gallery_filters(query, person_ids: list[int], tag_ids: list[int], exclude_person_ids: list[int], exclude_tag_ids: list[int]):
+    if person_ids:
+        matched_persons = (
+            select(GalleryPhotoPersonTag.gallery_photo_id)
+            .where(GalleryPhotoPersonTag.person_id.in_(person_ids))
+            .group_by(GalleryPhotoPersonTag.gallery_photo_id)
+            .subquery()
+        )
+        query = query.where(GalleryPhoto.id.in_(select(matched_persons.c.gallery_photo_id)))
+
+    if tag_ids:
+        matched_tags = (
+            select(GalleryPhotoTag.gallery_photo_id)
+            .where(GalleryPhotoTag.tag_id.in_(tag_ids))
+            .group_by(GalleryPhotoTag.gallery_photo_id)
+            .subquery()
+        )
+        query = query.where(GalleryPhoto.id.in_(select(matched_tags.c.gallery_photo_id)))
+
+    if exclude_person_ids:
+        excluded_persons = (
+            select(GalleryPhotoPersonTag.gallery_photo_id)
+            .where(GalleryPhotoPersonTag.person_id.in_(exclude_person_ids))
+            .group_by(GalleryPhotoPersonTag.gallery_photo_id)
+            .subquery()
+        )
+        query = query.where(GalleryPhoto.id.notin_(select(excluded_persons.c.gallery_photo_id)))
+
+    if exclude_tag_ids:
+        excluded_tags = (
+            select(GalleryPhotoTag.gallery_photo_id)
+            .where(GalleryPhotoTag.tag_id.in_(exclude_tag_ids))
+            .group_by(GalleryPhotoTag.gallery_photo_id)
+            .subquery()
+        )
+        query = query.where(GalleryPhoto.id.notin_(select(excluded_tags.c.gallery_photo_id)))
+
+    return query
 
 
 def _process_gallery_import_task(
@@ -424,6 +489,51 @@ def _process_person_import_task(task_id: str, zip_bytes: bytes) -> None:
     finally:
         db.close()
         logger.debug("Person import task db session closed task_id=%s", task_id)
+
+
+def _process_gallery_zip_import_task(task_id: str, zip_bytes: bytes) -> None:
+    logger.info("Gallery zip import task started task_id=%s bytes=%d", task_id, len(zip_bytes))
+    db = SessionLocal()
+    try:
+        update_task(db, task_id, status="running", progress=0.05, message="正在解析展示图 ZIP")
+
+        def progress_callback(processed: int, total: int) -> None:
+            progress = 0.05 + 0.9 * (processed / max(total, 1))
+            update_task(
+                db,
+                task_id,
+                status="running",
+                progress=min(progress, 1.0),
+                message=f"正在还原展示图 {processed}/{total}",
+            )
+
+        result = picture_service.import_gallery_from_zip(db, zip_bytes, progress_callback)
+        message = (
+            f"导入完成：新增 {result['added_photos']} 张，"
+            f"更新 {result['updated_existing']} 张已有图，"
+            f"跳过 {result['skipped_photos']} 张，"
+            f"绑定 {result['tags_added']} 个普通标签，"
+            f"绑定 {result['persons_added']} 个人物标签"
+        )
+        update_task(db, task_id, status="completed", progress=1.0, message=message)
+        logger.info("Gallery zip import task completed task_id=%s %s", task_id, message)
+    except Exception as exc:
+        logger.exception("Gallery zip import task failed task_id=%s", task_id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Failed to rollback task session task_id=%s", task_id)
+        try:
+            failed_db = SessionLocal()
+            try:
+                update_task(failed_db, task_id, status="failed", message=str(exc))
+            finally:
+                failed_db.close()
+        except Exception:
+            logger.exception("Failed to persist task failed status task_id=%s", task_id)
+    finally:
+        db.close()
+        logger.debug("Gallery zip import task db session closed task_id=%s", task_id)
 
 
 @app.get("/api/health")
@@ -761,6 +871,110 @@ async def import_gallery_rich_photos(
     return TaskRead.model_validate(task)
 
 
+@app.get("/api/gallery/photos/export")
+def export_gallery_photos(
+    scope: str = Query(default="all", pattern="^(all|filtered)$"),
+    person_ids: list[int] = Query(default=[]),
+    tag_ids: list[int] = Query(default=[]),
+    exclude_person_ids: list[int] = Query(default=[]),
+    exclude_tag_ids: list[int] = Query(default=[]),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    from datetime import datetime as dt
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    base_query = select(GalleryPhoto).order_by(GalleryPhoto.taken_at.desc().nullslast(), GalleryPhoto.created_at.desc())
+    if scope == "filtered":
+        query = _apply_gallery_filters(base_query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
+    else:
+        query = base_query
+
+    photos = db.scalars(query).unique().all()
+    for photo in photos:
+        photo.person_tags
+        photo.tags
+        for person_tag in photo.person_tags:
+            person_tag.person
+        for tag_link in photo.tags:
+            tag_link.tag
+
+    manifest_photos: list[dict] = []
+    used_paths: set[str] = set()
+    buf = BytesIO()
+
+    with ZipFile(buf, "w", ZIP_DEFLATED) as zf:
+        for photo in photos:
+            image_bytes = storage.get_bytes(photo.object_key)
+            normal_tags = sorted({link.tag.name for link in photo.tags if not link.tag.is_system})
+            folder_names = normal_tags or ["_未分类"]
+            filename = _safe_zip_name(f"{photo.id}_{photo.filename}", f"{photo.id}_photo")
+            zip_paths: list[str] = []
+            for tag_name in folder_names:
+                folder = _safe_zip_name(tag_name, "_未分类")
+                zip_path = _unique_zip_path(f"gallery/by_tag/{folder}/{filename}", used_paths)
+                zf.writestr(zip_path, image_bytes)
+                zip_paths.append(zip_path)
+
+            manifest_photos.append(
+                {
+                    "id": photo.id,
+                    "filename": photo.filename,
+                    "sha256": photo.sha256,
+                    "content_type": photo.content_type,
+                    "width": photo.width,
+                    "height": photo.height,
+                    "taken_at": photo.taken_at.isoformat() if photo.taken_at else None,
+                    "is_rich_text": photo.is_rich_text,
+                    "rich_text": photo.rich_text,
+                    "ocr_status": photo.ocr_status,
+                    "tags": normal_tags,
+                    "persons": [
+                        {
+                            "name": person_tag.person.name,
+                            "display_name": person_tag.person.display_name,
+                            "is_unknown": person_tag.person.is_unknown,
+                            "source": person_tag.source,
+                        }
+                        for person_tag in sorted(
+                            photo.person_tags,
+                            key=lambda item: (item.person.is_unknown, item.person.display_name.lower()),
+                        )
+                    ],
+                    "paths": zip_paths,
+                }
+            )
+
+        manifest = {
+            "version": 1,
+            "kind": "gallery_export",
+            "scope": scope,
+            "exported_at": dt.utcnow().isoformat(),
+            "photos": manifest_photos,
+        }
+        zf.writestr("metadata.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+
+    buf.seek(0)
+    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="gallery_export_{timestamp}.zip"'},
+    )
+
+
+@app.post("/api/gallery/photos/import-zip", response_model=TaskRead)
+async def import_gallery_export_zip(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> TaskRead:
+    zip_bytes = await file.read()
+    task = create_task(db, "gallery_zip_import", "已排队展示图 ZIP 导入")
+    logger.info("Gallery zip import enqueued task_id=%s bytes=%d", task.id, len(zip_bytes))
+    background_tasks.add_task(_process_gallery_zip_import_task, task.id, zip_bytes)
+    return TaskRead.model_validate(task)
+
+
 @app.get("/api/tasks/{task_id}", response_model=TaskRead)
 def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskRead:
     task = db.get(Task, task_id)
@@ -781,46 +995,8 @@ def list_gallery_photos(
 ) -> PaginatedGalleryPhotos:
     query = select(GalleryPhoto).order_by(GalleryPhoto.taken_at.desc().nullslast(), GalleryPhoto.created_at.desc())
     count_query = select(func.count(GalleryPhoto.id))
-
-    if person_ids:
-        matched_persons = (
-            select(GalleryPhotoPersonTag.gallery_photo_id)
-            .where(GalleryPhotoPersonTag.person_id.in_(person_ids))
-            .group_by(GalleryPhotoPersonTag.gallery_photo_id)
-            .subquery()
-        )
-        query = query.where(GalleryPhoto.id.in_(select(matched_persons.c.gallery_photo_id)))
-        count_query = count_query.where(GalleryPhoto.id.in_(select(matched_persons.c.gallery_photo_id)))
-
-    if tag_ids:
-        matched_tags = (
-            select(GalleryPhotoTag.gallery_photo_id)
-            .where(GalleryPhotoTag.tag_id.in_(tag_ids))
-            .group_by(GalleryPhotoTag.gallery_photo_id)
-            .subquery()
-        )
-        query = query.where(GalleryPhoto.id.in_(select(matched_tags.c.gallery_photo_id)))
-        count_query = count_query.where(GalleryPhoto.id.in_(select(matched_tags.c.gallery_photo_id)))
-
-    if exclude_person_ids:
-        excluded_persons = (
-            select(GalleryPhotoPersonTag.gallery_photo_id)
-            .where(GalleryPhotoPersonTag.person_id.in_(exclude_person_ids))
-            .group_by(GalleryPhotoPersonTag.gallery_photo_id)
-            .subquery()
-        )
-        query = query.where(GalleryPhoto.id.notin_(select(excluded_persons.c.gallery_photo_id)))
-        count_query = count_query.where(GalleryPhoto.id.notin_(select(excluded_persons.c.gallery_photo_id)))
-
-    if exclude_tag_ids:
-        excluded_tags = (
-            select(GalleryPhotoTag.gallery_photo_id)
-            .where(GalleryPhotoTag.tag_id.in_(exclude_tag_ids))
-            .group_by(GalleryPhotoTag.gallery_photo_id)
-            .subquery()
-        )
-        query = query.where(GalleryPhoto.id.notin_(select(excluded_tags.c.gallery_photo_id)))
-        count_query = count_query.where(GalleryPhoto.id.notin_(select(excluded_tags.c.gallery_photo_id)))
+    query = _apply_gallery_filters(query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
+    count_query = _apply_gallery_filters(count_query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
 
     photos = db.scalars(query.offset(offset).limit(limit)).unique().all()
     for photo in photos:

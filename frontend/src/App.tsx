@@ -15,9 +15,11 @@ import {
   deleteGalleryPhotoTag,
   deletePerson,
   deletePersonSample,
+  getGalleryExportUrl,
   getGalleryPhoto,
   getPersonExportUrl,
   getTask,
+  importGalleryExportZip,
   importGalleryPhotos,
   importGalleryRichPhotos,
   importPersonSamples,
@@ -31,6 +33,7 @@ import {
   reRecognizeUnknownGalleryPhotos,
   updateGalleryPhotoRichText,
   unbindPersonTag,
+  type GalleryExportScope,
   type GalleryUploadMetadata
 } from "./api";
 import type { GalleryPhotoDetail, GalleryPhotoListItem, Person, SamplePhoto, Tag, Task } from "./types";
@@ -97,8 +100,12 @@ export default function App() {
   const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhotoListItem[]>([]);
   const [galleryTotal, setGalleryTotal] = useState(0);
   const [galleryOffset, setGalleryOffset] = useState(0);
-  const [galleryBatchDeleteMode, setGalleryBatchDeleteMode] = useState(false);
-  const [selectedGalleryDeleteIds, setSelectedGalleryDeleteIds] = useState<number[]>([]);
+  const [gallerySelectionMode, setGallerySelectionMode] = useState(false);
+  const [selectedGalleryPhotoIds, setSelectedGalleryPhotoIds] = useState<number[]>([]);
+  const [galleryExportModalOpen, setGalleryExportModalOpen] = useState(false);
+  const [galleryExportScope, setGalleryExportScope] = useState<GalleryExportScope>("filtered");
+  const [galleryExportPersonIds, setGalleryExportPersonIds] = useState<number[]>([]);
+  const [galleryExportTagIds, setGalleryExportTagIds] = useState<number[]>([]);
   const [lightboxPhotoId, setLightboxPhotoId] = useState<number | null>(null);
   const [selectedPersonIds, setSelectedPersonIds] = useState<number[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
@@ -133,13 +140,16 @@ export default function App() {
   const [batchApplyTagNames, setBatchApplyTagNames] = useState("");
   const [uploadMode, setUploadMode] = useState<UploadMode>("normal");
   const [importTask, setImportTask] = useState<Task | null>(null);
+  const [galleryImportTask, setGalleryImportTask] = useState<Task | null>(null);
   const importFileRef = useRef<HTMLInputElement | null>(null);
+  const galleryImportFileRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
   const peopleMainRef = useRef<HTMLElement | null>(null);
 
   const richTag = useMemo(() => tags.find((tag) => tag.name === "图文") ?? null, [tags]);
+  const normalTags = useMemo(() => sortByPinyinName(tags.filter((tag) => !tag.is_system)), [tags]);
 
   const filteredPersons = useMemo(() => {
     const keyword = personSearch.trim().toLowerCase();
@@ -258,7 +268,7 @@ export default function App() {
     setGalleryPhotos(response.items);
     setGalleryTotal(response.total);
     setGalleryOffset(response.offset);
-    setSelectedGalleryDeleteIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
+    setSelectedGalleryPhotoIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
   }
 
   async function refreshSamples(personId: number | null) {
@@ -411,6 +421,29 @@ export default function App() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [importTask]);
+
+  useEffect(() => {
+    if (!galleryImportTask || galleryImportTask.status === "completed" || galleryImportTask.status === "failed") {
+      return undefined;
+    }
+    const timer = window.setInterval(async () => {
+      try {
+        const nextTask = await getTask(galleryImportTask.id);
+        setGalleryImportTask(nextTask);
+        if (nextTask.status === "completed") {
+          await Promise.all([refreshPeople(), refreshTags(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+          setBusy(false);
+        }
+        if (nextTask.status === "failed") {
+          setBusy(false);
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "展示图 ZIP 导入轮询失败。");
+        setBusy(false);
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [galleryImportTask, galleryOffset, selectedPersonIds, selectedTagIds]);
 
   async function openGalleryPhoto(photoId: number) {
     setError(null);
@@ -647,6 +680,60 @@ export default function App() {
       setImportTask(task);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "导入失败。");
+      setBusy(false);
+    }
+    if (event.target) {
+      event.target.value = "";
+    }
+  }
+
+  function handleExportGalleryPhotos() {
+    const url = getGalleryExportUrl({
+      scope: galleryExportScope,
+      personIds: galleryExportPersonIds,
+      tagIds: galleryExportTagIds
+    });
+    window.open(url, "_blank");
+    setGalleryExportModalOpen(false);
+  }
+
+  function openGalleryExportModal() {
+    setGalleryExportScope("filtered");
+    setGalleryExportPersonIds(selectedPersonIds);
+    setGalleryExportTagIds(selectedTagIds.filter((tagId) => tags.some((tag) => tag.id === tagId && !tag.is_system)));
+    setGalleryExportModalOpen(true);
+  }
+
+  function handleToggleGalleryExportPerson(personId: number) {
+    setGalleryExportScope("filtered");
+    setGalleryExportPersonIds((current) =>
+      current.includes(personId) ? current.filter((id) => id !== personId) : [...current, personId]
+    );
+  }
+
+  function handleToggleGalleryExportTag(tagId: number) {
+    setGalleryExportScope("filtered");
+    setGalleryExportTagIds((current) =>
+      current.includes(tagId) ? current.filter((id) => id !== tagId) : [...current, tagId]
+    );
+  }
+
+  function handlePickGalleryImportFile() {
+    galleryImportFileRef.current?.click();
+  }
+
+  async function handleGalleryImportFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const task = await importGalleryExportZip(file);
+      setGalleryImportTask(task);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "展示图 ZIP 导入失败。");
       setBusy(false);
     }
     if (event.target) {
@@ -895,31 +982,31 @@ export default function App() {
     }
   }
 
-  function toggleGalleryBatchDeleteMode() {
-    setGalleryBatchDeleteMode((current) => {
+  function toggleGallerySelectionMode() {
+    setGallerySelectionMode((current) => {
       if (current) {
-        setSelectedGalleryDeleteIds([]);
+        setSelectedGalleryPhotoIds([]);
       }
       return !current;
     });
   }
 
   async function handleDeleteSelectedGalleryPhotos() {
-    if (selectedGalleryDeleteIds.length === 0) {
+    if (selectedGalleryPhotoIds.length === 0) {
       return;
     }
-    if (!window.confirm(`确认删除选中的 ${selectedGalleryDeleteIds.length} 张图库图片吗？这会删除图片文件、识别记录和向量数据。`)) {
+    if (!window.confirm(`确认删除选中的 ${selectedGalleryPhotoIds.length} 张图库图片吗？这会删除图片文件、识别记录和向量数据。`)) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await batchDeleteGalleryPhotos(selectedGalleryDeleteIds);
-      if (selectedPhoto && selectedGalleryDeleteIds.includes(selectedPhoto.id)) {
+      await batchDeleteGalleryPhotos(selectedGalleryPhotoIds);
+      if (selectedPhoto && selectedGalleryPhotoIds.includes(selectedPhoto.id)) {
         setSelectedPhoto(null);
       }
-      setSelectedGalleryDeleteIds([]);
-      setGalleryBatchDeleteMode(false);
+      setSelectedGalleryPhotoIds([]);
+      setGallerySelectionMode(false);
       await refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "批量删除图库图片失败。");
@@ -939,7 +1026,7 @@ export default function App() {
     setError(null);
     try {
       await deleteGalleryPhoto(selectedPhoto.id);
-      setSelectedGalleryDeleteIds((current) => current.filter((id) => id !== selectedPhoto.id));
+      setSelectedGalleryPhotoIds((current) => current.filter((id) => id !== selectedPhoto.id));
       setSelectedPhoto(null);
       await refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds);
     } catch (cause) {
@@ -1017,7 +1104,7 @@ export default function App() {
         setGalleryPhotos(response.items);
         setGalleryTotal(response.total);
         setGalleryOffset(response.offset);
-        setSelectedGalleryDeleteIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
+        setSelectedGalleryPhotoIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
         if (response.items.length > 0) {
           setLightboxPhotoId(response.items[response.items.length - 1].id);
         }
@@ -1040,7 +1127,7 @@ export default function App() {
         setGalleryPhotos(response.items);
         setGalleryTotal(response.total);
         setGalleryOffset(response.offset);
-        setSelectedGalleryDeleteIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
+        setSelectedGalleryPhotoIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
         if (response.items.length > 0) {
           setLightboxPhotoId(response.items[0].id);
         }
@@ -1376,15 +1463,44 @@ export default function App() {
               </div>
               <div className="micro-row section-actions">
                 <span>{galleryTotal} 张结果</span>
-                <button disabled={busy} onClick={() => toggleGalleryBatchDeleteMode()}>
-                  {galleryBatchDeleteMode ? "取消批量" : "批量删除"}
+                <button disabled={busy} onClick={() => toggleGallerySelectionMode()}>
+                  {gallerySelectionMode ? "取消选择" : "选择图片"}
+                </button>
+                <button disabled={busy} onClick={openGalleryExportModal}>
+                  导出展示图
+                </button>
+                <button disabled={busy} onClick={handlePickGalleryImportFile}>
+                  导入展示图
                 </button>
                 <button
-                  disabled={busy || !galleryBatchDeleteMode || selectedGalleryDeleteIds.length === 0}
+                  disabled={busy || !gallerySelectionMode || selectedGalleryPhotoIds.length === 0}
                   onClick={() => void handleDeleteSelectedGalleryPhotos()}
                 >
-                  删除选中（{selectedGalleryDeleteIds.length}）
+                  删除选中（{selectedGalleryPhotoIds.length}）
                 </button>
+                <input
+                  ref={galleryImportFileRef}
+                  type="file"
+                  accept=".zip"
+                  style={{ display: "none" }}
+                  onChange={(event) => void handleGalleryImportFileChange(event)}
+                />
+                {galleryImportTask && galleryImportTask.status !== "completed" && galleryImportTask.status !== "failed" && (
+                  <div className="task-bar gallery-task">
+                    <progress value={galleryImportTask.progress} max={1}></progress>
+                    <span>{galleryImportTask.message}</span>
+                  </div>
+                )}
+                {galleryImportTask && galleryImportTask.status === "completed" && (
+                  <div className="task-bar success gallery-task">
+                    <span>{galleryImportTask.message}</span>
+                  </div>
+                )}
+                {galleryImportTask && galleryImportTask.status === "failed" && (
+                  <div className="task-bar error gallery-task">
+                    <span>导入失败：{galleryImportTask.message}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1450,13 +1566,13 @@ export default function App() {
                   >
                     详情
                   </button>
-                  {galleryBatchDeleteMode && (
+                  {gallerySelectionMode && (
                     <label className="corner-check">
                       <input
                         type="checkbox"
-                        checked={selectedGalleryDeleteIds.includes(photo.id)}
+                        checked={selectedGalleryPhotoIds.includes(photo.id)}
                         onChange={(event) => {
-                          setSelectedGalleryDeleteIds((current) =>
+                          setSelectedGalleryPhotoIds((current) =>
                             event.target.checked ? [...current, photo.id] : current.filter((id) => id !== photo.id)
                           );
                         }}
@@ -1995,6 +2111,99 @@ export default function App() {
             </div>
           </aside>
         </main>
+      )}
+
+      {galleryExportModalOpen && (
+        <div className="modal-backdrop" onClick={() => setGalleryExportModalOpen(false)}>
+          <div className="export-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">导出展示图</p>
+                <h2>选择导出范围</h2>
+              </div>
+              <button className="lightbox-close" onClick={() => setGalleryExportModalOpen(false)}>
+                关闭
+              </button>
+            </div>
+
+            <div className="export-choice-row">
+              <button
+                className={galleryExportScope === "filtered" ? "soft-chip active" : "soft-chip"}
+                onClick={() => setGalleryExportScope("filtered")}
+              >
+                自定义范围
+              </button>
+              <button
+                className={galleryExportScope === "all" ? "soft-chip active" : "soft-chip"}
+                onClick={() => setGalleryExportScope("all")}
+              >
+                全部展示图
+              </button>
+              <span>
+                {galleryExportScope === "all"
+                  ? "将导出图库中的全部展示图"
+                  : `按 ${galleryExportPersonIds.length} 个人物、${galleryExportTagIds.length} 个普通标签导出`}
+              </span>
+            </div>
+
+            <div className={galleryExportScope === "all" ? "export-filter-grid disabled" : "export-filter-grid"}>
+              <section className="export-filter-block">
+                <div className="filter-section-head">
+                  <strong>人物标签</strong>
+                  <span>{galleryExportPersonIds.length} 已选</span>
+                </div>
+                <div className="export-chip-cloud">
+                  {sortByPinyinName(persons).map((person) => (
+                    <button
+                      key={`export-person-${person.id}`}
+                      className={galleryExportPersonIds.includes(person.id) ? "soft-chip active" : "soft-chip"}
+                      disabled={galleryExportScope === "all"}
+                      onClick={() => handleToggleGalleryExportPerson(person.id)}
+                    >
+                      {person.display_name}
+                    </button>
+                  ))}
+                  {persons.length === 0 && <span className="filter-empty">没有人物标签</span>}
+                </div>
+              </section>
+
+              <section className="export-filter-block">
+                <div className="filter-section-head">
+                  <strong>普通标签</strong>
+                  <span>{galleryExportTagIds.length} 已选</span>
+                </div>
+                <div className="export-chip-cloud compact">
+                  {normalTags.map((tag) => (
+                    <button
+                      key={`export-tag-${tag.id}`}
+                      className={galleryExportTagIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                      disabled={galleryExportScope === "all"}
+                      onClick={() => handleToggleGalleryExportTag(tag.id)}
+                    >
+                      #{tag.name}
+                    </button>
+                  ))}
+                  {normalTags.length === 0 && <span className="filter-empty">没有普通标签</span>}
+                </div>
+              </section>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                onClick={() => {
+                  setGalleryExportScope("filtered");
+                  setGalleryExportPersonIds([]);
+                  setGalleryExportTagIds([]);
+                }}
+              >
+                清空筛选
+              </button>
+              <button disabled={busy} onClick={handleExportGalleryPhotos}>
+                导出 ZIP
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {lightboxPhoto && (
