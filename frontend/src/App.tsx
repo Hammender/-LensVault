@@ -9,12 +9,20 @@ import {
   batchDeleteGalleryPhotos,
   batchDeletePersons,
   bindPersonTag,
+  cancelVideoUpload,
+  completeVideoUpload,
   createPerson,
+  createVideoCategoryTag,
+  createVideoPerson,
+  createVideoUploadSession,
   deleteGalleryPhoto,
   deleteGalleryPhotoPerson,
   deleteGalleryPhotoTag,
   deletePerson,
   deletePersonSample,
+  deleteVideo,
+  getVideo,
+  getVideoUploadSession,
   getGalleryExportUrl,
   getGalleryPhoto,
   getPersonExportUrl,
@@ -28,17 +36,34 @@ import {
   listPersons,
   listPersonTags,
   listTags,
+  listVideoCategoryTags,
+  listVideoPeople,
+  listVideos,
   renamePerson,
+  replaceVideoCover,
   reRecognizeGalleryPhoto,
   reRecognizeUnknownGalleryPhotos,
   updateGalleryPhotoRichText,
+  uploadVideoPart,
   unbindPersonTag,
   type GalleryExportScope,
   type GalleryUploadMetadata
 } from "./api";
-import type { GalleryPhotoDetail, GalleryPhotoListItem, Person, SamplePhoto, Tag, Task } from "./types";
+import type {
+  GalleryPhotoDetail,
+  GalleryPhotoListItem,
+  Person,
+  SamplePhoto,
+  Tag,
+  Task,
+  VideoCategoryTag,
+  VideoDetail,
+  VideoItem,
+  VideoPerson,
+  VideoUploadSession
+} from "./types";
 
-type PageKey = "gallery" | "people" | "upload" | "statistics";
+type PageKey = "gallery" | "people" | "upload" | "videos" | "statistics" | "video-play";
 
 type PendingSampleUpload = {
   file: File;
@@ -56,6 +81,13 @@ type PendingGalleryUpload = {
 type UploadMode = "normal" | "rich";
 
 const galleryPageSize = 20;
+const videoPageSize = 12;
+const videoPartSize = 16 * 1024 * 1024;
+const videoResumeStorageKey = "pictureshow-video-upload-session";
+const videoSeekSeconds = 10;
+const videoSeekLargeSeconds = 30;
+const videoLongPressDelayMs = 300;
+const videoLongPressRate = 3;
 
 function formatDate(value: string | null | undefined): string {
   if (!value) {
@@ -70,9 +102,62 @@ function formatDate(value: string | null | undefined): string {
   }).format(new Date(value));
 }
 
+function formatBytes(value: number): string {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+  if (value < 1024 * 1024 * 1024) {
+    return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  }
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatDurationSeconds(value: number | null | undefined): string {
+  if (!value || !Number.isFinite(value)) {
+    return "时长未知";
+  }
+  const total = Math.max(0, Math.floor(value));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatResolution(width: number | null | undefined, height: number | null | undefined): string {
+  if (!width || !height) {
+    return "分辨率未知";
+  }
+  return `${width}x${height}`;
+}
+
+function formatCodecs(videoCodec: string | null | undefined, audioCodec: string | null | undefined): string {
+  const video = videoCodec || "未知视频编码";
+  const audio = audioCodec || "无音频/未知音频";
+  return `${video} / ${audio}`;
+}
+
+function videoStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    uploaded: "等待优化",
+    processing: "优化中",
+    ready: "可播放",
+    processing_failed: "优化失败"
+  };
+  return labels[status] ?? status;
+}
+
 function routeFromHash(): PageKey {
   const hash = window.location.hash.replace(/^#\/?/, "");
-  if (hash === "people" || hash === "upload" || hash === "statistics") {
+  if (hash.startsWith("video-play/")) {
+    return "video-play";
+  }
+  if (hash === "people" || hash === "upload" || hash === "videos" || hash === "statistics") {
     return hash;
   }
   return "gallery";
@@ -95,6 +180,8 @@ function splitCommaList(input: string): string[] {
 
 export default function App() {
   const [page, setPageState] = useState<PageKey>(() => routeFromHash());
+  const [playVideoId, setPlayVideoId] = useState<string | null>(null);
+  const [isVideoUploadModalOpen, setIsVideoUploadModalOpen] = useState(false);
   const [persons, setPersons] = useState<Person[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhotoListItem[]>([]);
@@ -141,8 +228,36 @@ export default function App() {
   const [uploadMode, setUploadMode] = useState<UploadMode>("normal");
   const [importTask, setImportTask] = useState<Task | null>(null);
   const [galleryImportTask, setGalleryImportTask] = useState<Task | null>(null);
+  const [videoItems, setVideoItems] = useState<VideoItem[]>([]);
+  const [videoTotal, setVideoTotal] = useState(0);
+  const [videoOffset, setVideoOffset] = useState(0);
+  const [videoCategoryTags, setVideoCategoryTags] = useState<VideoCategoryTag[]>([]);
+  const [videoPeople, setVideoPeople] = useState<VideoPerson[]>([]);
+  const [selectedVideoCategoryIds, setSelectedVideoCategoryIds] = useState<number[]>([]);
+  const [selectedVideoPersonIds, setSelectedVideoPersonIds] = useState<number[]>([]);
+  const [videoSearch, setVideoSearch] = useState("");
+  const [selectedVideo, setSelectedVideo] = useState<VideoDetail | null>(null);
+  const [videoPlayerUrl, setVideoPlayerUrl] = useState("");
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoTitle, setVideoTitle] = useState("");
+  const [videoDescription, setVideoDescription] = useState("");
+  const [videoUploadCategoryIds, setVideoUploadCategoryIds] = useState<number[]>([]);
+  const [videoUploadPersonIds, setVideoUploadPersonIds] = useState<number[]>([]);
+  const [videoUploadNewCategories, setVideoUploadNewCategories] = useState("");
+  const [videoUploadProgress, setVideoUploadProgress] = useState(0);
+  const [videoUploadSession, setVideoUploadSession] = useState<VideoUploadSession | null>(null);
+  const [newVideoCategoryName, setNewVideoCategoryName] = useState("");
+  const [newVideoPersonName, setNewVideoPersonName] = useState("");
+  const [newVideoPersonNote, setNewVideoPersonNote] = useState("");
+  const [newVideoPersonAvatar, setNewVideoPersonAvatar] = useState<File | null>(null);
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const galleryImportFileRef = useRef<HTMLInputElement | null>(null);
+  const videoPlayerRef = useRef<HTMLVideoElement | null>(null);
+  const videoShouldResumeRef = useRef(false);
+  const videoLongPressTimerRef = useRef<number | null>(null);
+  const videoLongPressActiveRef = useRef(false);
+  const videoPreviousRateRef = useRef(1);
+  const videoWasPausedBeforeRateRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
@@ -239,6 +354,19 @@ export default function App() {
   );
   const orphanUnknownCount = orphanUnknownPersons.length;
 
+  const filteredVideoCategoryTags = useMemo(() => sortByPinyinName(videoCategoryTags), [videoCategoryTags]);
+  const filteredVideoPeople = useMemo(() => sortByPinyinName(videoPeople), [videoPeople]);
+  const selectedVideoCategories = useMemo(
+    () => videoCategoryTags.filter((tag) => selectedVideoCategoryIds.includes(tag.id)),
+    [selectedVideoCategoryIds, videoCategoryTags]
+  );
+  const selectedVideoPeople = useMemo(
+    () => videoPeople.filter((person) => selectedVideoPersonIds.includes(person.id)),
+    [selectedVideoPersonIds, videoPeople]
+  );
+  const videoTotalPages = Math.max(1, Math.ceil(videoTotal / videoPageSize));
+  const videoCurrentPage = Math.floor(videoOffset / videoPageSize) + 1;
+
   async function refreshPeople() {
     const nextPersons = await listPersons();
     setPersons(nextPersons);
@@ -269,6 +397,31 @@ export default function App() {
     setGalleryTotal(response.total);
     setGalleryOffset(response.offset);
     setSelectedGalleryPhotoIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
+  }
+
+  async function refreshVideoTaxonomy() {
+    const [categories, people] = await Promise.all([listVideoCategoryTags(), listVideoPeople()]);
+    setVideoCategoryTags(sortByPinyinName(categories));
+    setVideoPeople(sortByPinyinName(people));
+  }
+
+  async function refreshVideos(
+    nextOffset = videoOffset,
+    categoryIds = selectedVideoCategoryIds,
+    personIds = selectedVideoPersonIds,
+    query = videoSearch,
+  ) {
+    const response = await listVideos(categoryIds, personIds, query, nextOffset, videoPageSize);
+    setVideoItems(response.items);
+    setVideoTotal(response.total);
+    setVideoOffset(response.offset);
+    setSelectedVideo((current) => {
+      if (!current) {
+        return current;
+      }
+      const listed = response.items.find((item) => item.id === current.id);
+      return listed ? { ...current, ...listed } : current;
+    });
   }
 
   async function refreshSamples(personId: number | null) {
@@ -353,10 +506,29 @@ export default function App() {
   }
 
   useEffect(() => {
-    const onHashChange = () => setPageState(routeFromHash());
+    const onHashChange = () => {
+      const newPage = routeFromHash();
+      setPageState(newPage);
+      if (newPage === "video-play") {
+        const hash = window.location.hash.replace(/^#\/?/, "");
+        const id = hash.split("/")[1];
+        if (id) {
+          const numId = parseInt(id, 10);
+          setPlayVideoId(id);
+          void openVideo(numId);
+        }
+      }
+    };
     window.addEventListener("hashchange", onHashChange);
+    // Initial check
     if (!window.location.hash) {
       setRoute("gallery");
+    } else {
+      // Call it once to handle deep links correctly (avoid multiple fires but ensure playVideoId is set)
+      const initialPage = routeFromHash();
+      if (initialPage === "video-play") {
+        onHashChange();
+      }
     }
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
@@ -370,6 +542,109 @@ export default function App() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        await Promise.all([refreshVideoTaxonomy(), refreshVideos(0, [], [], "")]);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "视频数据初始化失败。");
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedVideo || !["uploaded", "processing"].includes(selectedVideo.status)) {
+      return undefined;
+    }
+    const videoId = selectedVideo.id;
+    const timer = window.setInterval(async () => {
+      try {
+        const detail = await getVideo(videoId);
+        setSelectedVideo(detail);
+        setVideoItems((items) => items.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)));
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "视频状态刷新失败。");
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [selectedVideo?.id, selectedVideo?.status]);
+
+  useEffect(() => {
+    if (!selectedVideo) {
+      resetVideoKeyboardState();
+      setVideoPlayerUrl("");
+      return;
+    }
+    resetVideoKeyboardState();
+    setVideoPlayerUrl(selectedVideo.play_url || selectedVideo.stream_url);
+    videoShouldResumeRef.current = false;
+  }, [selectedVideo?.id]);
+
+  useEffect(() => {
+    const player = videoPlayerRef.current;
+    if (!player || !selectedVideo || !videoPlayerUrl) {
+      return undefined;
+    }
+
+    const consumeArrowEvent = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      consumeArrowEvent(event);
+      if (event.repeat) {
+        return;
+      }
+
+      if (event.key === "ArrowLeft") {
+        stopVideoFastForwardPreview();
+        seekSelectedVideo(event.shiftKey ? -videoSeekLargeSeconds : -videoSeekSeconds);
+        return;
+      }
+
+      clearVideoLongPressTimer();
+      videoLongPressTimerRef.current = window.setTimeout(() => {
+        videoLongPressTimerRef.current = null;
+        startVideoFastForwardPreview();
+      }, videoLongPressDelayMs);
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      consumeArrowEvent(event);
+
+      if (event.key !== "ArrowRight") {
+        return;
+      }
+      if (videoLongPressActiveRef.current) {
+        stopVideoFastForwardPreview();
+        return;
+      }
+      clearVideoLongPressTimer();
+      seekSelectedVideo(event.shiftKey ? videoSeekLargeSeconds : videoSeekSeconds);
+    };
+
+    const handleBlur = () => {
+      resetVideoKeyboardState();
+    };
+
+    player.addEventListener("keydown", handleKeyDown, { capture: true });
+    player.addEventListener("keyup", handleKeyUp, { capture: true });
+    player.addEventListener("blur", handleBlur);
+    return () => {
+      player.removeEventListener("keydown", handleKeyDown, { capture: true });
+      player.removeEventListener("keyup", handleKeyUp, { capture: true });
+      player.removeEventListener("blur", handleBlur);
+      resetVideoKeyboardState();
+    };
+  }, [selectedVideo?.id, videoPlayerUrl]);
 
   useEffect(() => {
     void refreshSamples(selectedPerson?.id ?? null);
@@ -869,6 +1144,303 @@ export default function App() {
     }
   }
 
+  function handlePickVideoFile(files: FileList | null) {
+    const file = files?.[0] ?? null;
+    setVideoFile(file);
+    if (file && !videoTitle.trim()) {
+      setVideoTitle(file.name.replace(/\.[^.]+$/, ""));
+    }
+    setVideoUploadProgress(0);
+    setVideoUploadSession(null);
+  }
+
+  function handleToggleVideoFilterCategory(tagId: number) {
+    const next = selectedVideoCategoryIds.includes(tagId)
+      ? selectedVideoCategoryIds.filter((id) => id !== tagId)
+      : [...selectedVideoCategoryIds, tagId];
+    setSelectedVideoCategoryIds(next);
+    void refreshVideos(0, next, selectedVideoPersonIds, videoSearch);
+  }
+
+  function handleToggleVideoFilterPerson(personId: number) {
+    const next = selectedVideoPersonIds.includes(personId)
+      ? selectedVideoPersonIds.filter((id) => id !== personId)
+      : [...selectedVideoPersonIds, personId];
+    setSelectedVideoPersonIds(next);
+    void refreshVideos(0, selectedVideoCategoryIds, next, videoSearch);
+  }
+
+  function handleToggleVideoUploadCategory(tagId: number) {
+    setVideoUploadCategoryIds((current) =>
+      current.includes(tagId) ? current.filter((id) => id !== tagId) : [...current, tagId]
+    );
+  }
+
+  function handleToggleVideoUploadPerson(personId: number) {
+    setVideoUploadPersonIds((current) =>
+      current.includes(personId) ? current.filter((id) => id !== personId) : [...current, personId]
+    );
+  }
+
+  async function handleCreateVideoCategory() {
+    if (!newVideoCategoryName.trim()) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const tag = await createVideoCategoryTag(newVideoCategoryName.trim());
+      setNewVideoCategoryName("");
+      await refreshVideoTaxonomy();
+      setVideoUploadCategoryIds((current) => Array.from(new Set([...current, tag.id])));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建视频类别标签失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateVideoPerson() {
+    if (!newVideoPersonName.trim()) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const person = await createVideoPerson(newVideoPersonName.trim(), newVideoPersonNote.trim(), newVideoPersonAvatar);
+      setNewVideoPersonName("");
+      setNewVideoPersonNote("");
+      setNewVideoPersonAvatar(null);
+      await refreshVideoTaxonomy();
+      setVideoUploadPersonIds((current) => Array.from(new Set([...current, person.id])));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建视频人物失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openVideo(videoId: number) {
+    setError(null);
+    try {
+      setSelectedVideo(await getVideo(videoId));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加载视频详情失败。");
+    }
+  }
+
+  function rememberVideoPlaybackState() {
+    const player = videoPlayerRef.current;
+    videoShouldResumeRef.current = Boolean(player && !player.paused && !player.ended);
+  }
+
+  function resumeVideoAfterSeek() {
+    const player = videoPlayerRef.current;
+    if (!player || !videoShouldResumeRef.current) {
+      return;
+    }
+    const playPromise = player.play();
+    if (playPromise) {
+      playPromise.catch(() => undefined);
+    }
+  }
+
+  function seekSelectedVideo(deltaSeconds: number) {
+    const player = videoPlayerRef.current;
+    if (!player || !Number.isFinite(player.duration)) {
+      return;
+    }
+    rememberVideoPlaybackState();
+    const nextTime = Math.min(Math.max(player.currentTime + deltaSeconds, 0), player.duration);
+    player.currentTime = nextTime;
+    resumeVideoAfterSeek();
+  }
+
+  function clearVideoLongPressTimer() {
+    if (videoLongPressTimerRef.current !== null) {
+      window.clearTimeout(videoLongPressTimerRef.current);
+      videoLongPressTimerRef.current = null;
+    }
+  }
+
+  function startVideoFastForwardPreview() {
+    const player = videoPlayerRef.current;
+    if (!player || videoLongPressActiveRef.current) {
+      return;
+    }
+    videoLongPressActiveRef.current = true;
+    videoPreviousRateRef.current = player.playbackRate || 1;
+    videoWasPausedBeforeRateRef.current = player.paused;
+    player.playbackRate = videoLongPressRate;
+    const playPromise = player.play();
+    if (playPromise) {
+      playPromise.catch(() => undefined);
+    }
+  }
+
+  function stopVideoFastForwardPreview() {
+    const player = videoPlayerRef.current;
+    clearVideoLongPressTimer();
+    if (!player || !videoLongPressActiveRef.current) {
+      return;
+    }
+    videoLongPressActiveRef.current = false;
+    player.playbackRate = videoPreviousRateRef.current || 1;
+    if (videoWasPausedBeforeRateRef.current) {
+      player.pause();
+    }
+  }
+
+  function resetVideoKeyboardState() {
+    clearVideoLongPressTimer();
+    const player = videoPlayerRef.current;
+    if (player) {
+      player.playbackRate = 1;
+    }
+    videoLongPressActiveRef.current = false;
+    videoPreviousRateRef.current = 1;
+    videoWasPausedBeforeRateRef.current = false;
+  }
+
+  async function handleDeleteCurrentVideo() {
+    if (!selectedVideo) {
+      return;
+    }
+    if (!window.confirm(`确认删除视频「${selectedVideo.title}」吗？`)) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteVideo(selectedVideo.id);
+      setSelectedVideo(null);
+      resetVideoKeyboardState();
+      setVideoPlayerUrl("");
+      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除视频失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleReplaceVideoCover(files: FileList | null) {
+    if (!selectedVideo || !files?.[0]) {
+      return;
+    }
+    const file = files[0];
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await replaceVideoCover(selectedVideo.id, file);
+      setSelectedVideo(detail);
+      setVideoItems((items) => items.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "替换视频封面失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resolveVideoUploadSession(file: File): Promise<VideoUploadSession> {
+    const raw = window.localStorage.getItem(videoResumeStorageKey);
+    if (raw) {
+      try {
+        const saved = JSON.parse(raw) as { sessionId: string; name: string; size: number; lastModified: number };
+        if (saved.name === file.name && saved.size === file.size && saved.lastModified === file.lastModified) {
+          const existing = await getVideoUploadSession(saved.sessionId);
+          setVideoUploadSession(existing);
+          return existing;
+        }
+      } catch {
+        window.localStorage.removeItem(videoResumeStorageKey);
+      }
+    }
+    const session = await createVideoUploadSession({
+      title: videoTitle.trim(),
+      description: videoDescription.trim() || null,
+      filename: file.name,
+      content_type: file.type || "video/mp4",
+      size_bytes: file.size,
+      part_size: videoPartSize
+    });
+    window.localStorage.setItem(
+      videoResumeStorageKey,
+      JSON.stringify({ sessionId: session.id, name: file.name, size: file.size, lastModified: file.lastModified })
+    );
+    setVideoUploadSession(session);
+    return session;
+  }
+
+  async function handleConfirmVideoUpload() {
+    if (!videoFile || !videoTitle.trim()) {
+      return;
+    }
+    if (!videoFile.name.toLowerCase().endsWith(".mp4")) {
+      setError("当前版本仅支持 MP4 视频。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      let session = await resolveVideoUploadSession(videoFile);
+      const uploaded = new Set(session.uploaded_parts);
+      for (let index = 0; index < session.total_parts; index += 1) {
+        if (uploaded.has(index)) {
+          setVideoUploadProgress(Math.round(((index + 1) / session.total_parts) * 100));
+          continue;
+        }
+        const start = index * session.part_size;
+        const end = Math.min(start + session.part_size, videoFile.size);
+        await uploadVideoPart(session.id, index, videoFile.slice(start, end), videoFile.name);
+        setVideoUploadProgress(Math.round(((index + 1) / session.total_parts) * 100));
+      }
+      session = await getVideoUploadSession(session.id);
+      setVideoUploadSession(session);
+      await completeVideoUpload(session.id, {
+        category_tag_ids: videoUploadCategoryIds,
+        category_tag_names: splitCommaList(videoUploadNewCategories),
+        person_ids: videoUploadPersonIds
+      });
+      window.localStorage.removeItem(videoResumeStorageKey);
+      setVideoFile(null);
+      setVideoTitle("");
+      setVideoDescription("");
+      setVideoUploadCategoryIds([]);
+      setVideoUploadPersonIds([]);
+      setVideoUploadNewCategories("");
+      setVideoUploadSession(null);
+      setVideoUploadProgress(0);
+      setIsVideoUploadModalOpen(false);
+      void refreshVideoTaxonomy();
+      void refreshVideos(0, [], [], "");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "视频上传失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCancelVideoUpload() {
+    if (!videoUploadSession) {
+      window.localStorage.removeItem(videoResumeStorageKey);
+      setVideoUploadProgress(0);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await cancelVideoUpload(videoUploadSession.id);
+      window.localStorage.removeItem(videoResumeStorageKey);
+      setVideoUploadSession(null);
+      setVideoUploadProgress(0);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "取消视频上传失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleAddPhotoPerson() {
     if (!selectedPhoto || !manualPersonId) {
       return;
@@ -1174,7 +1746,8 @@ export default function App() {
             ["gallery", "页面 A · 展示图库"],
             ["people", "页面 B · 人物样本库"],
             ["upload", "页面 C · 展示图上传"],
-            ["statistics", "页面 D · 数据统计"]
+            ["videos", "页面 D · 视频库"],
+            ["statistics", "页面 E · 数据统计"]
           ].map(([key, label]) => (
             <button
               key={key}
@@ -1192,7 +1765,356 @@ export default function App() {
 
       {page === "statistics" && <Statistics />}
 
-      {page === "gallery" && (
+      {page === "videos" && (
+        <main className="bili-videos-page">
+          <div className="bili-top-bar">
+            <div className="bili-search-box">
+              <input
+                className="search-input"
+                value={videoSearch}
+                onChange={(event) => setVideoSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+                  }
+                }}
+                placeholder="搜索视频名、简介或文件名"
+              />
+              <button disabled={busy} onClick={() => void refreshVideos(0)}>
+                搜索
+              </button>
+            </div>
+            <button className="primary" onClick={() => setIsVideoUploadModalOpen(true)}>
+              上传视频
+            </button>
+          </div>
+
+          <div className="bili-filters-bar">
+            <div className="bili-filter-row">
+              <span className="bili-filter-label">分区</span>
+              <div className="bili-chip-cloud">
+                <button
+                  className={selectedVideoCategoryIds.length === 0 ? "soft-chip active" : "soft-chip"}
+                  onClick={() => {
+                    setSelectedVideoCategoryIds([]);
+                    void refreshVideos(0, [], selectedVideoPersonIds, videoSearch);
+                  }}
+                >
+                  全部
+                </button>
+                {filteredVideoCategoryTags.map((tag) => (
+                  <button
+                    key={tag.id}
+                    className={selectedVideoCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                    onClick={() => handleToggleVideoFilterCategory(tag.id)}
+                  >
+                    {tag.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="bili-filter-row">
+              <span className="bili-filter-label">UP主</span>
+              <div className="bili-chip-cloud">
+                <button
+                  className={selectedVideoPersonIds.length === 0 ? "video-person-chip active" : "video-person-chip"}
+                  onClick={() => {
+                    setSelectedVideoPersonIds([]);
+                    void refreshVideos(0, selectedVideoCategoryIds, [], videoSearch);
+                  }}
+                >
+                  <b>全部</b>
+                </button>
+                {filteredVideoPeople.map((person) => (
+                  <button
+                    key={person.id}
+                    className={selectedVideoPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
+                    onClick={() => handleToggleVideoFilterPerson(person.id)}
+                  >
+                    {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
+                    <b>{person.name}</b>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="bili-video-grid">
+            {videoItems.map((video) => (
+              <article
+                key={video.id}
+                className="bili-video-card"
+                onClick={() => window.open("#video-play/" + video.id, "_blank")}
+              >
+                <div className="bili-video-cover">
+                  {video.cover_url ? (
+                    <img src={video.cover_url} alt={video.title} loading="lazy" />
+                  ) : (
+                    <span className="placeholder">MP4</span>
+                  )}
+                  <span className={`bili-video-status status-${video.status}`}>{videoStatusLabel(video.status)}</span>
+                  <span className="bili-video-duration">
+                    {video.duration_seconds ? formatDurationSeconds(video.duration_seconds) : formatBytes(video.size_bytes)}
+                  </span>
+                </div>
+                <div className="bili-video-info">
+                  <h3 className="bili-video-title" title={video.title}>{video.title}</h3>
+                  <div className="bili-up-list">
+                    {video.people.map((person) => (
+                      <div className="bili-up-item" key={person.id} title={person.name}>
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
+                        <span>{person.name}</span>
+                      </div>
+                    ))}
+                    {video.people.length === 0 && <span className="muted" style={{fontSize: '0.8rem'}}>无UP主</span>}
+                  </div>
+                  <div className="bili-video-meta">
+                    <span>{formatDate(video.created_at)}</span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          {videoTotal > 0 && (
+            <div className="pagination-row" style={{ marginTop: 'auto' }}>
+              <button disabled={videoOffset === 0 || busy} onClick={() => void refreshVideos(Math.max(0, videoOffset - videoPageSize))}>
+                上一页
+              </button>
+              <span>
+                {videoOffset + 1} - {Math.min(videoOffset + videoPageSize, videoTotal)} / 共 {videoTotal}
+              </span>
+              <button disabled={videoOffset + videoPageSize >= videoTotal || busy} onClick={() => void refreshVideos(videoOffset + videoPageSize)}>
+                下一页
+              </button>
+            </div>
+          )}
+
+          {isVideoUploadModalOpen && (
+            <div className="modal-backdrop">
+              <aside className="panel video-upload-panel bili-modal-content">
+                <div className="section-head">
+                  <div>
+                    <p className="eyebrow">上传视频</p>
+                    <h2>分片入库</h2>
+                  </div>
+                  <button className="close-modal" onClick={() => setIsVideoUploadModalOpen(false)}>关闭</button>
+                </div>
+
+                <label className="upload-box video-upload-box">
+                  <input type="file" accept="video/mp4,.mp4" onChange={(event) => handlePickVideoFile(event.target.files)} />
+                  <strong>{videoFile ? videoFile.name : "选择 MP4 视频"}</strong>
+                  <span>{videoFile ? formatBytes(videoFile.size) : "支持长视频分片上传，刷新后重新选择同一文件可续传。"}</span>
+                </label>
+
+                <div className="stack-editor">
+                  <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="视频名字" />
+                  <textarea
+                    className="rich-text-editor compact"
+                    value={videoDescription}
+                    onChange={(event) => setVideoDescription(event.target.value)}
+                    placeholder="视频简介"
+                  />
+                </div>
+
+                <div className="editor-block">
+                  <label>上传时绑定类别</label>
+                  <div className="chip-cloud compact">
+                    {videoCategoryTags.map((tag) => (
+                      <button
+                        key={tag.id}
+                        className={videoUploadCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                        onClick={() => handleToggleVideoUploadCategory(tag.id)}
+                      >
+                        #{tag.name}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    value={videoUploadNewCategories}
+                    onChange={(event) => setVideoUploadNewCategories(event.target.value)}
+                    placeholder="新类别标签，逗号分隔"
+                  />
+                </div>
+
+                <div className="editor-block">
+                  <label>上传时绑定人物</label>
+                  <div className="video-person-cloud compact">
+                    {videoPeople.map((person) => (
+                      <button
+                        key={person.id}
+                        className={videoUploadPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
+                        onClick={() => handleToggleVideoUploadPerson(person.id)}
+                      >
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
+                        <b>{person.name}</b>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="video-progress">
+                  <strong>{videoUploadProgress}%</strong>
+                  <div className="meter"><span style={{ width: `${videoUploadProgress}%` }} /></div>
+                  {videoUploadSession && <small>{videoUploadSession.uploaded_parts.length} / {videoUploadSession.total_parts} 分片</small>}
+                </div>
+
+                <div className="micro-row wrap">
+                  <button disabled={busy || !videoFile || !videoTitle.trim()} onClick={() => void handleConfirmVideoUpload()}>
+                    开始上传
+                  </button>
+                  <button className="ghost-button" disabled={busy} onClick={() => void handleCancelVideoUpload()}>
+                    清理续传会话
+                  </button>
+                </div>
+
+                <div className="editor-block">
+                  <label>新增视频类别</label>
+                  <div className="inline-editor">
+                    <input value={newVideoCategoryName} onChange={(event) => setNewVideoCategoryName(event.target.value)} placeholder="类别名" />
+                    <button disabled={busy || !newVideoCategoryName.trim()} onClick={() => void handleCreateVideoCategory()}>
+                      新增
+                    </button>
+                  </div>
+                </div>
+
+                <div className="editor-block">
+                  <label>新增视频人物</label>
+                  <input value={newVideoPersonName} onChange={(event) => setNewVideoPersonName(event.target.value)} placeholder="人物名" />
+                  <textarea
+                    className="rich-text-editor compact"
+                    value={newVideoPersonNote}
+                    onChange={(event) => setNewVideoPersonNote(event.target.value)}
+                    placeholder="备注"
+                  />
+                  <input type="file" accept="image/*" onChange={(event) => setNewVideoPersonAvatar(event.target.files?.[0] ?? null)} />
+                  <button disabled={busy || !newVideoPersonName.trim()} onClick={() => void handleCreateVideoPerson()}>
+                    创建视频人物
+                  </button>
+                </div>
+              </aside>
+            </div>
+          )}
+        </main>
+      )}
+
+      {page === "video-play" && (
+        <main className="video-play-page">
+          <section className="video-play-main">
+            {selectedVideo ? (
+              <div className="panel" style={{ padding: '0', overflow: 'hidden' }}>
+                <video
+                  key={selectedVideo.id}
+                  ref={videoPlayerRef}
+                  className="video-play-player"
+                  src={videoPlayerUrl}
+                  poster={selectedVideo.cover_url ?? undefined}
+                  controls
+                  preload="auto"
+                  playsInline
+                  onSeeking={rememberVideoPlaybackState}
+                  onSeeked={resumeVideoAfterSeek}
+                  onCanPlay={resumeVideoAfterSeek}
+                />
+              </div>
+            ) : (
+              <div className="panel" style={{ height: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <p>加载中...</p>
+              </div>
+            )}
+            
+            {selectedVideo && (
+              <div className="video-play-info">
+                <h1>{selectedVideo.title}</h1>
+                <div className="micro-row wrap">
+                  <span>{formatDate(selectedVideo.created_at)}</span>
+                  <span>播放状态：{videoStatusLabel(selectedVideo.status)}</span>
+                  <span>{formatDurationSeconds(selectedVideo.duration_seconds)}</span>
+                  <span>{formatResolution(selectedVideo.width, selectedVideo.height)}</span>
+                  <span>{formatBytes(selectedVideo.size_bytes)}</span>
+                </div>
+                
+                <div className="bili-up-list" style={{ marginTop: '8px' }}>
+                  {selectedVideo.people.map((person) => (
+                    <div className="bili-up-item" key={person.id}>
+                      {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
+                      <span>{person.name}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="micro-row wrap" style={{ marginTop: '8px' }}>
+                  {selectedVideo.category_tags.map((tag) => (
+                    <span key={tag.id} className="pill muted">#{tag.name}</span>
+                  ))}
+                </div>
+
+                <p style={{ marginTop: '16px', lineHeight: '1.6' }}>{selectedVideo.description || "无简介"}</p>
+              </div>
+            )}
+          </section>
+
+          <aside className="video-play-sidebar panel">
+            <div className="section-head compact-head">
+              <div>
+                <p className="eyebrow">视频管理</p>
+                <h2>操作</h2>
+              </div>
+            </div>
+            
+            {selectedVideo && (
+              <div className="detail-copy">
+                <div className="video-cover-manager">
+                  {selectedVideo.cover_url ? (
+                    <img src={selectedVideo.cover_url} alt="视频封面" />
+                  ) : (
+                    <div className="video-cover-empty">暂无封面</div>
+                  )}
+                  <label className="cover-upload-button">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={busy}
+                      onChange={(event) => {
+                        void handleReplaceVideoCover(event.target.files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    替换封面
+                  </label>
+                </div>
+                <p><strong>文件:</strong> {selectedVideo.filename}</p>
+                <p><strong>原始格式:</strong> {formatCodecs(selectedVideo.original_video_codec, selectedVideo.original_audio_codec)}</p>
+                <p><strong>播放格式:</strong> {formatCodecs(selectedVideo.video_codec, selectedVideo.audio_codec)}</p>
+                <p><strong>画面:</strong> {formatResolution(selectedVideo.width, selectedVideo.height)} · {formatDurationSeconds(selectedVideo.duration_seconds)}</p>
+                <p>
+                  {selectedVideo.faststart_applied ? "· 已完成 faststart 优化" : "· 未优化"}
+                </p>
+                {selectedVideo.processing_error && <p style={{color: 'red'}}>优化错误：{selectedVideo.processing_error}</p>}
+                
+                <button 
+                  className="danger-button" 
+                  style={{ marginTop: '20px', width: '100%', background: '#ff3b30', color: '#fff', border: 'none', padding: '10px', borderRadius: '4px', cursor: 'pointer' }}
+                  disabled={busy} 
+                  onClick={() => {
+                    if (confirm("确定要删除此视频吗？")) {
+                      void handleDeleteCurrentVideo().then(() => {
+                        window.close(); // Optional: close tab on delete
+                      });
+                    }
+                  }}
+                >
+                  删除视频
+                </button>
+              </div>
+            )}
+          </aside>
+        </main>
+      )}
+
+
+            {page === "gallery" && (
         <main className="page-grid gallery-page">
           <section className="panel filter-panel">
             <div className="section-head">

@@ -1,0 +1,571 @@
+from __future__ import annotations
+
+from datetime import datetime
+import hashlib
+import json
+import logging
+from pathlib import Path
+import subprocess
+import tempfile
+from uuid import uuid4
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.config import Settings, get_settings
+from app.db import SessionLocal
+from app.models import (
+    VideoCategoryTag,
+    VideoItem,
+    VideoItemCategoryTag,
+    VideoItemPerson,
+    VideoPerson,
+    VideoUploadPart,
+    VideoUploadSession,
+)
+from app.schemas import VideoUploadCompleteRequest, VideoUploadSessionCreate
+from app.services.storage import MinioStorage
+
+logger = logging.getLogger(__name__)
+
+
+class VideoService:
+    default_part_size = 16 * 1024 * 1024
+    min_part_size = 5 * 1024 * 1024
+    max_part_size = 128 * 1024 * 1024
+    supported_content_types = {"video/mp4", "application/mp4", "application/octet-stream", ""}
+    browser_video_codecs = {"h264", "avc1"}
+    browser_audio_codecs = {"aac", "mp3", "mp4a"}
+
+    def __init__(self, storage: MinioStorage, settings: Settings | None = None) -> None:
+        self.storage = storage
+        self.settings = settings or get_settings()
+
+    def create_upload_session(self, db: Session, payload: VideoUploadSessionCreate) -> VideoUploadSession:
+        title = payload.title.strip()
+        filename = Path(payload.filename).name.strip()
+        content_type = (payload.content_type or "").strip() or "video/mp4"
+        self._validate_video_file(filename, content_type)
+
+        part_size = payload.part_size or self.default_part_size
+        part_size = min(max(part_size, self.min_part_size), self.max_part_size)
+        if payload.size_bytes <= self.default_part_size:
+            part_size = max(payload.size_bytes, 1)
+
+        total_parts = (payload.size_bytes + part_size - 1) // part_size
+        session = VideoUploadSession(
+            id=uuid4().hex,
+            filename=filename,
+            title=title,
+            description=payload.description,
+            content_type=content_type,
+            size_bytes=payload.size_bytes,
+            part_size=part_size,
+            total_parts=total_parts,
+            sha256=payload.sha256.lower() if payload.sha256 else None,
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        return session
+
+    def put_upload_part(
+        self,
+        db: Session,
+        session: VideoUploadSession,
+        part_index: int,
+        payload: bytes,
+        sha256: str | None = None,
+    ) -> VideoUploadPart:
+        if session.status != "uploading":
+            raise ValueError("上传会话不是上传中状态")
+        if part_index < 0 or part_index >= session.total_parts:
+            raise ValueError("分片序号超出范围")
+
+        expected_size = self._expected_part_size(session, part_index)
+        if len(payload) != expected_size:
+            raise ValueError(f"分片大小不正确，应为 {expected_size} 字节")
+
+        actual_sha256 = hashlib.sha256(payload).hexdigest()
+        if sha256 and sha256.lower() != actual_sha256:
+            raise ValueError("分片 SHA256 校验失败")
+
+        existing = db.scalar(
+            select(VideoUploadPart).where(
+                VideoUploadPart.session_id == session.id,
+                VideoUploadPart.part_index == part_index,
+            )
+        )
+        object_key = self._build_part_object_key(session.id, part_index)
+        self.storage.put_bytes(object_key, payload, session.content_type)
+        if existing:
+            if existing.object_key != object_key:
+                self.storage.remove_object(existing.object_key)
+            existing.object_key = object_key
+            existing.size_bytes = len(payload)
+            existing.sha256 = actual_sha256
+            part = existing
+        else:
+            part = VideoUploadPart(
+                session_id=session.id,
+                part_index=part_index,
+                object_key=object_key,
+                size_bytes=len(payload),
+                sha256=actual_sha256,
+            )
+            db.add(part)
+        db.commit()
+        db.refresh(part)
+        return part
+
+    def complete_upload(
+        self,
+        db: Session,
+        session: VideoUploadSession,
+        payload: VideoUploadCompleteRequest,
+    ) -> VideoItem:
+        parts = db.scalars(
+            select(VideoUploadPart)
+            .where(VideoUploadPart.session_id == session.id)
+            .order_by(VideoUploadPart.part_index.asc())
+        ).all()
+        uploaded_indexes = [part.part_index for part in parts]
+        if uploaded_indexes != list(range(session.total_parts)):
+            raise ValueError("视频分片尚未上传完整")
+
+        final_key = self._build_video_object_key(session.filename)
+        try:
+            if len(parts) == 1:
+                self.storage.put_bytes(final_key, self.storage.get_bytes(parts[0].object_key), session.content_type)
+            else:
+                self.storage.compose_object(final_key, [part.object_key for part in parts])
+
+            if session.sha256:
+                actual_sha256 = self.hash_object(final_key)
+                if actual_sha256 != session.sha256:
+                    self.storage.remove_object(final_key)
+                    raise ValueError("视频 SHA256 校验失败")
+
+            video = VideoItem(
+                title=session.title,
+                description=session.description,
+                filename=session.filename,
+                content_type=session.content_type or "video/mp4",
+                sha256=session.sha256,
+                object_key=final_key,
+                size_bytes=session.size_bytes,
+                status="uploaded",
+            )
+            db.add(video)
+            db.flush()
+            self.replace_video_tags(db, video, payload.category_tag_ids, payload.category_tag_names)
+            self.replace_video_people(db, video, payload.person_ids)
+            temp_keys = [part.object_key for part in parts]
+            for part in parts:
+                db.delete(part)
+            db.delete(session)
+            db.commit()
+            self.storage.remove_objects(temp_keys)
+            db.refresh(video)
+            return video
+        except Exception:
+            db.rollback()
+            raise
+
+    def process_video_for_playback(self, video_id: int) -> None:
+        if not self.settings.video_faststart_enabled:
+            self._mark_video_ready_without_processing(video_id)
+            return
+
+        db = SessionLocal()
+        try:
+            video = db.get(VideoItem, video_id)
+            if video is None:
+                return
+            video.status = "processing"
+            video.processing_error = None
+            db.commit()
+            object_key = video.object_key
+
+            with tempfile.TemporaryDirectory(prefix="pictureshow-video-") as temp_dir:
+                input_path = Path(temp_dir) / "input.mp4"
+                output_path = Path(temp_dir) / "playback.mp4"
+                cover_path = Path(temp_dir) / "cover.jpg"
+                self._download_object_to_file(object_key, input_path)
+                original_info = self._probe_video(input_path)
+                self._extract_cover(input_path, cover_path, original_info.duration_seconds)
+                if self._is_browser_friendly(original_info):
+                    self._run_faststart(input_path, output_path)
+                else:
+                    self._run_browser_transcode(input_path, output_path)
+                playback_info = self._probe_video(output_path)
+                size_bytes = output_path.stat().st_size
+                sha256 = self._hash_file(output_path)
+                with output_path.open("rb") as stream:
+                    self.storage.put_stream(object_key, stream, size_bytes, "video/mp4")
+                cover_key: str | None = None
+                if cover_path.exists() and cover_path.stat().st_size > 0:
+                    cover_key = self._build_cover_object_key(video_id)
+                    with cover_path.open("rb") as stream:
+                        self.storage.put_stream(cover_key, stream, cover_path.stat().st_size, "image/jpeg")
+
+            video = db.get(VideoItem, video_id)
+            if video is None:
+                return
+            old_cover_key = video.cover_object_key
+            video.status = "ready"
+            video.faststart_applied = True
+            video.size_bytes = size_bytes
+            video.sha256 = sha256
+            video.content_type = "video/mp4"
+            video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds
+            video.width = playback_info.width or original_info.width
+            video.height = playback_info.height or original_info.height
+            video.original_video_codec = original_info.video_codec
+            video.original_audio_codec = original_info.audio_codec
+            video.video_codec = playback_info.video_codec
+            video.audio_codec = playback_info.audio_codec
+            if cover_key:
+                video.cover_object_key = cover_key
+                video.cover_content_type = "image/jpeg"
+            video.processed_at = datetime.utcnow()
+            video.processing_error = None
+            db.commit()
+            if cover_key and old_cover_key and old_cover_key != cover_key:
+                self.storage.remove_object(old_cover_key)
+        except Exception as exc:
+            logger.exception("Video processing failed video_id=%s", video_id)
+            db.rollback()
+            video = db.get(VideoItem, video_id)
+            if video is not None:
+                video.status = "processing_failed"
+                video.faststart_applied = False
+                video.processed_at = datetime.utcnow()
+                video.processing_error = str(exc)[:2000]
+                db.commit()
+        finally:
+            db.close()
+
+    def optimize_video_faststart(self, video_id: int) -> None:
+        self.process_video_for_playback(video_id)
+
+    def _mark_video_ready_without_processing(self, video_id: int) -> None:
+        db = SessionLocal()
+        try:
+            video = db.get(VideoItem, video_id)
+            if video is None:
+                return
+            video.status = "ready"
+            video.processing_error = None
+            db.commit()
+        finally:
+            db.close()
+
+    def cancel_upload(self, db: Session, session: VideoUploadSession) -> None:
+        parts = db.scalars(select(VideoUploadPart).where(VideoUploadPart.session_id == session.id)).all()
+        temp_keys = [part.object_key for part in parts]
+        for part in parts:
+            db.delete(part)
+        db.delete(session)
+        db.commit()
+        self.storage.remove_objects(temp_keys)
+
+    def delete_video(self, db: Session, video: VideoItem) -> None:
+        object_key = video.object_key
+        cover_key = video.cover_object_key
+        db.delete(video)
+        db.commit()
+        self.storage.remove_object(object_key)
+        if cover_key:
+            self.storage.remove_object(cover_key)
+
+    def save_person_avatar(self, payload: bytes, filename: str, content_type: str | None) -> tuple[str, str | None]:
+        clean_name = Path(filename).name or "avatar"
+        avatar_type = content_type or "application/octet-stream"
+        if not avatar_type.startswith("image/"):
+            raise ValueError("人物展示照片必须是图片")
+        object_key = f"videos/people/{uuid4().hex}-{clean_name}"
+        self.storage.put_bytes(object_key, payload, avatar_type)
+        return object_key, avatar_type
+
+    def save_video_cover(self, db: Session, video: VideoItem, payload: bytes, filename: str, content_type: str | None) -> VideoItem:
+        if not content_type or not content_type.startswith("image/"):
+            raise ValueError("视频封面必须是图片")
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            suffix = ".jpg"
+        object_key = f"videos/covers/{video.id}-{uuid4().hex}{suffix}"
+        old_cover_key = video.cover_object_key
+        self.storage.put_bytes(object_key, payload, content_type)
+        video.cover_object_key = object_key
+        video.cover_content_type = content_type
+        db.add(video)
+        db.commit()
+        db.refresh(video)
+        if old_cover_key and old_cover_key != object_key:
+            self.storage.remove_object(old_cover_key)
+        return video
+
+    def replace_video_tags(
+        self,
+        db: Session,
+        video: VideoItem,
+        tag_ids: list[int],
+        tag_names: list[str],
+    ) -> None:
+        for link in list(video.category_links):
+            db.delete(link)
+        db.flush()
+        tags: list[VideoCategoryTag] = []
+        for tag_id in dict.fromkeys(tag_ids):
+            tag = db.get(VideoCategoryTag, tag_id)
+            if tag is None:
+                raise ValueError("视频类别标签不存在")
+            tags.append(tag)
+        for name in dict.fromkeys(name.strip() for name in tag_names if name.strip()):
+            tags.append(self.find_or_create_category_tag(db, name))
+        seen: set[int] = set()
+        for tag in tags:
+            if tag.id in seen:
+                continue
+            seen.add(tag.id)
+            db.add(VideoItemCategoryTag(video_id=video.id, tag_id=tag.id))
+
+    def replace_video_people(self, db: Session, video: VideoItem, person_ids: list[int]) -> None:
+        for link in list(video.person_links):
+            db.delete(link)
+        db.flush()
+        for person_id in dict.fromkeys(person_ids):
+            person = db.get(VideoPerson, person_id)
+            if person is None:
+                raise ValueError("视频人物不存在")
+            db.add(VideoItemPerson(video_id=video.id, person_id=person.id))
+
+    def find_or_create_category_tag(self, db: Session, name: str) -> VideoCategoryTag:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("标签名称不能为空")
+        tag = db.scalar(select(VideoCategoryTag).where(VideoCategoryTag.name == normalized))
+        if tag is None:
+            tag = VideoCategoryTag(name=normalized)
+            db.add(tag)
+            db.flush()
+        return tag
+
+    def hash_object(self, object_key: str) -> str:
+        digest = hashlib.sha256()
+        response = self.storage.get_stream(object_key)
+        try:
+            for chunk in response.stream(1024 * 1024):
+                digest.update(chunk)
+        finally:
+            response.close()
+            response.release_conn()
+        return digest.hexdigest()
+
+    def _download_object_to_file(self, object_key: str, path: Path) -> None:
+        response = self.storage.get_stream(object_key)
+        try:
+            with path.open("wb") as handle:
+                for chunk in response.stream(1024 * 1024):
+                    handle.write(chunk)
+        finally:
+            response.close()
+            response.release_conn()
+
+    def _hash_file(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _run_faststart(self, input_path: Path, output_path: Path) -> None:
+        command = [
+            self.settings.ffmpeg_path,
+            "-y",
+            "-i",
+            str(input_path),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=self.settings.video_faststart_timeout_seconds,
+            check=False,
+        )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout or "ffmpeg faststart failed").strip()
+            raise RuntimeError(message[-2000:])
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            raise RuntimeError("ffmpeg faststart did not create output video")
+
+    def _run_browser_transcode(self, input_path: Path, output_path: Path) -> None:
+        command = [
+            self.settings.ffmpeg_path,
+            "-y",
+            "-i",
+            str(input_path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=self.settings.video_transcode_timeout_seconds,
+            check=False,
+        )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout or "ffmpeg transcode failed").strip()
+            raise RuntimeError(message[-2000:])
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            raise RuntimeError("ffmpeg transcode did not create output video")
+
+    def _extract_cover(self, input_path: Path, output_path: Path, duration_seconds: float | None) -> None:
+        capture_at = self.settings.video_cover_capture_seconds
+        if duration_seconds and duration_seconds > 0:
+            capture_at = min(max(capture_at, duration_seconds * 0.1), max(duration_seconds - 0.1, 0))
+        command = [
+            self.settings.ffmpeg_path,
+            "-y",
+            "-ss",
+            f"{capture_at:.3f}",
+            "-i",
+            str(input_path),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=1280:-2:force_original_aspect_ratio=decrease",
+            "-q:v",
+            "3",
+            str(output_path),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.warning("Video cover extraction failed: %s", (result.stderr or result.stdout or "").strip()[-1000:])
+
+    def _probe_video(self, path: Path) -> "VideoProbeInfo":
+        command = [
+            self.settings.ffprobe_path,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout or "ffprobe failed").strip()
+            raise RuntimeError(message[-2000:])
+        payload = json.loads(result.stdout or "{}")
+        video_stream = next((stream for stream in payload.get("streams", []) if stream.get("codec_type") == "video"), {})
+        audio_stream = next((stream for stream in payload.get("streams", []) if stream.get("codec_type") == "audio"), {})
+        duration = self._parse_float(video_stream.get("duration")) or self._parse_float(payload.get("format", {}).get("duration"))
+        return VideoProbeInfo(
+            duration_seconds=duration,
+            width=self._parse_int(video_stream.get("width")),
+            height=self._parse_int(video_stream.get("height")),
+            video_codec=self._normalize_codec(video_stream.get("codec_name")),
+            audio_codec=self._normalize_codec(audio_stream.get("codec_name")),
+        )
+
+    def _is_browser_friendly(self, info: "VideoProbeInfo") -> bool:
+        if info.video_codec not in self.browser_video_codecs:
+            return False
+        return info.audio_codec is None or info.audio_codec in self.browser_audio_codecs
+
+    def _build_cover_object_key(self, video_id: int) -> str:
+        return f"videos/covers/{video_id}-{uuid4().hex}.jpg"
+
+    def _normalize_codec(self, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        return normalized or None
+
+    def _parse_float(self, value: object) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_int(self, value: object) -> int | None:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _expected_part_size(self, session: VideoUploadSession, part_index: int) -> int:
+        start = part_index * session.part_size
+        end = min(start + session.part_size, session.size_bytes)
+        return end - start
+
+    def _validate_video_file(self, filename: str, content_type: str) -> None:
+        if Path(filename).suffix.lower() != ".mp4":
+            raise ValueError("当前版本仅支持 MP4 视频")
+        if content_type not in self.supported_content_types:
+            raise ValueError("当前版本仅支持 video/mp4")
+
+    def _build_video_object_key(self, filename: str) -> str:
+        suffix = Path(filename).suffix.lower() or ".mp4"
+        return f"videos/library/{uuid4().hex}{suffix}"
+
+    def _build_part_object_key(self, session_id: str, part_index: int) -> str:
+        return f"videos/tmp/{session_id}/part-{part_index:06d}"
+
+
+class VideoProbeInfo:
+    def __init__(
+        self,
+        duration_seconds: float | None,
+        width: int | None,
+        height: int | None,
+        video_codec: str | None,
+        audio_codec: str | None,
+    ) -> None:
+        self.duration_seconds = duration_seconds
+        self.width = width
+        self.height = height
+        self.video_codec = video_codec
+        self.audio_codec = audio_codec

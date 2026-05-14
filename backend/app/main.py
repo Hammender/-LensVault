@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from io import BytesIO
 import logging
+from urllib.parse import quote
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from PIL import Image
@@ -24,6 +25,12 @@ from app.models import (
     Tag,
     Task,
     UploadHistory,
+    VideoCategoryTag,
+    VideoItem,
+    VideoItemCategoryTag,
+    VideoItemPerson,
+    VideoPerson,
+    VideoUploadSession,
 )
 from app.schemas import (
     FaceRead,
@@ -50,6 +57,21 @@ from app.schemas import (
     TagUpdate,
     TaskRead,
     UploadHistoryRead,
+    PaginatedVideos,
+    VideoCategoryTagCreate,
+    VideoCategoryTagRead,
+    VideoCategoryTagUpdate,
+    VideoItemDetail,
+    VideoItemListItem,
+    VideoMetadataUpdate,
+    VideoPersonBindCreate,
+    VideoPersonRead,
+    VideoPersonUpdate,
+    VideoTagBindCreate,
+    VideoUploadCompleteRequest,
+    VideoUploadPartRead,
+    VideoUploadSessionCreate,
+    VideoUploadSessionRead,
 )
 from app.services.face import FaceService
 from app.services.importer import PictureService
@@ -57,6 +79,7 @@ from app.services.milvus import MilvusVectorStore
 from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
 from app.services.tasks import create_task, fail_incomplete_tasks, update_task
+from app.services.videos import VideoService
 
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -83,6 +106,7 @@ face_service = FaceService(settings)
 vector_store = MilvusVectorStore(settings)
 ocr_service = OcrService()
 picture_service = PictureService(storage, face_service, vector_store, ocr_service, settings)
+video_service = VideoService(storage)
 
 
 @app.on_event("startup")
@@ -170,6 +194,125 @@ def _gallery_photo_to_detail(photo: GalleryPhoto) -> GalleryPhotoDetail:
         created_at=photo.created_at,
         content_type=photo.content_type,
     )
+
+
+def _video_person_to_read(person: VideoPerson) -> VideoPersonRead:
+    return VideoPersonRead(
+        id=person.id,
+        name=person.name,
+        note=person.note,
+        avatar_url=f"/api/video-people/{person.id}/avatar" if person.avatar_object_key else None,
+        created_at=person.created_at,
+        updated_at=person.updated_at,
+    )
+
+
+def _video_category_to_read(tag: VideoCategoryTag) -> VideoCategoryTagRead:
+    return VideoCategoryTagRead.model_validate(tag)
+
+
+def _video_play_url(video: VideoItem) -> str:
+    fallback_url = f"/api/videos/{video.id}/stream"
+    if not settings.video_use_presigned_play_url:
+        return fallback_url
+    try:
+        return storage.presigned_get_url(video.object_key, settings.video_presigned_url_expires_seconds)
+    except Exception:
+        logger.exception("Failed to create video presigned URL video_id=%s", video.id)
+        return fallback_url
+
+
+def _video_cover_url(video: VideoItem) -> str | None:
+    if not video.cover_object_key:
+        return None
+    return f"/api/videos/{video.id}/cover"
+
+
+def _video_to_list_item(video: VideoItem) -> VideoItemListItem:
+    categories = sorted((link.tag for link in video.category_links), key=lambda item: item.name.lower())
+    people = sorted((link.person for link in video.person_links), key=lambda item: item.name.lower())
+    return VideoItemListItem(
+        id=video.id,
+        title=video.title,
+        description=video.description,
+        filename=video.filename,
+        content_type=video.content_type,
+        size_bytes=video.size_bytes,
+        duration_seconds=video.duration_seconds,
+        width=video.width,
+        height=video.height,
+        original_video_codec=video.original_video_codec,
+        original_audio_codec=video.original_audio_codec,
+        video_codec=video.video_codec,
+        audio_codec=video.audio_codec,
+        status=video.status,
+        category_tags=[_video_category_to_read(tag) for tag in categories],
+        people=[_video_person_to_read(person) for person in people],
+        stream_url=f"/api/videos/{video.id}/stream",
+        play_url=_video_play_url(video),
+        cover_url=_video_cover_url(video),
+        faststart_applied=video.faststart_applied,
+        processed_at=video.processed_at,
+        processing_error=video.processing_error,
+        created_at=video.created_at,
+        updated_at=video.updated_at,
+    )
+
+
+def _video_to_detail(video: VideoItem) -> VideoItemDetail:
+    item = _video_to_list_item(video)
+    return VideoItemDetail(**item.model_dump(), sha256=video.sha256)
+
+
+def _video_session_to_read(session: VideoUploadSession) -> VideoUploadSessionRead:
+    uploaded_parts = sorted(part.part_index for part in session.parts)
+    return VideoUploadSessionRead(
+        id=session.id,
+        filename=session.filename,
+        title=session.title,
+        description=session.description,
+        content_type=session.content_type,
+        size_bytes=session.size_bytes,
+        part_size=session.part_size,
+        total_parts=session.total_parts,
+        uploaded_parts=uploaded_parts,
+        status=session.status,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
+
+
+def _parse_range_header(range_header: str | None, size: int) -> tuple[int, int] | None:
+    if not range_header:
+        return None
+    unit, _, range_value = range_header.partition("=")
+    if unit.strip().lower() != "bytes" or "," in range_value:
+        raise HTTPException(status_code=416, detail="Invalid range", headers={"Content-Range": f"bytes */{size}"})
+    start_text, _, end_text = range_value.partition("-")
+    try:
+        if start_text == "":
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                raise ValueError
+            start = max(size - suffix_length, 0)
+            end = size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+    except ValueError as exc:
+        raise HTTPException(status_code=416, detail="Invalid range", headers={"Content-Range": f"bytes */{size}"}) from exc
+    if start < 0 or end < start or start >= size:
+        raise HTTPException(status_code=416, detail="Invalid range", headers={"Content-Range": f"bytes */{size}"})
+    return start, min(end, size - 1)
+
+
+def _iter_minio_response(response, chunk_size: int = 1024 * 1024):
+    try:
+        for chunk in response.stream(chunk_size):
+            yield chunk
+    finally:
+        response.close()
+        response.release_conn()
 
 
 def _sample_photo_to_read(photo: SamplePhoto) -> SamplePhotoRead:
@@ -1202,6 +1345,407 @@ def re_recognize_gallery_photo(photo_id: int, db: Session = Depends(get_db)) -> 
 @app.post("/api/gallery/photos/re-recognize-unknown")
 def re_recognize_unknown_gallery_photos(db: Session = Depends(get_db)) -> dict[str, int]:
     return picture_service.re_recognize_unknown_gallery_photos(db)
+
+
+@app.get("/api/video-category-tags", response_model=list[VideoCategoryTagRead])
+def list_video_category_tags(db: Session = Depends(get_db)) -> list[VideoCategoryTagRead]:
+    tags = db.scalars(select(VideoCategoryTag).order_by(VideoCategoryTag.name.asc())).all()
+    return [_video_category_to_read(tag) for tag in tags]
+
+
+@app.post("/api/video-category-tags", response_model=VideoCategoryTagRead)
+def create_video_category_tag(payload: VideoCategoryTagCreate, db: Session = Depends(get_db)) -> VideoCategoryTagRead:
+    try:
+        tag = video_service.find_or_create_category_tag(db, payload.name)
+        db.commit()
+        db.refresh(tag)
+        return _video_category_to_read(tag)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/video-category-tags/{tag_id}", response_model=VideoCategoryTagRead)
+def update_video_category_tag(
+    tag_id: int,
+    payload: VideoCategoryTagUpdate,
+    db: Session = Depends(get_db),
+) -> VideoCategoryTagRead:
+    tag = db.get(VideoCategoryTag, tag_id)
+    if tag is None:
+        raise HTTPException(status_code=404, detail="Video category tag not found")
+    normalized = payload.name.strip()
+    duplicate = db.scalar(select(VideoCategoryTag).where(VideoCategoryTag.name == normalized, VideoCategoryTag.id != tag_id))
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Video category tag already exists")
+    tag.name = normalized
+    db.add(tag)
+    db.commit()
+    db.refresh(tag)
+    return _video_category_to_read(tag)
+
+
+@app.delete("/api/video-category-tags/{tag_id}")
+def delete_video_category_tag(tag_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+    tag = db.get(VideoCategoryTag, tag_id)
+    if tag is None:
+        raise HTTPException(status_code=404, detail="Video category tag not found")
+    db.delete(tag)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@app.get("/api/video-people", response_model=list[VideoPersonRead])
+def list_video_people(db: Session = Depends(get_db)) -> list[VideoPersonRead]:
+    people = db.scalars(select(VideoPerson).order_by(VideoPerson.name.asc())).all()
+    return [_video_person_to_read(person) for person in people]
+
+
+@app.post("/api/video-people", response_model=VideoPersonRead)
+async def create_video_person(
+    name: str = Form(...),
+    note: str | None = Form(default=None),
+    avatar: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+) -> VideoPersonRead:
+    normalized = name.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Video person name is required")
+    if db.scalar(select(VideoPerson).where(VideoPerson.name == normalized)):
+        raise HTTPException(status_code=409, detail="Video person already exists")
+    avatar_key = None
+    avatar_type = None
+    if avatar is not None and avatar.filename:
+        try:
+            avatar_key, avatar_type = video_service.save_person_avatar(await avatar.read(), avatar.filename, avatar.content_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    person = VideoPerson(name=normalized, note=note, avatar_object_key=avatar_key, avatar_content_type=avatar_type)
+    db.add(person)
+    db.commit()
+    db.refresh(person)
+    return _video_person_to_read(person)
+
+
+@app.patch("/api/video-people/{person_id}", response_model=VideoPersonRead)
+async def update_video_person(
+    person_id: int,
+    name: str | None = Form(default=None),
+    note: str | None = Form(default=None),
+    avatar: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+) -> VideoPersonRead:
+    person = db.get(VideoPerson, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="Video person not found")
+    if name is not None:
+        normalized = name.strip()
+        if not normalized:
+            raise HTTPException(status_code=400, detail="Video person name is required")
+        duplicate = db.scalar(select(VideoPerson).where(VideoPerson.name == normalized, VideoPerson.id != person_id))
+        if duplicate:
+            raise HTTPException(status_code=409, detail="Video person already exists")
+        person.name = normalized
+    person.note = note
+    old_avatar_key = None
+    if avatar is not None and avatar.filename:
+        try:
+            avatar_key, avatar_type = video_service.save_person_avatar(await avatar.read(), avatar.filename, avatar.content_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        old_avatar_key = person.avatar_object_key
+        person.avatar_object_key = avatar_key
+        person.avatar_content_type = avatar_type
+    db.add(person)
+    db.commit()
+    db.refresh(person)
+    if old_avatar_key:
+        storage.remove_object(old_avatar_key)
+    return _video_person_to_read(person)
+
+
+@app.delete("/api/video-people/{person_id}")
+def delete_video_person(person_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+    person = db.get(VideoPerson, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="Video person not found")
+    avatar_key = person.avatar_object_key
+    db.delete(person)
+    db.commit()
+    if avatar_key:
+        storage.remove_object(avatar_key)
+    return {"status": "deleted"}
+
+
+@app.get("/api/video-people/{person_id}/avatar")
+def get_video_person_avatar(person_id: int, db: Session = Depends(get_db)) -> Response:
+    person = db.get(VideoPerson, person_id)
+    if person is None or not person.avatar_object_key:
+        raise HTTPException(status_code=404, detail="Video person avatar not found")
+    payload = storage.get_bytes(person.avatar_object_key)
+    return Response(content=payload, media_type=person.avatar_content_type or "application/octet-stream")
+
+
+@app.post("/api/videos/upload-sessions", response_model=VideoUploadSessionRead)
+def create_video_upload_session(payload: VideoUploadSessionCreate, db: Session = Depends(get_db)) -> VideoUploadSessionRead:
+    try:
+        session = video_service.create_upload_session(db, payload)
+        return _video_session_to_read(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/videos/upload-sessions/{session_id}", response_model=VideoUploadSessionRead)
+def get_video_upload_session(session_id: str, db: Session = Depends(get_db)) -> VideoUploadSessionRead:
+    session = db.get(VideoUploadSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Video upload session not found")
+    return _video_session_to_read(session)
+
+
+@app.put("/api/videos/upload-sessions/{session_id}/parts/{part_index}", response_model=VideoUploadPartRead)
+async def upload_video_part(
+    session_id: str,
+    part_index: int,
+    file: UploadFile = File(...),
+    sha256: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+) -> VideoUploadPartRead:
+    session = db.get(VideoUploadSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Video upload session not found")
+    try:
+        part = video_service.put_upload_part(db, session, part_index, await file.read(), sha256)
+        return VideoUploadPartRead(
+            session_id=part.session_id,
+            part_index=part.part_index,
+            size_bytes=part.size_bytes,
+            sha256=part.sha256,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/videos/upload-sessions/{session_id}/complete", response_model=VideoItemDetail)
+def complete_video_upload(
+    session_id: str,
+    payload: VideoUploadCompleteRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> VideoItemDetail:
+    session = db.get(VideoUploadSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Video upload session not found")
+    try:
+        video = video_service.complete_upload(db, session, payload)
+        background_tasks.add_task(video_service.optimize_video_faststart, video.id)
+        return _video_to_detail(video)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/videos/upload-sessions/{session_id}")
+def cancel_video_upload(session_id: str, db: Session = Depends(get_db)) -> dict[str, str]:
+    session = db.get(VideoUploadSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Video upload session not found")
+    video_service.cancel_upload(db, session)
+    return {"status": "cancelled"}
+
+
+@app.get("/api/videos", response_model=PaginatedVideos)
+def list_videos(
+    category_tag_ids: list[int] = Query(default=[]),
+    person_ids: list[int] = Query(default=[]),
+    query_text: str | None = Query(default=None, alias="query"),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=24, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> PaginatedVideos:
+    query = select(VideoItem).order_by(VideoItem.created_at.desc())
+    count_query = select(func.count(VideoItem.id))
+    if query_text and query_text.strip():
+        keyword = f"%{query_text.strip()}%"
+        query = query.where((VideoItem.title.like(keyword)) | (VideoItem.description.like(keyword)) | (VideoItem.filename.like(keyword)))
+        count_query = count_query.where(
+            (VideoItem.title.like(keyword)) | (VideoItem.description.like(keyword)) | (VideoItem.filename.like(keyword))
+        )
+    if category_tag_ids:
+        matched_categories = (
+            select(VideoItemCategoryTag.video_id)
+            .where(VideoItemCategoryTag.tag_id.in_(category_tag_ids))
+            .group_by(VideoItemCategoryTag.video_id)
+            .having(func.count(func.distinct(VideoItemCategoryTag.tag_id)) == len(set(category_tag_ids)))
+            .subquery()
+        )
+        query = query.where(VideoItem.id.in_(select(matched_categories.c.video_id)))
+        count_query = count_query.where(VideoItem.id.in_(select(matched_categories.c.video_id)))
+    if person_ids:
+        matched_people = (
+            select(VideoItemPerson.video_id)
+            .where(VideoItemPerson.person_id.in_(person_ids))
+            .group_by(VideoItemPerson.video_id)
+            .having(func.count(func.distinct(VideoItemPerson.person_id)) == len(set(person_ids)))
+            .subquery()
+        )
+        query = query.where(VideoItem.id.in_(select(matched_people.c.video_id)))
+        count_query = count_query.where(VideoItem.id.in_(select(matched_people.c.video_id)))
+    total = db.scalar(count_query) or 0
+    videos = db.scalars(query.offset(offset).limit(limit)).unique().all()
+    return PaginatedVideos(items=[_video_to_list_item(video) for video in videos], total=total, offset=offset, limit=limit)
+
+
+@app.get("/api/videos/{video_id}", response_model=VideoItemDetail)
+def get_video(video_id: int, db: Session = Depends(get_db)) -> VideoItemDetail:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return _video_to_detail(video)
+
+
+@app.patch("/api/videos/{video_id}", response_model=VideoItemDetail)
+def update_video(video_id: int, payload: VideoMetadataUpdate, db: Session = Depends(get_db)) -> VideoItemDetail:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if payload.title is not None:
+        video.title = payload.title.strip()
+    if payload.description is not None:
+        video.description = payload.description
+    db.add(video)
+    db.commit()
+    db.refresh(video)
+    return _video_to_detail(video)
+
+
+@app.delete("/api/videos/{video_id}")
+def delete_video(video_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    video_service.delete_video(db, video)
+    return {"status": "deleted"}
+
+
+@app.get("/api/videos/{video_id}/cover")
+def get_video_cover(video_id: int, db: Session = Depends(get_db)) -> Response:
+    video = db.get(VideoItem, video_id)
+    if video is None or not video.cover_object_key:
+        raise HTTPException(status_code=404, detail="Video cover not found")
+    payload = storage.get_bytes(video.cover_object_key)
+    return Response(content=payload, media_type=video.cover_content_type or "image/jpeg")
+
+
+@app.put("/api/videos/{video_id}/cover", response_model=VideoItemDetail)
+async def replace_video_cover(
+    video_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> VideoItemDetail:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    try:
+        updated = video_service.save_video_cover(db, video, await file.read(), file.filename or "cover.jpg", file.content_type)
+        return _video_to_detail(updated)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/videos/{video_id}/category-tags", response_model=VideoItemDetail)
+def add_video_category_tag(video_id: int, payload: VideoTagBindCreate, db: Session = Depends(get_db)) -> VideoItemDetail:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    try:
+        tag = db.get(VideoCategoryTag, payload.tag_id) if payload.tag_id else video_service.find_or_create_category_tag(db, payload.name or "")
+        if tag is None:
+            raise HTTPException(status_code=404, detail="Video category tag not found")
+        existing = db.scalar(select(VideoItemCategoryTag).where(VideoItemCategoryTag.video_id == video.id, VideoItemCategoryTag.tag_id == tag.id))
+        if existing is None:
+            db.add(VideoItemCategoryTag(video_id=video.id, tag_id=tag.id))
+        db.commit()
+        db.refresh(video)
+        return _video_to_detail(video)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/videos/{video_id}/category-tags/{tag_id}", response_model=VideoItemDetail)
+def remove_video_category_tag(video_id: int, tag_id: int, db: Session = Depends(get_db)) -> VideoItemDetail:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    link = db.scalar(select(VideoItemCategoryTag).where(VideoItemCategoryTag.video_id == video_id, VideoItemCategoryTag.tag_id == tag_id))
+    if link is None:
+        raise HTTPException(status_code=404, detail="Video category tag link not found")
+    db.delete(link)
+    db.commit()
+    db.refresh(video)
+    return _video_to_detail(video)
+
+
+@app.post("/api/videos/{video_id}/people", response_model=VideoItemDetail)
+def add_video_person(video_id: int, payload: VideoPersonBindCreate, db: Session = Depends(get_db)) -> VideoItemDetail:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    person = db.get(VideoPerson, payload.person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="Video person not found")
+    existing = db.scalar(select(VideoItemPerson).where(VideoItemPerson.video_id == video.id, VideoItemPerson.person_id == person.id))
+    if existing is None:
+        db.add(VideoItemPerson(video_id=video.id, person_id=person.id))
+        db.commit()
+        db.refresh(video)
+    return _video_to_detail(video)
+
+
+@app.delete("/api/videos/{video_id}/people/{person_id}", response_model=VideoItemDetail)
+def remove_video_person(video_id: int, person_id: int, db: Session = Depends(get_db)) -> VideoItemDetail:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    link = db.scalar(select(VideoItemPerson).where(VideoItemPerson.video_id == video_id, VideoItemPerson.person_id == person_id))
+    if link is None:
+        raise HTTPException(status_code=404, detail="Video person link not found")
+    db.delete(link)
+    db.commit()
+    db.refresh(video)
+    return _video_to_detail(video)
+
+
+@app.get("/api/videos/{video_id}/stream")
+def stream_video(video_id: int, request: Request, db: Session = Depends(get_db)) -> StreamingResponse:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    stat = storage.stat_object(video.object_key)
+    size = stat.size
+    range_tuple = _parse_range_header(request.headers.get("range"), size)
+    filename = quote(video.filename)
+    if range_tuple is None:
+        response = storage.get_stream(video.object_key)
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(size),
+            "Content-Disposition": f"inline; filename*=UTF-8''{filename}",
+        }
+        return StreamingResponse(_iter_minio_response(response), media_type=video.content_type or "video/mp4", headers=headers)
+    start, end = range_tuple
+    length = end - start + 1
+    response = storage.get_stream(video.object_key, offset=start, length=length)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Range": f"bytes {start}-{end}/{size}",
+        "Content-Length": str(length),
+        "Content-Disposition": f"inline; filename*=UTF-8''{filename}",
+    }
+    return StreamingResponse(
+        _iter_minio_response(response),
+        status_code=206,
+        media_type=video.content_type or "video/mp4",
+        headers=headers,
+    )
 
 
 @app.get("/api/statistics/tags", response_model=list[TagStatistics])

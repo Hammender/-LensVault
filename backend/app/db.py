@@ -66,6 +66,36 @@ def ensure_legacy_columns() -> None:
         if "is_system" not in columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE tags ADD COLUMN is_system BOOLEAN DEFAULT 0 NOT NULL"))
+    if "video_items" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("video_items")}
+        statements: list[str] = []
+        if "faststart_applied" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN faststart_applied BOOLEAN DEFAULT 0 NOT NULL")
+        if "processed_at" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN processed_at DATETIME")
+        if "processing_error" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN processing_error TEXT")
+        if "cover_object_key" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN cover_object_key VARCHAR(512)")
+        if "cover_content_type" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN cover_content_type VARCHAR(128)")
+        if "duration_seconds" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN duration_seconds FLOAT")
+        if "width" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN width INTEGER")
+        if "height" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN height INTEGER")
+        if "original_video_codec" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN original_video_codec VARCHAR(64)")
+        if "original_audio_codec" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN original_audio_codec VARCHAR(64)")
+        if "video_codec" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN video_codec VARCHAR(64)")
+        if "audio_codec" not in columns:
+            statements.append("ALTER TABLE video_items ADD COLUMN audio_codec VARCHAR(64)")
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()

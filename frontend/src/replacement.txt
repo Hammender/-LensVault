@@ -1,0 +1,316 @@
+      {page === "videos" && (
+        <main className="bili-videos-page">
+          <div className="bili-top-bar">
+            <div className="bili-search-box">
+              <input
+                className="search-input"
+                value={videoSearch}
+                onChange={(event) => setVideoSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+                  }
+                }}
+                placeholder="搜索视频名、简介或文件名"
+              />
+              <button disabled={busy} onClick={() => void refreshVideos(0)}>
+                搜索
+              </button>
+            </div>
+            <button className="primary" onClick={() => setIsVideoUploadModalOpen(true)}>
+              上传视频
+            </button>
+          </div>
+
+          <div className="bili-filters-bar">
+            <div className="bili-filter-row">
+              <span className="bili-filter-label">分区</span>
+              <div className="bili-chip-cloud">
+                <button
+                  className={selectedVideoCategoryIds.length === 0 ? "soft-chip active" : "soft-chip"}
+                  onClick={() => {
+                    setSelectedVideoCategoryIds([]);
+                    void refreshVideos(0, [], selectedVideoPersonIds, videoSearch);
+                  }}
+                >
+                  全部
+                </button>
+                {filteredVideoCategoryTags.map((tag) => (
+                  <button
+                    key={tag.id}
+                    className={selectedVideoCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                    onClick={() => handleToggleVideoFilterCategory(tag.id)}
+                  >
+                    {tag.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="bili-filter-row">
+              <span className="bili-filter-label">UP主</span>
+              <div className="bili-chip-cloud">
+                <button
+                  className={selectedVideoPersonIds.length === 0 ? "video-person-chip active" : "video-person-chip"}
+                  onClick={() => {
+                    setSelectedVideoPersonIds([]);
+                    void refreshVideos(0, selectedVideoCategoryIds, [], videoSearch);
+                  }}
+                >
+                  <b>全部</b>
+                </button>
+                {filteredVideoPeople.map((person) => (
+                  <button
+                    key={person.id}
+                    className={selectedVideoPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
+                    onClick={() => handleToggleVideoFilterPerson(person.id)}
+                  >
+                    {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
+                    <b>{person.name}</b>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="bili-video-grid">
+            {videoItems.map((video) => (
+              <article
+                key={video.id}
+                className="bili-video-card"
+                onClick={() => window.open(#video-play/ + video.id, "_blank")}
+              >
+                <div className="bili-video-cover">
+                  <span className="placeholder">MP4</span>
+                  <span className={"bili-video-status status-"}>{videoStatusLabel(video.status)}</span>
+                  <span className="bili-video-duration">{formatBytes(video.size_bytes)}</span>
+                </div>
+                <div className="bili-video-info">
+                  <h3 className="bili-video-title" title={video.title}>{video.title}</h3>
+                  <div className="bili-up-list">
+                    {video.people.map((person) => (
+                      <div className="bili-up-item" key={person.id} title={person.name}>
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
+                        <span>{person.name}</span>
+                      </div>
+                    ))}
+                    {video.people.length === 0 && <span className="muted" style={{fontSize: '0.8rem'}}>无UP主</span>}
+                  </div>
+                  <div className="bili-video-meta">
+                    <span>{formatDate(video.created_at)}</span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          {videoTotal > 0 && (
+            <div className="pagination-row" style={{ marginTop: 'auto' }}>
+              <button disabled={videoOffset === 0 || busy} onClick={() => void refreshVideos(Math.max(0, videoOffset - videoPageSize))}>
+                上一页
+              </button>
+              <span>
+                {videoOffset + 1} - {Math.min(videoOffset + videoPageSize, videoTotal)} / 共 {videoTotal}
+              </span>
+              <button disabled={videoOffset + videoPageSize >= videoTotal || busy} onClick={() => void refreshVideos(videoOffset + videoPageSize)}>
+                下一页
+              </button>
+            </div>
+          )}
+
+          {isVideoUploadModalOpen && (
+            <div className="modal-backdrop">
+              <aside className="panel video-upload-panel bili-modal-content">
+                <div className="section-head">
+                  <div>
+                    <p className="eyebrow">上传视频</p>
+                    <h2>分片入库</h2>
+                  </div>
+                  <button className="close-modal" onClick={() => setIsVideoUploadModalOpen(false)}>关闭</button>
+                </div>
+
+                <label className="upload-box video-upload-box">
+                  <input type="file" accept="video/mp4,.mp4" onChange={(event) => handlePickVideoFile(event.target.files)} />
+                  <strong>{videoFile ? videoFile.name : "选择 MP4 视频"}</strong>
+                  <span>{videoFile ? formatBytes(videoFile.size) : "支持长视频分片上传，刷新后重新选择同一文件可续传。"}</span>
+                </label>
+
+                <div className="stack-editor">
+                  <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="视频名字" />
+                  <textarea
+                    className="rich-text-editor compact"
+                    value={videoDescription}
+                    onChange={(event) => setVideoDescription(event.target.value)}
+                    placeholder="视频简介"
+                  />
+                </div>
+
+                <div className="editor-block">
+                  <label>上传时绑定类别</label>
+                  <div className="chip-cloud compact">
+                    {videoCategoryTags.map((tag) => (
+                      <button
+                        key={tag.id}
+                        className={videoUploadCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                        onClick={() => handleToggleVideoUploadCategory(tag.id)}
+                      >
+                        #{tag.name}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    value={videoUploadNewCategories}
+                    onChange={(event) => setVideoUploadNewCategories(event.target.value)}
+                    placeholder="新类别标签，逗号分隔"
+                  />
+                </div>
+
+                <div className="editor-block">
+                  <label>上传时绑定人物</label>
+                  <div className="video-person-cloud compact">
+                    {videoPeople.map((person) => (
+                      <button
+                        key={person.id}
+                        className={videoUploadPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
+                        onClick={() => handleToggleVideoUploadPerson(person.id)}
+                      >
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
+                        <b>{person.name}</b>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="video-progress">
+                  <strong>{videoUploadProgress}%</strong>
+                  <div className="meter"><span style={{ width: \`%\" }} /></div>
+                  {videoUploadSession && <small>{videoUploadSession.uploaded_parts.length} / {videoUploadSession.total_parts} 分片</small>}
+                </div>
+
+                <div className="micro-row wrap">
+                  <button disabled={busy || !videoFile || !videoTitle.trim()} onClick={() => void handleConfirmVideoUpload()}>
+                    开始上传
+                  </button>
+                  <button className="ghost-button" disabled={busy} onClick={() => void handleCancelVideoUpload()}>
+                    清理续传会话
+                  </button>
+                </div>
+
+                <div className="editor-block">
+                  <label>新增视频类别</label>
+                  <div className="inline-editor">
+                    <input value={newVideoCategoryName} onChange={(event) => setNewVideoCategoryName(event.target.value)} placeholder="类别名" />
+                    <button disabled={busy || !newVideoCategoryName.trim()} onClick={() => void handleCreateVideoCategory()}>
+                      新增
+                    </button>
+                  </div>
+                </div>
+
+                <div className="editor-block">
+                  <label>新增视频人物</label>
+                  <input value={newVideoPersonName} onChange={(event) => setNewVideoPersonName(event.target.value)} placeholder="人物名" />
+                  <textarea
+                    className="rich-text-editor compact"
+                    value={newVideoPersonNote}
+                    onChange={(event) => setNewVideoPersonNote(event.target.value)}
+                    placeholder="备注"
+                  />
+                  <input type="file" accept="image/*" onChange={(event) => setNewVideoPersonAvatar(event.target.files?.[0] ?? null)} />
+                  <button disabled={busy || !newVideoPersonName.trim()} onClick={() => void handleCreateVideoPerson()}>
+                    创建视频人物
+                  </button>
+                </div>
+              </aside>
+            </div>
+          )}
+        </main>
+      )}
+
+      {page === "video-play" && (
+        <main className="video-play-page">
+          <section className="video-play-main">
+            {selectedVideo ? (
+              <div className="panel" style={{ padding: '0', overflow: 'hidden' }}>
+                <video
+                  key={selectedVideo.id}
+                  ref={videoPlayerRef}
+                  className="video-play-player"
+                  src={videoPlayerUrl}
+                  controls
+                  preload="auto"
+                  playsInline
+                  onSeeking={rememberVideoPlaybackState}
+                  onSeeked={resumeVideoAfterSeek}
+                  onCanPlay={resumeVideoAfterSeek}
+                />
+              </div>
+            ) : (
+              <div className="panel" style={{ height: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <p>加载中...</p>
+              </div>
+            )}
+            
+            {selectedVideo && (
+              <div className="video-play-info">
+                <h1>{selectedVideo.title}</h1>
+                <div className="micro-row wrap">
+                  <span>{formatDate(selectedVideo.created_at)}</span>
+                  <span>播放状态：{videoStatusLabel(selectedVideo.status)}</span>
+                  <span>{formatBytes(selectedVideo.size_bytes)}</span>
+                </div>
+                
+                <div className="bili-up-list" style={{ marginTop: '8px' }}>
+                  {selectedVideo.people.map((person) => (
+                    <div className="bili-up-item" key={person.id}>
+                      {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
+                      <span>{person.name}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="micro-row wrap" style={{ marginTop: '8px' }}>
+                  {selectedVideo.category_tags.map((tag) => (
+                    <span key={tag.id} className="pill muted">#{tag.name}</span>
+                  ))}
+                </div>
+
+                <p style={{ marginTop: '16px', lineHeight: '1.6' }}>{selectedVideo.description || "无简介"}</p>
+              </div>
+            )}
+          </section>
+
+          <aside className="video-play-sidebar panel">
+            <div className="section-head compact-head">
+              <div>
+                <p className="eyebrow">视频管理</p>
+                <h2>操作</h2>
+              </div>
+            </div>
+            
+            {selectedVideo && (
+              <div className="detail-copy">
+                <p><strong>文件:</strong> {selectedVideo.filename}</p>
+                <p>
+                  {selectedVideo.faststart_applied ? "· 已完成 faststart 优化" : "· 未优化"}
+                </p>
+                {selectedVideo.processing_error && <p style={{color: 'red'}}>优化错误：{selectedVideo.processing_error}</p>}
+                
+                <button 
+                  className="danger-button" 
+                  style={{ marginTop: '20px', width: '100%', background: '#ff3b30', color: '#fff', border: 'none', padding: '10px', borderRadius: '4px', cursor: 'pointer' }}
+                  disabled={busy} 
+                  onClick={() => {
+                    if (confirm("确定要删除此视频吗？")) {
+                      void handleDeleteCurrentVideo().then(() => {
+                        window.close(); // Optional: close tab on delete
+                      });
+                    }
+                  }}
+                >
+                  删除视频
+                </button>
+              </div>
+            )}
+          </aside>
+        </main>
+      )}

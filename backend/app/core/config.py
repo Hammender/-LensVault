@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     minio_bucket: str = "photos"
     minio_secure: bool = False
 
+    ffmpeg_path: str = "ffmpeg"
+    ffprobe_path: str = "ffprobe"
+    video_faststart_enabled: bool = True
+    video_faststart_timeout_seconds: int = 3600
+    video_transcode_timeout_seconds: int = 21600
+    video_cover_capture_seconds: float = 1.0
+    video_presigned_url_expires_seconds: int = 21600
+    video_use_presigned_play_url: bool = True
+
     milvus_host: str = "127.0.0.1"
     milvus_port: int = 19530
     milvus_known_collection: str = "pictureshow_known_faces"

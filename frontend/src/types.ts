@@ -128,3 +128,71 @@ export type UploadSummary = {
     rich: { count: number; photos: number };
   };
 };
+
+export type VideoCategoryTag = {
+  id: number;
+  name: string;
+  created_at: string;
+};
+
+export type VideoPerson = {
+  id: number;
+  name: string;
+  note: string | null;
+  avatar_url: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VideoItem = {
+  id: number;
+  title: string;
+  description: string | null;
+  filename: string;
+  content_type: string | null;
+  size_bytes: number;
+  status: string;
+  category_tags: VideoCategoryTag[];
+  people: VideoPerson[];
+  stream_url: string;
+  play_url: string;
+  cover_url: string | null;
+  faststart_applied: boolean;
+  duration_seconds: number | null;
+  width: number | null;
+  height: number | null;
+  original_video_codec: string | null;
+  original_audio_codec: string | null;
+  video_codec: string | null;
+  audio_codec: string | null;
+  processed_at: string | null;
+  processing_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VideoDetail = VideoItem & {
+  sha256: string | null;
+};
+
+export type PaginatedVideos = {
+  items: VideoItem[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+export type VideoUploadSession = {
+  id: string;
+  filename: string;
+  title: string;
+  description: string | null;
+  content_type: string | null;
+  size_bytes: number;
+  part_size: number;
+  total_parts: number;
+  uploaded_parts: number[];
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
