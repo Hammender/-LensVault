@@ -173,10 +173,6 @@ class VideoService:
             raise
 
     def process_video_for_playback(self, video_id: int) -> None:
-        if not self.settings.video_faststart_enabled:
-            self._mark_video_ready_without_processing(video_id)
-            return
-
         db = SessionLocal()
         try:
             video = db.get(VideoItem, video_id)
@@ -193,8 +189,47 @@ class VideoService:
                 cover_path = Path(temp_dir) / "cover.jpg"
                 self._download_object_to_file(object_key, input_path)
                 original_info = self._probe_video(input_path)
+                video = db.get(VideoItem, video_id)
+                if video is None:
+                    return
+                video.duration_seconds = original_info.duration_seconds
+                video.width = original_info.width
+                video.height = original_info.height
+                video.original_video_codec = original_info.video_codec
+                video.original_audio_codec = original_info.audio_codec
+                video.video_codec = original_info.video_codec
+                video.audio_codec = original_info.audio_codec
+                db.commit()
+
                 self._extract_cover(input_path, cover_path, original_info.duration_seconds)
-                if self._is_browser_friendly(original_info):
+                cover_key: str | None = None
+                old_cover_key: str | None = None
+                if cover_path.exists() and cover_path.stat().st_size > 0:
+                    cover_key = self._build_cover_object_key(video_id)
+                    with cover_path.open("rb") as stream:
+                        self.storage.put_stream(cover_key, stream, cover_path.stat().st_size, "image/jpeg")
+                    video = db.get(VideoItem, video_id)
+                    if video is None:
+                        return
+                    old_cover_key = video.cover_object_key
+                    video.cover_object_key = cover_key
+                    video.cover_content_type = "image/jpeg"
+                    db.commit()
+                    if old_cover_key and old_cover_key != cover_key:
+                        self.storage.remove_object(old_cover_key)
+
+                if not self.settings.video_faststart_enabled:
+                    video = db.get(VideoItem, video_id)
+                    if video is None:
+                        return
+                    video.status = "ready"
+                    video.faststart_applied = False
+                    video.processed_at = datetime.utcnow()
+                    video.processing_error = None
+                    db.commit()
+                    return
+
+                if self._is_browser_friendly(original_info) or not self.settings.video_transcode_non_browser_friendly:
                     self._run_faststart(input_path, output_path)
                 else:
                     self._run_browser_transcode(input_path, output_path)
@@ -203,16 +238,10 @@ class VideoService:
                 sha256 = self._hash_file(output_path)
                 with output_path.open("rb") as stream:
                     self.storage.put_stream(object_key, stream, size_bytes, "video/mp4")
-                cover_key: str | None = None
-                if cover_path.exists() and cover_path.stat().st_size > 0:
-                    cover_key = self._build_cover_object_key(video_id)
-                    with cover_path.open("rb") as stream:
-                        self.storage.put_stream(cover_key, stream, cover_path.stat().st_size, "image/jpeg")
 
             video = db.get(VideoItem, video_id)
             if video is None:
                 return
-            old_cover_key = video.cover_object_key
             video.status = "ready"
             video.faststart_applied = True
             video.size_bytes = size_bytes
@@ -225,14 +254,9 @@ class VideoService:
             video.original_audio_codec = original_info.audio_codec
             video.video_codec = playback_info.video_codec
             video.audio_codec = playback_info.audio_codec
-            if cover_key:
-                video.cover_object_key = cover_key
-                video.cover_content_type = "image/jpeg"
             video.processed_at = datetime.utcnow()
             video.processing_error = None
             db.commit()
-            if cover_key and old_cover_key and old_cover_key != cover_key:
-                self.storage.remove_object(old_cover_key)
         except Exception as exc:
             logger.exception("Video processing failed video_id=%s", video_id)
             db.rollback()

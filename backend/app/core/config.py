@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     video_faststart_enabled: bool = True
+    video_transcode_non_browser_friendly: bool = False
     video_faststart_timeout_seconds: int = 3600
     video_transcode_timeout_seconds: int = 21600
     video_cover_capture_seconds: float = 1.0

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import Statistics from "./Statistics";
+import BiliVideoPlayer from "./BiliVideoPlayer";
 import { sortByPinyinName } from "./sort";
 import {
   addGalleryPhotoPerson,
@@ -84,6 +85,8 @@ const galleryPageSize = 20;
 const videoPageSize = 12;
 const videoPartSize = 16 * 1024 * 1024;
 const videoResumeStorageKey = "pictureshow-video-upload-session";
+const videoPartUploadMaxAttempts = 4;
+const videoPartUploadRetryDelayMs = 1200;
 const videoSeekSeconds = 10;
 const videoSeekLargeSeconds = 30;
 const videoLongPressDelayMs = 300;
@@ -142,6 +145,13 @@ function formatCodecs(videoCodec: string | null | undefined, audioCodec: string 
   return `${video} / ${audio}`;
 }
 
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+
 function videoStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     uploaded: "等待优化",
@@ -176,6 +186,10 @@ function splitCommaList(input: string): string[] {
         .filter(Boolean)
     )
   );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 export default function App() {
@@ -252,12 +266,6 @@ export default function App() {
   const [newVideoPersonAvatar, setNewVideoPersonAvatar] = useState<File | null>(null);
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const galleryImportFileRef = useRef<HTMLInputElement | null>(null);
-  const videoPlayerRef = useRef<HTMLVideoElement | null>(null);
-  const videoShouldResumeRef = useRef(false);
-  const videoLongPressTimerRef = useRef<number | null>(null);
-  const videoLongPressActiveRef = useRef(false);
-  const videoPreviousRateRef = useRef(1);
-  const videoWasPausedBeforeRateRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
@@ -572,79 +580,12 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedVideo) {
-      resetVideoKeyboardState();
       setVideoPlayerUrl("");
       return;
     }
-    resetVideoKeyboardState();
     setVideoPlayerUrl(selectedVideo.play_url || selectedVideo.stream_url);
-    videoShouldResumeRef.current = false;
   }, [selectedVideo?.id]);
 
-  useEffect(() => {
-    const player = videoPlayerRef.current;
-    if (!player || !selectedVideo || !videoPlayerUrl) {
-      return undefined;
-    }
-
-    const consumeArrowEvent = (event: KeyboardEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-        return;
-      }
-      consumeArrowEvent(event);
-      if (event.repeat) {
-        return;
-      }
-
-      if (event.key === "ArrowLeft") {
-        stopVideoFastForwardPreview();
-        seekSelectedVideo(event.shiftKey ? -videoSeekLargeSeconds : -videoSeekSeconds);
-        return;
-      }
-
-      clearVideoLongPressTimer();
-      videoLongPressTimerRef.current = window.setTimeout(() => {
-        videoLongPressTimerRef.current = null;
-        startVideoFastForwardPreview();
-      }, videoLongPressDelayMs);
-    };
-
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-        return;
-      }
-      consumeArrowEvent(event);
-
-      if (event.key !== "ArrowRight") {
-        return;
-      }
-      if (videoLongPressActiveRef.current) {
-        stopVideoFastForwardPreview();
-        return;
-      }
-      clearVideoLongPressTimer();
-      seekSelectedVideo(event.shiftKey ? videoSeekLargeSeconds : videoSeekSeconds);
-    };
-
-    const handleBlur = () => {
-      resetVideoKeyboardState();
-    };
-
-    player.addEventListener("keydown", handleKeyDown, { capture: true });
-    player.addEventListener("keyup", handleKeyUp, { capture: true });
-    player.addEventListener("blur", handleBlur);
-    return () => {
-      player.removeEventListener("keydown", handleKeyDown, { capture: true });
-      player.removeEventListener("keyup", handleKeyUp, { capture: true });
-      player.removeEventListener("blur", handleBlur);
-      resetVideoKeyboardState();
-    };
-  }, [selectedVideo?.id, videoPlayerUrl]);
 
   useEffect(() => {
     void refreshSamples(selectedPerson?.id ?? null);
@@ -1229,78 +1170,6 @@ export default function App() {
     }
   }
 
-  function rememberVideoPlaybackState() {
-    const player = videoPlayerRef.current;
-    videoShouldResumeRef.current = Boolean(player && !player.paused && !player.ended);
-  }
-
-  function resumeVideoAfterSeek() {
-    const player = videoPlayerRef.current;
-    if (!player || !videoShouldResumeRef.current) {
-      return;
-    }
-    const playPromise = player.play();
-    if (playPromise) {
-      playPromise.catch(() => undefined);
-    }
-  }
-
-  function seekSelectedVideo(deltaSeconds: number) {
-    const player = videoPlayerRef.current;
-    if (!player || !Number.isFinite(player.duration)) {
-      return;
-    }
-    rememberVideoPlaybackState();
-    const nextTime = Math.min(Math.max(player.currentTime + deltaSeconds, 0), player.duration);
-    player.currentTime = nextTime;
-    resumeVideoAfterSeek();
-  }
-
-  function clearVideoLongPressTimer() {
-    if (videoLongPressTimerRef.current !== null) {
-      window.clearTimeout(videoLongPressTimerRef.current);
-      videoLongPressTimerRef.current = null;
-    }
-  }
-
-  function startVideoFastForwardPreview() {
-    const player = videoPlayerRef.current;
-    if (!player || videoLongPressActiveRef.current) {
-      return;
-    }
-    videoLongPressActiveRef.current = true;
-    videoPreviousRateRef.current = player.playbackRate || 1;
-    videoWasPausedBeforeRateRef.current = player.paused;
-    player.playbackRate = videoLongPressRate;
-    const playPromise = player.play();
-    if (playPromise) {
-      playPromise.catch(() => undefined);
-    }
-  }
-
-  function stopVideoFastForwardPreview() {
-    const player = videoPlayerRef.current;
-    clearVideoLongPressTimer();
-    if (!player || !videoLongPressActiveRef.current) {
-      return;
-    }
-    videoLongPressActiveRef.current = false;
-    player.playbackRate = videoPreviousRateRef.current || 1;
-    if (videoWasPausedBeforeRateRef.current) {
-      player.pause();
-    }
-  }
-
-  function resetVideoKeyboardState() {
-    clearVideoLongPressTimer();
-    const player = videoPlayerRef.current;
-    if (player) {
-      player.playbackRate = 1;
-    }
-    videoLongPressActiveRef.current = false;
-    videoPreviousRateRef.current = 1;
-    videoWasPausedBeforeRateRef.current = false;
-  }
 
   async function handleDeleteCurrentVideo() {
     if (!selectedVideo) {
@@ -1314,7 +1183,6 @@ export default function App() {
     try {
       await deleteVideo(selectedVideo.id);
       setSelectedVideo(null);
-      resetVideoKeyboardState();
       setVideoPlayerUrl("");
       await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
     } catch (cause) {
@@ -1372,6 +1240,23 @@ export default function App() {
     return session;
   }
 
+  async function uploadVideoPartWithRetry(sessionId: string, partIndex: number, blob: Blob, filename: string): Promise<void> {
+    let lastCause: unknown = null;
+    for (let attempt = 1; attempt <= videoPartUploadMaxAttempts; attempt += 1) {
+      try {
+        await uploadVideoPart(sessionId, partIndex, blob, filename);
+        return;
+      } catch (cause) {
+        lastCause = cause;
+        if (attempt >= videoPartUploadMaxAttempts) {
+          break;
+        }
+        await delay(videoPartUploadRetryDelayMs * attempt);
+      }
+    }
+    throw lastCause instanceof Error ? lastCause : new Error("分片上传失败");
+  }
+
   async function handleConfirmVideoUpload() {
     if (!videoFile || !videoTitle.trim()) {
       return;
@@ -1385,6 +1270,7 @@ export default function App() {
     try {
       let session = await resolveVideoUploadSession(videoFile);
       const uploaded = new Set(session.uploaded_parts);
+      setVideoUploadSession(session);
       for (let index = 0; index < session.total_parts; index += 1) {
         if (uploaded.has(index)) {
           setVideoUploadProgress(Math.round(((index + 1) / session.total_parts) * 100));
@@ -1392,8 +1278,12 @@ export default function App() {
         }
         const start = index * session.part_size;
         const end = Math.min(start + session.part_size, videoFile.size);
-        await uploadVideoPart(session.id, index, videoFile.slice(start, end), videoFile.name);
-        setVideoUploadProgress(Math.round(((index + 1) / session.total_parts) * 100));
+        await uploadVideoPartWithRetry(session.id, index, videoFile.slice(start, end), videoFile.name);
+        uploaded.add(index);
+        const uploadedParts = Array.from(uploaded).sort((left, right) => left - right);
+        session = { ...session, uploaded_parts: uploadedParts };
+        setVideoUploadSession(session);
+        setVideoUploadProgress(Math.round((uploadedParts.length / session.total_parts) * 100));
       }
       session = await getVideoUploadSession(session.id);
       setVideoUploadSession(session);
@@ -1415,7 +1305,8 @@ export default function App() {
       void refreshVideoTaxonomy();
       void refreshVideos(0, [], [], "");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "视频上传失败。");
+      const message = cause instanceof Error ? cause.message : "视频上传失败。";
+      setError(`${message}。已保留续传会话，可再次点击开始上传继续。`);
     } finally {
       setBusy(false);
     }
@@ -2004,19 +1895,7 @@ export default function App() {
           <section className="video-play-main">
             {selectedVideo ? (
               <div className="panel" style={{ padding: '0', overflow: 'hidden' }}>
-                <video
-                  key={selectedVideo.id}
-                  ref={videoPlayerRef}
-                  className="video-play-player"
-                  src={videoPlayerUrl}
-                  poster={selectedVideo.cover_url ?? undefined}
-                  controls
-                  preload="auto"
-                  playsInline
-                  onSeeking={rememberVideoPlaybackState}
-                  onSeeked={resumeVideoAfterSeek}
-                  onCanPlay={resumeVideoAfterSeek}
-                />
+                  <BiliVideoPlayer src={videoPlayerUrl} poster={selectedVideo.cover_url ?? undefined} />
               </div>
             ) : (
               <div className="panel" style={{ height: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

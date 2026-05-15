@@ -1,0 +1,160 @@
+.bili-player-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  overflow: hidden;
+  user-select: none;
+  border: 2px solid var(--panel-border);
+}
+
+.bili-player-container.fullscreen {
+  border: none;
+  aspect-ratio: auto;
+  width: 100vw;
+  height: 100vh;
+}
+
+.bili-player-container.hide-cursor {
+  cursor: none;
+}
+
+.bili-video-el {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  outline: none;
+}
+
+.bili-controls-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 40px 16px 12px;
+  background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.bili-controls-overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.bili-progress-area {
+  position: relative;
+  height: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+.bili-progress-bar-bg {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  transition: height 0.15s ease;
+}
+
+.bili-progress-bar-buf {
+  position: absolute;
+  left: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: 2px;
+  transition: height 0.15s ease;
+}
+
+.bili-progress-bar-cur {
+  position: absolute;
+  left: 0;
+  height: 4px;
+  background: var(--primary);
+  border-radius: 2px;
+  transition: height 0.15s ease;
+}
+
+.bili-progress-area:hover .bili-progress-bar-bg,
+.bili-progress-area:hover .bili-progress-bar-buf,
+.bili-progress-area:hover .bili-progress-bar-cur {
+  height: 6px;
+}
+
+.bili-controls-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.bili-controls-left,
+.bili-controls-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.bili-icon-btn {
+  background: transparent;
+  border: none;
+  color: #fff;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.8;
+  transition: opacity 0.2s, transform 0.1s;
+}
+
+.bili-icon-btn:hover {
+  opacity: 1;
+  transform: scale(1.1);
+  box-shadow: none;
+  background: transparent;
+}
+
+.bili-time-display {
+  color: #eee;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.bili-indicator {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 12px 24px;
+  border-radius: 4px;
+  font-size: 1.2rem;
+  font-weight: bold;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  animation: fadeOut 1.5s forwards;
+}
+
+.bili-fast-forward-hint {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 1rem;
+  font-weight: bold;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
