@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback, MouseEvent as ReactMouseEvent } from "react";
+import "./BiliVideoPlayer.css";
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "00:00";

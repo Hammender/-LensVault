@@ -9,10 +9,13 @@
 }
 
 .bili-player-container.fullscreen {
-  border: none;
-  aspect-ratio: auto;
-  width: 100vw;
-  height: 100vh;
+  border: none !important;
+  border-radius: 0 !important;
+  aspect-ratio: auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
 .bili-player-container.hide-cursor {
@@ -24,6 +27,8 @@
   height: 100%;
   object-fit: contain;
   outline: none;
+  background: #000;
+  display: block;
 }
 
 .bili-controls-overlay {
@@ -102,23 +107,25 @@
 }
 
 .bili-icon-btn {
-  background: transparent;
-  border: none;
+  background: transparent !important;
+  border: none !important;
   color: #fff;
-  padding: 0;
+  padding: 8px !important;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   opacity: 0.8;
   transition: opacity 0.2s, transform 0.1s;
+  box-shadow: none !important;
+  min-width: unset !important;
 }
 
 .bili-icon-btn:hover {
   opacity: 1;
   transform: scale(1.1);
-  box-shadow: none;
-  background: transparent;
+  box-shadow: none !important;
+  background: transparent !important;
 }
 
 .bili-time-display {
