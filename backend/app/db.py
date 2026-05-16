@@ -96,6 +96,21 @@ def ensure_legacy_columns() -> None:
         with engine.begin() as connection:
             for statement in statements:
                 connection.execute(text(statement))
+        # Migration: drop sha256 unique index and add (filename, size_bytes) unique index
+        index_names = {idx["name"] for idx in inspector.get_indexes("video_items")}
+        with engine.begin() as connection:
+            if "ix_video_items_sha256" in index_names:
+                connection.execute(text("DROP INDEX ix_video_items_sha256"))
+            # Remove duplicate (filename, size_bytes) rows, keep newest
+            connection.execute(text("""
+                DELETE FROM video_items WHERE id NOT IN (
+                    SELECT MAX(id) FROM video_items GROUP BY filename, size_bytes
+                )
+            """))
+            if "uq_video_items_filename_size" not in index_names:
+                connection.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_video_items_filename_size ON video_items(filename, size_bytes)"
+                ))
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()

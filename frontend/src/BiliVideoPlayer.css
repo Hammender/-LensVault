@@ -87,10 +87,40 @@
   transition: height 0.15s ease;
 }
 
+.bili-progress-bar-cur::after {
+  content: "";
+  position: absolute;
+  right: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  background: #ffffff;
+  border: 3px solid var(--primary);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+  transition: width 0.15s ease, height 0.15s ease, right 0.15s ease, border-width 0.15s ease;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.bili-progress-area:hover .bili-progress-bar-cur::after {
+  width: 20px;
+  height: 20px;
+  right: -10px;
+  border-width: 4px;
+}
+
 .bili-progress-area:hover .bili-progress-bar-bg,
 .bili-progress-area:hover .bili-progress-bar-buf,
 .bili-progress-area:hover .bili-progress-bar-cur {
   height: 6px;
+}
+
+.bili-progress-area:hover .bili-progress-bar-cur::after {
+  width: 16px;
+  height: 16px;
+  right: -8px;
 }
 
 .bili-controls-bottom {
@@ -164,4 +194,55 @@
   font-weight: bold;
   pointer-events: none;
   backdrop-filter: blur(4px);
+}
+
+.bili-rate-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.bili-rate-btn {
+  min-width: 42px !important;
+  border-radius: 3px !important;
+}
+
+.bili-rate-menu {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  background: rgba(0, 0, 0, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 100;
+}
+
+.bili-rate-option {
+  background: transparent !important;
+  border: none !important;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 6px 18px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: center;
+  white-space: nowrap;
+  border-radius: 3px;
+  transition: background 0.15s, color 0.15s;
+  box-shadow: none !important;
+}
+
+.bili-rate-option:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.bili-rate-option.active {
+  color: #fff;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.15);
 }

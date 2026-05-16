@@ -22,7 +22,16 @@ const jsonHeaders = { "Content-Type": "application/json" };
 async function parse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || response.statusText);
+    let errorMessage = text || response.statusText;
+    try {
+      const json = JSON.parse(text) as { detail?: string };
+      if (json && typeof json.detail === "string") {
+        errorMessage = json.detail;
+      }
+    } catch {
+      // Not JSON, use fallback text
+    }
+    throw new Error(errorMessage);
   }
   return response.json() as Promise<T>;
 }
@@ -472,6 +481,102 @@ export async function completeVideoUpload(
 export async function cancelVideoUpload(sessionId: string): Promise<void> {
   await parse<{ status: string }>(
     await fetch(`/api/videos/upload-sessions/${sessionId}`, {
+      method: "DELETE"
+    })
+  );
+}
+
+export async function updateVideo(
+  videoId: number,
+  payload: { title?: string; description?: string | null }
+): Promise<VideoDetail> {
+  return parse<VideoDetail>(
+    await fetch(`/api/videos/${videoId}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    })
+  );
+}
+
+export async function addVideoCategoryTag(
+  videoId: number,
+  payload: { tagId?: number; name?: string }
+): Promise<VideoDetail> {
+  return parse<VideoDetail>(
+    await fetch(`/api/videos/${videoId}/category-tags`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload.tagId ? { tag_id: payload.tagId } : { name: payload.name })
+    })
+  );
+}
+
+export async function removeVideoCategoryTag(videoId: number, tagId: number): Promise<VideoDetail> {
+  return parse<VideoDetail>(
+    await fetch(`/api/videos/${videoId}/category-tags/${tagId}`, {
+      method: "DELETE"
+    })
+  );
+}
+
+export async function addVideoPerson(videoId: number, personId: number): Promise<VideoDetail> {
+  return parse<VideoDetail>(
+    await fetch(`/api/videos/${videoId}/people`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ person_id: personId })
+    })
+  );
+}
+
+export async function removeVideoPerson(videoId: number, personId: number): Promise<VideoDetail> {
+  return parse<VideoDetail>(
+    await fetch(`/api/videos/${videoId}/people/${personId}`, {
+      method: "DELETE"
+    })
+  );
+}
+
+export async function updateVideoCategoryTag(tagId: number, name: string): Promise<VideoCategoryTag> {
+  return parse<VideoCategoryTag>(
+    await fetch(`/api/video-category-tags/${tagId}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify({ name })
+    })
+  );
+}
+
+export async function deleteVideoCategoryTag(tagId: number): Promise<void> {
+  await parse<{ status: string }>(
+    await fetch(`/api/video-category-tags/${tagId}`, {
+      method: "DELETE"
+    })
+  );
+}
+
+export async function updateVideoPerson(
+  personId: number,
+  name?: string,
+  note?: string | null,
+  avatar?: File | null
+): Promise<VideoPerson> {
+  const form = new FormData();
+  if (name !== undefined) form.append("name", name);
+  if (note !== undefined) form.append("note", note ?? "");
+  if (avatar) form.append("avatar", avatar);
+  return parse<VideoPerson>(
+    await fetch(`/api/video-people/${personId}`, {
+      method: "PATCH",
+      body: form
+    })
+  );
+}
+
+export async function deleteVideoPerson(personId: number): Promise<void> {
+  await parse<{ status: string }>(
+    await fetch(`/api/video-people/${personId}`, {
       method: "DELETE"
     })
   );

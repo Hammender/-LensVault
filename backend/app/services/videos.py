@@ -47,6 +47,10 @@ class VideoService:
         content_type = (payload.content_type or "").strip() or "video/mp4"
         self._validate_video_file(filename, content_type)
 
+        existing = db.scalar(select(VideoItem).where(VideoItem.filename == filename, VideoItem.size_bytes == payload.size_bytes))
+        if existing is not None:
+            raise ValueError("已存在相同文件名和大小的视频，请勿重复上传")
+
         part_size = payload.part_size or self.default_part_size
         part_size = min(max(part_size, self.min_part_size), self.max_part_size)
         if payload.size_bytes <= self.default_part_size:
@@ -132,6 +136,15 @@ class VideoService:
         uploaded_indexes = [part.part_index for part in parts]
         if uploaded_indexes != list(range(session.total_parts)):
             raise ValueError("视频分片尚未上传完整")
+
+        existing = db.scalar(
+            select(VideoItem).where(
+                VideoItem.filename == session.filename,
+                VideoItem.size_bytes == session.size_bytes,
+            )
+        )
+        if existing is not None:
+            raise ValueError("已存在相同文件名和大小的视频，请勿重复上传")
 
         final_key = self._build_video_object_key(session.filename)
         try:

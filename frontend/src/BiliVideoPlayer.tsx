@@ -20,6 +20,7 @@ interface BiliVideoPlayerProps {
 export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const rateMenuRef = useRef<HTMLDivElement>(null);
   
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -28,6 +29,8 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [showRateMenu, setShowRateMenu] = useState(false);
   
   const [showControls, setShowControls] = useState(true);
   const controlsTimeoutRef = useRef<number | null>(null);
@@ -40,6 +43,8 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
   const longPressActiveRef = useRef(false);
   
   const [isDraggingProgress, setIsDraggingProgress] = useState(false);
+
+  const RATE_OPTIONS = [2.0, 1.5, 1.25, 1.0, 0.5];
 
   const showIndicator = (text: string) => {
     setIndicatorText(text);
@@ -70,6 +75,18 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (rateMenuRef.current && !rateMenuRef.current.contains(e.target as Node)) {
+        setShowRateMenu(false);
+      }
+    };
+    if (showRateMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showRateMenu]);
+
   const togglePlay = () => {
     if (videoRef.current) {
       if (videoRef.current.paused) {
@@ -96,7 +113,7 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
       let newVol = videoRef.current.volume + delta;
       newVol = Math.max(0, Math.min(1, newVol));
       videoRef.current.volume = newVol;
-      if (newVol > 0 && isMuted) {
+      if (newVol > 0 && videoRef.current.muted) {
         setIsMuted(false);
         videoRef.current.muted = false;
       }
@@ -105,10 +122,22 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
     }
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    handleVolumeChange(e.deltaY < 0 ? 0.05 : -0.05);
-  };
+  useEffect(() => {
+    const handleWheelNative = (e: WheelEvent) => {
+      e.preventDefault();
+      handleVolumeChange(e.deltaY < 0 ? 0.05 : -0.05);
+    };
+
+    const el = containerRef.current;
+    if (el) {
+      el.addEventListener('wheel', handleWheelNative, { passive: false });
+    }
+    return () => {
+      if (el) {
+        el.removeEventListener('wheel', handleWheelNative);
+      }
+    };
+  }, []); // isMuted/volume updates correctly via videoRef.current properties
 
   const seek = (delta: number) => {
     if (videoRef.current && Number.isFinite(videoRef.current.duration)) {
@@ -130,7 +159,7 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
     if (!videoRef.current || !longPressActiveRef.current) return;
     longPressActiveRef.current = false;
     setIsFastForwarding(false);
-    videoRef.current.playbackRate = 1;
+    videoRef.current.playbackRate = playbackRate;
     setIndicatorText(null);
   };
 
@@ -228,13 +257,21 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
     }
   };
 
+  const handleRateChange = (rate: number) => {
+    if (videoRef.current) {
+      videoRef.current.playbackRate = rate;
+      setPlaybackRate(rate);
+      setShowRateMenu(false);
+      showIndicator(`倍速: ${rate}x`);
+    }
+  };
+
   return (
     <div 
       ref={containerRef}
       className={`bili-player-container ${!showControls ? 'hide-cursor' : ''} ${isFullscreen ? 'fullscreen' : ''}`}
       onMouseMove={resetControlsTimeout}
       onMouseLeave={() => { if (isPlaying) setShowControls(false); }}
-      onWheel={handleWheel}
       onDoubleClick={toggleFullscreen}
     >
       <video
@@ -285,6 +322,24 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
           </div>
           
           <div className="bili-controls-right">
+            <div className="bili-rate-wrapper" ref={rateMenuRef}>
+              <button className="bili-icon-btn bili-rate-btn" onClick={() => setShowRateMenu(!showRateMenu)} title="倍速">
+                <span style={{ fontSize: '13px', fontWeight: 700 }}>{playbackRate}x</span>
+              </button>
+              {showRateMenu && (
+                <div className="bili-rate-menu">
+                  {RATE_OPTIONS.map((rate) => (
+                    <button
+                      key={rate}
+                      className={`bili-rate-option${rate === playbackRate ? ' active' : ''}`}
+                      onClick={() => handleRateChange(rate)}
+                    >
+                      {rate}x
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button className="bili-icon-btn" onClick={toggleMute} title="静音 (M)">
               {isMuted || volume === 0 ? (
                 <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>

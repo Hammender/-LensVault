@@ -166,13 +166,16 @@ class GalleryPhotoTag(Base):
 
 class VideoItem(Base):
     __tablename__ = "video_items"
+    __table_args__ = (
+        UniqueConstraint("filename", "size_bytes", name="uq_video_items_filename_size"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(256), index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    sha256: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     object_key: Mapped[str] = mapped_column(String(512), unique=True)
     cover_object_key: Mapped[str | None] = mapped_column(String(512), unique=True, nullable=True)
     cover_content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)

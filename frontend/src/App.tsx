@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
+import Home from "./Home";
 import Statistics from "./Statistics";
 import BiliVideoPlayer from "./BiliVideoPlayer";
 import { sortByPinyinName } from "./sort";
@@ -22,6 +24,8 @@ import {
   deletePerson,
   deletePersonSample,
   deleteVideo,
+  deleteVideoCategoryTag,
+  deleteVideoPerson,
   getVideo,
   getVideoUploadSession,
   getGalleryExportUrl,
@@ -47,6 +51,13 @@ import {
   updateGalleryPhotoRichText,
   uploadVideoPart,
   unbindPersonTag,
+  updateVideo,
+  addVideoCategoryTag,
+  removeVideoCategoryTag,
+  addVideoPerson,
+  removeVideoPerson,
+  updateVideoCategoryTag,
+  updateVideoPerson,
   type GalleryExportScope,
   type GalleryUploadMetadata
 } from "./api";
@@ -64,7 +75,7 @@ import type {
   VideoUploadSession
 } from "./types";
 
-type PageKey = "gallery" | "people" | "upload" | "videos" | "statistics" | "video-play";
+type PageKey = "home" | "gallery" | "people" | "upload" | "videos" | "statistics" | "video-play";
 
 type PendingSampleUpload = {
   file: File;
@@ -82,7 +93,7 @@ type PendingGalleryUpload = {
 type UploadMode = "normal" | "rich";
 
 const galleryPageSize = 20;
-const videoPageSize = 12;
+const videoPageSize = 24;
 const videoPartSize = 16 * 1024 * 1024;
 const videoResumeStorageKey = "pictureshow-video-upload-session";
 const videoPartUploadMaxAttempts = 4;
@@ -167,10 +178,10 @@ function routeFromHash(): PageKey {
   if (hash.startsWith("video-play/")) {
     return "video-play";
   }
-  if (hash === "people" || hash === "upload" || hash === "videos" || hash === "statistics") {
+  if (hash === "people" || hash === "upload" || hash === "videos" || hash === "statistics" || hash === "gallery") {
     return hash;
   }
-  return "gallery";
+  return "home";
 }
 
 function setRoute(page: PageKey) {
@@ -252,7 +263,7 @@ export default function App() {
   const [videoSearch, setVideoSearch] = useState("");
   const [selectedVideo, setSelectedVideo] = useState<VideoDetail | null>(null);
   const [videoPlayerUrl, setVideoPlayerUrl] = useState("");
-  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const [videoTitle, setVideoTitle] = useState("");
   const [videoDescription, setVideoDescription] = useState("");
   const [videoUploadCategoryIds, setVideoUploadCategoryIds] = useState<number[]>([]);
@@ -260,10 +271,29 @@ export default function App() {
   const [videoUploadNewCategories, setVideoUploadNewCategories] = useState("");
   const [videoUploadProgress, setVideoUploadProgress] = useState(0);
   const [videoUploadSession, setVideoUploadSession] = useState<VideoUploadSession | null>(null);
+  const [videoUploadCurrentIndex, setVideoUploadCurrentIndex] = useState(0);
+  const [videoUploadTotalCount, setVideoUploadTotalCount] = useState(0);
   const [newVideoCategoryName, setNewVideoCategoryName] = useState("");
   const [newVideoPersonName, setNewVideoPersonName] = useState("");
   const [newVideoPersonNote, setNewVideoPersonNote] = useState("");
   const [newVideoPersonAvatar, setNewVideoPersonAvatar] = useState<File | null>(null);
+  const [isVideoEditModalOpen, setIsVideoEditModalOpen] = useState(false);
+  const [editVideoTitle, setEditVideoTitle] = useState("");
+  const [editVideoDescription, setEditVideoDescription] = useState("");
+  const [editVideoCategoryIds, setEditVideoCategoryIds] = useState<number[]>([]);
+  const [editVideoPersonIds, setEditVideoPersonIds] = useState<number[]>([]);
+  const [isCategoryManageModalOpen, setIsCategoryManageModalOpen] = useState(false);
+  const [isVideoPersonManageModalOpen, setIsVideoPersonManageModalOpen] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [newManageCategoryName, setNewManageCategoryName] = useState("");
+  const [editingPersonId, setEditingPersonId] = useState<number | null>(null);
+  const [editingPersonName, setEditingPersonName] = useState("");
+  const [editingPersonNote, setEditingPersonNote] = useState("");
+  const [editingPersonAvatar, setEditingPersonAvatar] = useState<File | null>(null);
+  const [newManagePersonName, setNewManagePersonName] = useState("");
+  const [newManagePersonNote, setNewManagePersonNote] = useState("");
+  const [newManagePersonAvatar, setNewManagePersonAvatar] = useState<File | null>(null);
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const galleryImportFileRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -530,7 +560,7 @@ export default function App() {
     window.addEventListener("hashchange", onHashChange);
     // Initial check
     if (!window.location.hash) {
-      setRoute("gallery");
+      setRoute("home");
     } else {
       // Call it once to handle deep links correctly (avoid multiple fires but ensure playVideoId is set)
       const initialPage = routeFromHash();
@@ -1086,10 +1116,12 @@ export default function App() {
   }
 
   function handlePickVideoFile(files: FileList | null) {
-    const file = files?.[0] ?? null;
-    setVideoFile(file);
-    if (file && !videoTitle.trim()) {
-      setVideoTitle(file.name.replace(/\.[^.]+$/, ""));
+    const picked = Array.from(files ?? []);
+    setVideoFiles(picked);
+    if (picked.length === 1 && !videoTitle.trim()) {
+      setVideoTitle(picked[0].name.replace(/\.[^.]+$/, ""));
+    } else if (picked.length > 1) {
+      setVideoTitle("");
     }
     setVideoUploadProgress(0);
     setVideoUploadSession(null);
@@ -1210,7 +1242,154 @@ export default function App() {
     }
   }
 
-  async function resolveVideoUploadSession(file: File): Promise<VideoUploadSession> {
+  function openVideoEditModal() {
+    if (!selectedVideo) return;
+    setEditVideoTitle(selectedVideo.title);
+    setEditVideoDescription(selectedVideo.description || "");
+    setEditVideoCategoryIds(selectedVideo.category_tags.map(t => t.id));
+    setEditVideoPersonIds(selectedVideo.people.map(p => p.id));
+    setIsVideoEditModalOpen(true);
+  }
+
+  async function handleSaveVideoEdit() {
+    if (!selectedVideo) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateVideo(selectedVideo.id, {
+        title: editVideoTitle.trim() || selectedVideo.title,
+        description: editVideoDescription.trim() || null
+      });
+      const oldCategoryIds = new Set(selectedVideo.category_tags.map(t => t.id));
+      const newCategoryIds = new Set(editVideoCategoryIds);
+      for (const tagId of editVideoCategoryIds) {
+        if (!oldCategoryIds.has(tagId)) {
+          await addVideoCategoryTag(selectedVideo.id, { tagId });
+        }
+      }
+      for (const tagId of selectedVideo.category_tags.map(t => t.id)) {
+        if (!newCategoryIds.has(tagId)) {
+          await removeVideoCategoryTag(selectedVideo.id, tagId);
+        }
+      }
+      const oldPersonIds = new Set(selectedVideo.people.map(p => p.id));
+      const newPersonIds = new Set(editVideoPersonIds);
+      for (const personId of editVideoPersonIds) {
+        if (!oldPersonIds.has(personId)) {
+          await addVideoPerson(selectedVideo.id, personId);
+        }
+      }
+      for (const personId of selectedVideo.people.map(p => p.id)) {
+        if (!newPersonIds.has(personId)) {
+          await removeVideoPerson(selectedVideo.id, personId);
+        }
+      }
+      const detail = await getVideo(selectedVideo.id);
+      setSelectedVideo(detail);
+      setVideoItems((items) => items.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)));
+      setIsVideoEditModalOpen(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存视频信息失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateManageCategory() {
+    if (!newManageCategoryName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await createVideoCategoryTag(newManageCategoryName.trim());
+      setNewManageCategoryName("");
+      await refreshVideoTaxonomy();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建分区失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUpdateManageCategory(tagId: number) {
+    if (!editingCategoryName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateVideoCategoryTag(tagId, editingCategoryName.trim());
+      setEditingCategoryId(null);
+      setEditingCategoryName("");
+      await refreshVideoTaxonomy();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "更新分区失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteManageCategory(tagId: number) {
+    if (!window.confirm("确认删除此分区吗？")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteVideoCategoryTag(tagId);
+      await refreshVideoTaxonomy();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除分区失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateManagePerson() {
+    if (!newManagePersonName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await createVideoPerson(newManagePersonName.trim(), newManagePersonNote.trim(), newManagePersonAvatar);
+      setNewManagePersonName("");
+      setNewManagePersonNote("");
+      setNewManagePersonAvatar(null);
+      await refreshVideoTaxonomy();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建UP主失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUpdateManagePerson(personId: number) {
+    if (!editingPersonName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateVideoPerson(personId, editingPersonName.trim(), editingPersonNote.trim() || null, editingPersonAvatar);
+      setEditingPersonId(null);
+      setEditingPersonName("");
+      setEditingPersonNote("");
+      setEditingPersonAvatar(null);
+      await refreshVideoTaxonomy();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "更新UP主失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteManagePerson(personId: number) {
+    if (!window.confirm("确认删除此UP主吗？")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteVideoPerson(personId);
+      await refreshVideoTaxonomy();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除UP主失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resolveVideoUploadSession(file: File, title: string, description: string, partSize: number): Promise<VideoUploadSession> {
     const raw = window.localStorage.getItem(videoResumeStorageKey);
     if (raw) {
       try {
@@ -1225,12 +1404,12 @@ export default function App() {
       }
     }
     const session = await createVideoUploadSession({
-      title: videoTitle.trim(),
-      description: videoDescription.trim() || null,
+      title: title.trim(),
+      description: description.trim() || null,
       filename: file.name,
       content_type: file.type || "video/mp4",
       size_bytes: file.size,
-      part_size: videoPartSize
+      part_size: partSize
     });
     window.localStorage.setItem(
       videoResumeStorageKey,
@@ -1258,58 +1437,98 @@ export default function App() {
   }
 
   async function handleConfirmVideoUpload() {
-    if (!videoFile || !videoTitle.trim()) {
+    const filesToUpload = videoFiles;
+    const totalCount = filesToUpload.length;
+    if (totalCount === 0) {
       return;
     }
-    if (!videoFile.name.toLowerCase().endsWith(".mp4")) {
-      setError("当前版本仅支持 MP4 视频。");
+    if (totalCount === 1 && !videoTitle.trim()) {
       return;
     }
     setBusy(true);
     setError(null);
-    try {
-      let session = await resolveVideoUploadSession(videoFile);
-      const uploaded = new Set(session.uploaded_parts);
-      setVideoUploadSession(session);
-      for (let index = 0; index < session.total_parts; index += 1) {
-        if (uploaded.has(index)) {
-          setVideoUploadProgress(Math.round(((index + 1) / session.total_parts) * 100));
-          continue;
-        }
-        const start = index * session.part_size;
-        const end = Math.min(start + session.part_size, videoFile.size);
-        await uploadVideoPartWithRetry(session.id, index, videoFile.slice(start, end), videoFile.name);
-        uploaded.add(index);
-        const uploadedParts = Array.from(uploaded).sort((left, right) => left - right);
-        session = { ...session, uploaded_parts: uploadedParts };
-        setVideoUploadSession(session);
-        setVideoUploadProgress(Math.round((uploadedParts.length / session.total_parts) * 100));
+    setVideoUploadTotalCount(totalCount);
+
+    let completedCount = 0;
+    let lastError: string | null = null;
+
+    for (let fileIndex = 0; fileIndex < totalCount; fileIndex += 1) {
+      const file = filesToUpload[fileIndex];
+      console.log(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个: ${file.name} (${file.size} bytes)`);
+
+      if (!file.name.toLowerCase().endsWith(".mp4")) {
+        lastError = `"${file.name}" 不是 MP4 文件，已跳过。`;
+        continue;
       }
-      session = await getVideoUploadSession(session.id);
-      setVideoUploadSession(session);
-      await completeVideoUpload(session.id, {
-        category_tag_ids: videoUploadCategoryIds,
-        category_tag_names: splitCommaList(videoUploadNewCategories),
-        person_ids: videoUploadPersonIds
-      });
-      window.localStorage.removeItem(videoResumeStorageKey);
-      setVideoFile(null);
+
+      try {
+        flushSync(() => {
+          setVideoUploadCurrentIndex(fileIndex);
+          setVideoUploadProgress(0);
+          setVideoUploadSession(null);
+        });
+
+        const useTitle = totalCount === 1 ? videoTitle.trim() : file.name.replace(/\.[^.]+$/, "");
+        const partSize = videoPartSize;
+        let session = await resolveVideoUploadSession(file, useTitle, videoDescription, partSize);
+        const uploaded = new Set(session.uploaded_parts);
+        setVideoUploadSession(session);
+        for (let index = 0; index < session.total_parts; index += 1) {
+          if (uploaded.has(index)) {
+            setVideoUploadProgress(Math.round(((index + 1) / session.total_parts) * 100));
+            continue;
+          }
+          const start = index * session.part_size;
+          const end = Math.min(start + session.part_size, file.size);
+          await uploadVideoPartWithRetry(session.id, index, file.slice(start, end), file.name);
+          uploaded.add(index);
+          const uploadedParts = Array.from(uploaded).sort((left, right) => left - right);
+          session = { ...session, uploaded_parts: uploadedParts };
+          setVideoUploadSession(session);
+          setVideoUploadProgress(Math.round((uploadedParts.length / session.total_parts) * 100));
+        }
+        session = await getVideoUploadSession(session.id);
+        setVideoUploadSession(session);
+        await completeVideoUpload(session.id, {
+          category_tag_ids: videoUploadCategoryIds,
+          category_tag_names: splitCommaList(videoUploadNewCategories),
+          person_ids: videoUploadPersonIds
+        });
+        window.localStorage.removeItem(videoResumeStorageKey);
+        completedCount += 1;
+        console.log(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个完成: ${file.name}`);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : "视频上传失败。";
+        lastError = `"${file.name}" ${message}`;
+        console.error(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个失败: ${file.name}`, cause);
+      }
+    }
+
+    if (completedCount > 0) {
+      setVideoFiles([]);
       setVideoTitle("");
       setVideoDescription("");
       setVideoUploadCategoryIds([]);
       setVideoUploadPersonIds([]);
       setVideoUploadNewCategories("");
-      setVideoUploadSession(null);
-      setVideoUploadProgress(0);
-      setIsVideoUploadModalOpen(false);
       void refreshVideoTaxonomy();
       void refreshVideos(0, [], [], "");
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "视频上传失败。";
-      setError(`${message}。已保留续传会话，可再次点击开始上传继续。`);
-    } finally {
-      setBusy(false);
     }
+
+    setVideoUploadSession(null);
+    setVideoUploadProgress(0);
+    setVideoUploadCurrentIndex(0);
+    setVideoUploadTotalCount(0);
+
+    if (lastError) {
+      setError(`${lastError}（已完成 ${completedCount}/${totalCount} 个）`);
+      if (completedCount === 0) {
+        setVideoFiles([]);
+      }
+    } else {
+      setIsVideoUploadModalOpen(false);
+    }
+    setBusy(false);
   }
 
   async function handleCancelVideoUpload() {
@@ -1634,6 +1853,7 @@ export default function App() {
         </div>
         <nav className="nav-tabs">
           {[
+            ["home", "首页"],
             ["gallery", "页面 A · 展示图库"],
             ["people", "页面 B · 人物样本库"],
             ["upload", "页面 C · 展示图上传"],
@@ -1675,9 +1895,11 @@ export default function App() {
                 搜索
               </button>
             </div>
-            <button className="primary" onClick={() => setIsVideoUploadModalOpen(true)}>
-              上传视频
-            </button>
+            <div className="micro-row wrap" style={{ gap: '6px' }}>
+              <button style={{ fontSize: '0.75rem', padding: '6px 10px' }} onClick={() => setIsCategoryManageModalOpen(true)}>管理分区</button>
+              <button style={{ fontSize: '0.75rem', padding: '6px 10px' }} onClick={() => setIsVideoPersonManageModalOpen(true)}>管理UP主</button>
+              <button className="primary" onClick={() => setIsVideoUploadModalOpen(true)}>上传视频</button>
+            </div>
           </div>
 
           <div className="bili-filters-bar">
@@ -1794,18 +2016,18 @@ export default function App() {
                 </div>
 
                 <label className="upload-box video-upload-box">
-                  <input type="file" accept="video/mp4,.mp4" onChange={(event) => handlePickVideoFile(event.target.files)} />
-                  <strong>{videoFile ? videoFile.name : "选择 MP4 视频"}</strong>
-                  <span>{videoFile ? formatBytes(videoFile.size) : "支持长视频分片上传，刷新后重新选择同一文件可续传。"}</span>
+                  <input type="file" accept="video/mp4,.mp4" multiple onChange={(event) => handlePickVideoFile(event.target.files)} />
+                  <strong>{videoFiles.length === 1 ? videoFiles[0].name : videoFiles.length > 1 ? `已选 ${videoFiles.length} 个视频` : "选择 MP4 视频（可多选）"}</strong>
+                  <span>{videoFiles.length >= 1 ? videoFiles.map((f) => formatBytes(f.size)).join("、") : "支持长视频分片上传，支持多文件批量排队上传。"}</span>
                 </label>
 
                 <div className="stack-editor">
-                  <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="视频名字" />
+                  <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="单个视频时可自定义标题" disabled={videoFiles.length > 1} />
                   <textarea
                     className="rich-text-editor compact"
                     value={videoDescription}
                     onChange={(event) => setVideoDescription(event.target.value)}
-                    placeholder="视频简介"
+                    placeholder="视频简介（批量上传时所有文件共用此简介）"
                   />
                 </div>
 
@@ -1845,43 +2067,23 @@ export default function App() {
                   </div>
                 </div>
 
+                {error && <div className="error-banner" style={{ margin: '8px 0', padding: '10px', fontSize: '0.85rem' }}>{error}</div>}
+
                 <div className="video-progress">
                   <strong>{videoUploadProgress}%</strong>
                   <div className="meter"><span style={{ width: `${videoUploadProgress}%` }} /></div>
+                  {videoUploadTotalCount > 0 && (
+                    <small>文件 {Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / {videoUploadTotalCount}</small>
+                  )}
                   {videoUploadSession && <small>{videoUploadSession.uploaded_parts.length} / {videoUploadSession.total_parts} 分片</small>}
                 </div>
 
                 <div className="micro-row wrap">
-                  <button disabled={busy || !videoFile || !videoTitle.trim()} onClick={() => void handleConfirmVideoUpload()}>
-                    开始上传
+                  <button disabled={busy || videoFiles.length === 0 || (videoFiles.length === 1 && !videoTitle.trim())} onClick={() => void handleConfirmVideoUpload()}>
+                    {videoUploadTotalCount > 0 ? `上传中 (${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)}/${videoUploadTotalCount})` : "开始上传"}
                   </button>
                   <button className="ghost-button" disabled={busy} onClick={() => void handleCancelVideoUpload()}>
                     清理续传会话
-                  </button>
-                </div>
-
-                <div className="editor-block">
-                  <label>新增视频类别</label>
-                  <div className="inline-editor">
-                    <input value={newVideoCategoryName} onChange={(event) => setNewVideoCategoryName(event.target.value)} placeholder="类别名" />
-                    <button disabled={busy || !newVideoCategoryName.trim()} onClick={() => void handleCreateVideoCategory()}>
-                      新增
-                    </button>
-                  </div>
-                </div>
-
-                <div className="editor-block">
-                  <label>新增视频人物</label>
-                  <input value={newVideoPersonName} onChange={(event) => setNewVideoPersonName(event.target.value)} placeholder="人物名" />
-                  <textarea
-                    className="rich-text-editor compact"
-                    value={newVideoPersonNote}
-                    onChange={(event) => setNewVideoPersonNote(event.target.value)}
-                    placeholder="备注"
-                  />
-                  <input type="file" accept="image/*" onChange={(event) => setNewVideoPersonAvatar(event.target.files?.[0] ?? null)} />
-                  <button disabled={busy || !newVideoPersonName.trim()} onClick={() => void handleCreateVideoPerson()}>
-                    创建视频人物
                   </button>
                 </div>
               </aside>
@@ -1902,48 +2104,51 @@ export default function App() {
                 <p>加载中...</p>
               </div>
             )}
-            
-            {selectedVideo && (
-              <div className="video-play-info">
-                <h1>{selectedVideo.title}</h1>
-                <div className="micro-row wrap">
-                  <span>{formatDate(selectedVideo.created_at)}</span>
-                  <span>播放状态：{videoStatusLabel(selectedVideo.status)}</span>
-                  <span>{formatDurationSeconds(selectedVideo.duration_seconds)}</span>
-                  <span>{formatResolution(selectedVideo.width, selectedVideo.height)}</span>
-                  <span>{formatBytes(selectedVideo.size_bytes)}</span>
-                </div>
-                
-                <div className="bili-up-list" style={{ marginTop: '8px' }}>
-                  {selectedVideo.people.map((person) => (
-                    <div className="bili-up-item" key={person.id}>
-                      {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
-                      <span>{person.name}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="micro-row wrap" style={{ marginTop: '8px' }}>
-                  {selectedVideo.category_tags.map((tag) => (
-                    <span key={tag.id} className="pill muted">#{tag.name}</span>
-                  ))}
-                </div>
-
-                <p style={{ marginTop: '16px', lineHeight: '1.6' }}>{selectedVideo.description || "无简介"}</p>
-              </div>
-            )}
           </section>
 
           <aside className="video-play-sidebar panel">
-            <div className="section-head compact-head">
-              <div>
-                <p className="eyebrow">视频管理</p>
-                <h2>操作</h2>
-              </div>
-            </div>
-            
             {selectedVideo && (
               <div className="detail-copy">
+                <div className="video-play-info">
+                  <h1>{selectedVideo.title}</h1>
+                  <div className="micro-row wrap" style={{ gap: '6px', margin: '12px 0' }}>
+                    <button style={{ fontSize: '0.75rem', padding: '6px 10px' }} onClick={() => openVideoEditModal()}>编辑信息</button>
+                  </div>
+                  
+                  <div className="bili-up-list">
+                    {selectedVideo.people.map((person) => (
+                      <div className="bili-up-item" key={person.id}>
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
+                        <span>{person.name}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="micro-row wrap" style={{ marginTop: '8px' }}>
+                    {selectedVideo.category_tags.map((tag) => (
+                      <span key={tag.id} className="pill muted">#{tag.name}</span>
+                    ))}
+                  </div>
+
+                  <div className="video-meta-grid" style={{ marginTop: '16px', fontSize: '0.85rem', color: 'var(--muted)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <span>{formatDate(selectedVideo.created_at)}</span>
+                    <span>{videoStatusLabel(selectedVideo.status)}</span>
+                    <span>{formatDurationSeconds(selectedVideo.duration_seconds)}</span>
+                    <span>{formatResolution(selectedVideo.width, selectedVideo.height)}</span>
+                  </div>
+
+                  <div className="description-box" style={{ marginTop: '16px', padding: '12px', background: 'var(--bg)', borderRadius: '4px', fontSize: '0.9rem', lineHeight: '1.6' }}>
+                    {selectedVideo.description || "无简介"}
+                  </div>
+                </div>
+
+                <div className="section-head compact-head" style={{ marginTop: '32px' }}>
+                  <div>
+                    <p className="eyebrow">视频管理</p>
+                    <h2>封面与文件</h2>
+                  </div>
+                </div>
+
                 <div className="video-cover-manager">
                   {selectedVideo.cover_url ? (
                     <img src={selectedVideo.cover_url} alt="视频封面" />
@@ -1963,10 +2168,11 @@ export default function App() {
                     替换封面
                   </label>
                 </div>
+                
                 <p><strong>文件:</strong> {selectedVideo.filename}</p>
                 <p><strong>原始格式:</strong> {formatCodecs(selectedVideo.original_video_codec, selectedVideo.original_audio_codec)}</p>
                 <p><strong>播放格式:</strong> {formatCodecs(selectedVideo.video_codec, selectedVideo.audio_codec)}</p>
-                <p><strong>画面:</strong> {formatResolution(selectedVideo.width, selectedVideo.height)} · {formatDurationSeconds(selectedVideo.duration_seconds)}</p>
+                <p><strong>体积:</strong> {formatBytes(selectedVideo.size_bytes)}</p>
                 <p>
                   {selectedVideo.faststart_applied ? "· 已完成 faststart 优化" : "· 未优化"}
                 </p>
@@ -1992,6 +2198,7 @@ export default function App() {
         </main>
       )}
 
+      {page === "home" && <Home />}
 
             {page === "gallery" && (
         <main className="page-grid gallery-page">
@@ -2912,6 +3119,164 @@ export default function App() {
             </div>
           </aside>
         </main>
+      )}
+
+      {isVideoEditModalOpen && selectedVideo && (
+        <div className="modal-backdrop" onClick={() => setIsVideoEditModalOpen(false)}>
+          <div className="video-edit-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">编辑视频</p>
+                <h2>修改信息</h2>
+              </div>
+              <button className="close-modal" onClick={() => setIsVideoEditModalOpen(false)}>关闭</button>
+            </div>
+            <div className="stack-editor">
+              <input value={editVideoTitle} onChange={(event) => setEditVideoTitle(event.target.value)} placeholder="视频标题" />
+              <textarea
+                className="rich-text-editor compact"
+                value={editVideoDescription}
+                onChange={(event) => setEditVideoDescription(event.target.value)}
+                placeholder="视频简介"
+              />
+            </div>
+            <div className="editor-block">
+              <label>分区</label>
+              <div className="chip-cloud compact">
+                {videoCategoryTags.map((tag) => (
+                  <button
+                    key={tag.id}
+                    className={editVideoCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                    onClick={() => {
+                      setEditVideoCategoryIds((current) =>
+                        current.includes(tag.id) ? current.filter((id) => id !== tag.id) : [...current, tag.id]
+                      );
+                    }}
+                  >
+                    #{tag.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="editor-block">
+              <label>UP主</label>
+              <div className="video-person-cloud compact">
+                {videoPeople.map((person) => (
+                  <button
+                    key={person.id}
+                    className={editVideoPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
+                    onClick={() => {
+                      setEditVideoPersonIds((current) =>
+                        current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id]
+                      );
+                    }}
+                  >
+                    {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
+                    <b>{person.name}</b>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="ghost-button" onClick={() => setIsVideoEditModalOpen(false)}>取消</button>
+              <button disabled={busy} onClick={() => void handleSaveVideoEdit()}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isCategoryManageModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsCategoryManageModalOpen(false)}>
+          <div className="manage-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">管理分区</p>
+                <h2>视频分类</h2>
+              </div>
+              <button className="close-modal" onClick={() => setIsCategoryManageModalOpen(false)}>关闭</button>
+            </div>
+            <div className="inline-editor" style={{ marginTop: 0, paddingTop: 0 }}>
+              <input value={newManageCategoryName} onChange={(event) => setNewManageCategoryName(event.target.value)} placeholder="新分区名称" />
+              <button disabled={busy || !newManageCategoryName.trim()} onClick={() => void handleCreateManageCategory()}>创建</button>
+            </div>
+            <div className="manage-list">
+              {videoCategoryTags.map((tag) => (
+                <div key={tag.id} className="manage-item">
+                  {editingCategoryId === tag.id ? (
+                    <div className="inline-editor" style={{ marginTop: 0, paddingTop: 0, flex: 1 }}>
+                      <input value={editingCategoryName} onChange={(event) => setEditingCategoryName(event.target.value)} placeholder="分区名称" />
+                      <button disabled={busy || !editingCategoryName.trim()} onClick={() => void handleUpdateManageCategory(tag.id)}>保存</button>
+                      <button className="ghost-button" onClick={() => { setEditingCategoryId(null); setEditingCategoryName(""); }}>取消</button>
+                    </div>
+                  ) : (
+                    <>
+                      <span>#{tag.name}</span>
+                      <div className="micro-row wrap" style={{ gap: '4px' }}>
+                        <button style={{ fontSize: '0.7rem', padding: '4px 8px' }} onClick={() => { setEditingCategoryId(tag.id); setEditingCategoryName(tag.name); }}>编辑</button>
+                        <button style={{ fontSize: '0.7rem', padding: '4px 8px', color: '#ff3b30' }} onClick={() => void handleDeleteManageCategory(tag.id)}>删除</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+              {videoCategoryTags.length === 0 && <p className="tip">暂无分区</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isVideoPersonManageModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsVideoPersonManageModalOpen(false)}>
+          <div className="manage-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">管理UP主</p>
+                <h2>视频人物</h2>
+              </div>
+              <button className="close-modal" onClick={() => setIsVideoPersonManageModalOpen(false)}>关闭</button>
+            </div>
+            <div className="stack-editor" style={{ marginBottom: '16px' }}>
+              <input value={newManagePersonName} onChange={(event) => setNewManagePersonName(event.target.value)} placeholder="UP主名称" />
+              <input value={newManagePersonNote} onChange={(event) => setNewManagePersonNote(event.target.value)} placeholder="备注（可选）" />
+              <div className="inline-editor" style={{ marginTop: 0, paddingTop: 0 }}>
+                <input type="file" accept="image/*" onChange={(event) => setNewManagePersonAvatar(event.target.files?.[0] ?? null)} />
+                <button disabled={busy || !newManagePersonName.trim()} onClick={() => void handleCreateManagePerson()}>创建</button>
+              </div>
+            </div>
+            <div className="manage-list">
+              {videoPeople.map((person) => (
+                <div key={person.id} className="manage-item">
+                  {editingPersonId === person.id ? (
+                    <div className="stack-editor" style={{ flex: 1 }}>
+                      <input value={editingPersonName} onChange={(event) => setEditingPersonName(event.target.value)} placeholder="UP主名称" />
+                      <input value={editingPersonNote} onChange={(event) => setEditingPersonNote(event.target.value)} placeholder="备注（可选）" />
+                      <div className="inline-editor" style={{ marginTop: 0, paddingTop: 0 }}>
+                        <input type="file" accept="image/*" onChange={(event) => setEditingPersonAvatar(event.target.files?.[0] ?? null)} />
+                        <button disabled={busy || !editingPersonName.trim()} onClick={() => void handleUpdateManagePerson(person.id)}>保存</button>
+                        <button className="ghost-button" onClick={() => { setEditingPersonId(null); setEditingPersonName(""); setEditingPersonNote(""); setEditingPersonAvatar(null); }}>取消</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="manage-person-info">
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
+                        <div>
+                          <strong>{person.name}</strong>
+                          {person.note && <small>{person.note}</small>}
+                        </div>
+                      </div>
+                      <div className="micro-row wrap" style={{ gap: '4px' }}>
+                        <button style={{ fontSize: '0.7rem', padding: '4px 8px' }} onClick={() => { setEditingPersonId(person.id); setEditingPersonName(person.name); setEditingPersonNote(person.note || ""); setEditingPersonAvatar(null); }}>编辑</button>
+                        <button style={{ fontSize: '0.7rem', padding: '4px 8px', color: '#ff3b30' }} onClick={() => void handleDeleteManagePerson(person.id)}>删除</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+              {videoPeople.length === 0 && <p className="tip">暂无UP主</p>}
+            </div>
+          </div>
+        </div>
       )}
 
       {galleryExportModalOpen && (
