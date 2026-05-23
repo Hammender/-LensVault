@@ -6,3 +6,6 @@ frontend/dist/
 .env
 app.db
 **/milvus
+# Prevent leftover database in backend
+backend/app/data/
+.env.example

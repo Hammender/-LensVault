@@ -27,7 +27,7 @@ services:
       - --listen-client-urls=http://0.0.0.0:2379
       - --data-dir=/etcd
     volumes:
-      - ./data/milvus/etcd:/etcd
+      - E:\dockerVolums\picture-show\Milvus\etcd:/etcd
     restart: unless-stopped
 
   milvus-minio:

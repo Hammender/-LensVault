@@ -1595,10 +1595,12 @@ def list_videos(
 
 
 @app.get("/api/videos/{video_id}", response_model=VideoItemDetail)
-def get_video(video_id: int, db: Session = Depends(get_db)) -> VideoItemDetail:
+def get_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> VideoItemDetail:
     video = db.get(VideoItem, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
+    if video_service.needs_metadata_repair(video):
+        background_tasks.add_task(video_service.repair_video_metadata, video.id)
     return _video_to_detail(video)
 
 

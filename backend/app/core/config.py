@@ -7,8 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "PictureShow"
-    database_url: str = "sqlite:///./data/app.db"
-    data_dir: Path = Path("./data")
+    database_url: str = "sqlite:///E:/dockerVolums/picture-show/sqllite/app.db"
+    data_dir: Path = Path("E:/dockerVolums/picture-show/sqllite")
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
     minio_endpoint: str = "127.0.0.1:9000"
@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     video_faststart_enabled: bool = True
-    video_transcode_non_browser_friendly: bool = False
+    video_transcode_non_browser_friendly: bool = True
     video_faststart_timeout_seconds: int = 3600
     video_transcode_timeout_seconds: int = 21600
     video_cover_capture_seconds: float = 1.0

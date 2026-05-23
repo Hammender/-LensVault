@@ -5,8 +5,10 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 import subprocess
 import tempfile
+from threading import Lock
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -33,9 +35,28 @@ class VideoService:
     default_part_size = 16 * 1024 * 1024
     min_part_size = 5 * 1024 * 1024
     max_part_size = 128 * 1024 * 1024
-    supported_content_types = {"video/mp4", "application/mp4", "application/octet-stream", ""}
+    supported_extensions = {".mp4", ".mkv", ".mov", ".webm"}
+    extension_content_types = {
+        ".mp4": "video/mp4",
+        ".mkv": "video/x-matroska",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+    }
+    supported_content_types = {
+        "video/mp4",
+        "application/mp4",
+        "video/x-matroska",
+        "video/matroska",
+        "video/quicktime",
+        "video/webm",
+        "application/octet-stream",
+        "",
+    }
+    supported_format_label = "MP4、MKV、MOV、WEBM"
     browser_video_codecs = {"h264", "avc1"}
     browser_audio_codecs = {"aac", "mp3", "mp4a"}
+    metadata_repair_lock = Lock()
+    metadata_repair_video_ids: set[int] = set()
 
     def __init__(self, storage: MinioStorage, settings: Settings | None = None) -> None:
         self.storage = storage
@@ -44,7 +65,7 @@ class VideoService:
     def create_upload_session(self, db: Session, payload: VideoUploadSessionCreate) -> VideoUploadSession:
         title = payload.title.strip()
         filename = Path(payload.filename).name.strip()
-        content_type = (payload.content_type or "").strip() or "video/mp4"
+        content_type = self._normalize_upload_content_type(filename, payload.content_type)
         self._validate_video_file(filename, content_type)
 
         existing = db.scalar(select(VideoItem).where(VideoItem.filename == filename, VideoItem.size_bytes == payload.size_bytes))
@@ -159,6 +180,7 @@ class VideoService:
                     self.storage.remove_object(final_key)
                     raise ValueError("视频 SHA256 校验失败")
 
+            probe_info = self._probe_object(final_key, session.filename)
             video = VideoItem(
                 title=session.title,
                 description=session.description,
@@ -167,6 +189,13 @@ class VideoService:
                 sha256=session.sha256,
                 object_key=final_key,
                 size_bytes=session.size_bytes,
+                duration_seconds=probe_info.duration_seconds if probe_info else None,
+                width=probe_info.width if probe_info else None,
+                height=probe_info.height if probe_info else None,
+                original_video_codec=probe_info.video_codec if probe_info else None,
+                original_audio_codec=probe_info.audio_codec if probe_info else None,
+                video_codec=probe_info.video_codec if probe_info else None,
+                audio_codec=probe_info.audio_codec if probe_info else None,
                 status="uploaded",
             )
             db.add(video)
@@ -197,7 +226,8 @@ class VideoService:
             object_key = video.object_key
 
             with tempfile.TemporaryDirectory(prefix="pictureshow-video-") as temp_dir:
-                input_path = Path(temp_dir) / "input.mp4"
+                suffix = Path(video.filename).suffix.lower() or ".mp4"
+                input_path = Path(temp_dir) / f"input{suffix}"
                 output_path = Path(temp_dir) / "playback.mp4"
                 cover_path = Path(temp_dir) / "cover.jpg"
                 self._download_object_to_file(object_key, input_path)
@@ -205,13 +235,13 @@ class VideoService:
                 video = db.get(VideoItem, video_id)
                 if video is None:
                     return
-                video.duration_seconds = original_info.duration_seconds
-                video.width = original_info.width
-                video.height = original_info.height
-                video.original_video_codec = original_info.video_codec
-                video.original_audio_codec = original_info.audio_codec
-                video.video_codec = original_info.video_codec
-                video.audio_codec = original_info.audio_codec
+                video.duration_seconds = original_info.duration_seconds or video.duration_seconds
+                video.width = original_info.width or video.width
+                video.height = original_info.height or video.height
+                video.original_video_codec = original_info.video_codec or video.original_video_codec
+                video.original_audio_codec = original_info.audio_codec or video.original_audio_codec
+                video.video_codec = original_info.video_codec or video.video_codec
+                video.audio_codec = original_info.audio_codec or video.audio_codec
                 db.commit()
 
                 self._extract_cover(input_path, cover_path, original_info.duration_seconds)
@@ -257,16 +287,15 @@ class VideoService:
                 return
             video.status = "ready"
             video.faststart_applied = True
-            video.size_bytes = size_bytes
             video.sha256 = sha256
             video.content_type = "video/mp4"
-            video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds
-            video.width = playback_info.width or original_info.width
-            video.height = playback_info.height or original_info.height
-            video.original_video_codec = original_info.video_codec
-            video.original_audio_codec = original_info.audio_codec
-            video.video_codec = playback_info.video_codec
-            video.audio_codec = playback_info.audio_codec
+            video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds or video.duration_seconds
+            video.width = playback_info.width or original_info.width or video.width
+            video.height = playback_info.height or original_info.height or video.height
+            video.original_video_codec = original_info.video_codec or video.original_video_codec
+            video.original_audio_codec = original_info.audio_codec or video.original_audio_codec
+            video.video_codec = playback_info.video_codec or original_info.video_codec or video.video_codec
+            video.audio_codec = playback_info.audio_codec or original_info.audio_codec or video.audio_codec
             video.processed_at = datetime.utcnow()
             video.processing_error = None
             db.commit()
@@ -285,6 +314,48 @@ class VideoService:
 
     def optimize_video_faststart(self, video_id: int) -> None:
         self.process_video_for_playback(video_id)
+
+    def needs_metadata_repair(self, video: VideoItem) -> bool:
+        if video.status == "ready" and (not video.original_video_codec or not video.video_codec):
+            return True
+        return video.status == "processing_failed" and self._is_size_unique_processing_error(video.processing_error)
+
+    def repair_video_metadata(self, video_id: int) -> None:
+        with self.metadata_repair_lock:
+            if video_id in self.metadata_repair_video_ids:
+                return
+            self.metadata_repair_video_ids.add(video_id)
+        db = SessionLocal()
+        try:
+            video = db.get(VideoItem, video_id)
+            if video is None or not self.needs_metadata_repair(video):
+                return
+            probe_info = self._probe_object(video.object_key, video.filename)
+            if probe_info is None:
+                return
+            video.duration_seconds = video.duration_seconds or probe_info.duration_seconds
+            video.width = video.width or probe_info.width
+            video.height = video.height or probe_info.height
+            video.original_video_codec = video.original_video_codec or probe_info.video_codec
+            video.original_audio_codec = video.original_audio_codec or probe_info.audio_codec
+            video.video_codec = video.video_codec or probe_info.video_codec
+            video.audio_codec = video.audio_codec or probe_info.audio_codec
+            if video.status == "processing_failed" and self._is_size_unique_processing_error(video.processing_error):
+                video.status = "ready"
+                video.faststart_applied = True
+                video.content_type = "video/mp4"
+                video.processed_at = datetime.utcnow()
+                video.processing_error = None
+            db.commit()
+        except Exception:
+            logger.exception("Video metadata repair failed video_id=%s", video_id)
+        finally:
+            db.close()
+            with self.metadata_repair_lock:
+                self.metadata_repair_video_ids.discard(video_id)
+
+    def _is_size_unique_processing_error(self, error: str | None) -> bool:
+        return bool(error and "UNIQUE constraint failed: video_items.filename, video_items.size_bytes" in error)
 
     def _mark_video_ready_without_processing(self, video_id: int) -> None:
         db = SessionLocal()
@@ -410,6 +481,17 @@ class VideoService:
             response.close()
             response.release_conn()
 
+    def _probe_object(self, object_key: str, filename: str) -> "VideoProbeInfo | None":
+        try:
+            with tempfile.TemporaryDirectory(prefix="pictureshow-video-probe-") as temp_dir:
+                suffix = Path(filename).suffix.lower() or ".mp4"
+                input_path = Path(temp_dir) / f"input{suffix}"
+                self._download_object_to_file(object_key, input_path)
+                return self._probe_video(input_path)
+        except Exception:
+            logger.exception("Video metadata probe failed object_key=%s", object_key)
+            return None
+
     def _hash_file(self, path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as handle:
@@ -515,6 +597,10 @@ class VideoService:
             self.settings.ffprobe_path,
             "-v",
             "error",
+            "-probesize",
+            "100M",
+            "-analyzeduration",
+            "100M",
             "-print_format",
             "json",
             "-show_format",
@@ -532,15 +618,22 @@ class VideoService:
             message = (result.stderr or result.stdout or "ffprobe failed").strip()
             raise RuntimeError(message[-2000:])
         payload = json.loads(result.stdout or "{}")
-        video_stream = next((stream for stream in payload.get("streams", []) if stream.get("codec_type") == "video"), {})
-        audio_stream = next((stream for stream in payload.get("streams", []) if stream.get("codec_type") == "audio"), {})
+        streams = payload.get("streams", [])
+        video_stream = next((stream for stream in streams if str(stream.get("codec_type", "")).lower() == "video"), {})
+        audio_stream = next((stream for stream in streams if str(stream.get("codec_type", "")).lower() == "audio"), {})
         duration = self._parse_float(video_stream.get("duration")) or self._parse_float(payload.get("format", {}).get("duration"))
+        video_codec = self._stream_codec(video_stream)
+        audio_codec = self._stream_codec(audio_stream)
+        if not video_codec or (streams and not audio_codec):
+            fallback_video_codec, fallback_audio_codec = self._probe_codecs_from_ffmpeg_banner(path)
+            video_codec = video_codec or fallback_video_codec
+            audio_codec = audio_codec or fallback_audio_codec
         return VideoProbeInfo(
             duration_seconds=duration,
             width=self._parse_int(video_stream.get("width")),
             height=self._parse_int(video_stream.get("height")),
-            video_codec=self._normalize_codec(video_stream.get("codec_name")),
-            audio_codec=self._normalize_codec(audio_stream.get("codec_name")),
+            video_codec=video_codec,
+            audio_codec=audio_codec,
         )
 
     def _is_browser_friendly(self, info: "VideoProbeInfo") -> bool:
@@ -555,7 +648,34 @@ class VideoService:
         if not isinstance(value, str):
             return None
         normalized = value.strip().lower()
+        if normalized in {"unknown", "none", "n/a", "[0][0][0][0]"}:
+            return None
         return normalized or None
+
+    def _stream_codec(self, stream: dict[str, object]) -> str | None:
+        return self._normalize_codec(stream.get("codec_name")) or self._normalize_codec(stream.get("codec_tag_string"))
+
+    def _probe_codecs_from_ffmpeg_banner(self, path: Path) -> tuple[str | None, str | None]:
+        command = [
+            self.settings.ffmpeg_path,
+            "-hide_banner",
+            "-i",
+            str(path),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        output = f"{result.stderr or ''}\n{result.stdout or ''}"
+        video_match = re.search(r"Stream #\S+.*?Video:\s*([^,\s]+)", output, re.IGNORECASE)
+        audio_match = re.search(r"Stream #\S+.*?Audio:\s*([^,\s]+)", output, re.IGNORECASE)
+        return (
+            self._normalize_codec(video_match.group(1) if video_match else None),
+            self._normalize_codec(audio_match.group(1) if audio_match else None),
+        )
 
     def _parse_float(self, value: object) -> float | None:
         try:
@@ -579,10 +699,17 @@ class VideoService:
         return end - start
 
     def _validate_video_file(self, filename: str, content_type: str) -> None:
-        if Path(filename).suffix.lower() != ".mp4":
-            raise ValueError("当前版本仅支持 MP4 视频")
+        if Path(filename).suffix.lower() not in self.supported_extensions:
+            raise ValueError(f"当前版本仅支持 {self.supported_format_label} 视频")
         if content_type not in self.supported_content_types:
-            raise ValueError("当前版本仅支持 video/mp4")
+            raise ValueError(f"当前版本仅支持 {self.supported_format_label} 视频")
+
+    def _normalize_upload_content_type(self, filename: str, content_type: str | None) -> str:
+        normalized = (content_type or "").strip().lower()
+        if normalized:
+            return normalized
+        suffix = Path(filename).suffix.lower()
+        return self.extension_content_types.get(suffix, "application/octet-stream")
 
     def _build_video_object_key(self, filename: str) -> str:
         suffix = Path(filename).suffix.lower() or ".mp4"

@@ -102,6 +102,9 @@ const videoSeekSeconds = 10;
 const videoSeekLargeSeconds = 30;
 const videoLongPressDelayMs = 300;
 const videoLongPressRate = 3;
+const supportedVideoExtensions = [".mp4", ".mkv", ".mov", ".webm"];
+const supportedVideoAccept = "video/mp4,video/x-matroska,video/quicktime,video/webm,.mp4,.mkv,.mov,.webm";
+const supportedVideoFormatLabel = "MP4/MKV/MOV/WEBM";
 
 function formatDate(value: string | null | undefined): string {
   if (!value) {
@@ -150,10 +153,43 @@ function formatResolution(width: number | null | undefined, height: number | nul
   return `${width}x${height}`;
 }
 
-function formatCodecs(videoCodec: string | null | undefined, audioCodec: string | null | undefined): string {
-  const video = videoCodec || "未知视频编码";
-  const audio = audioCodec || "无音频/未知音频";
+function formatCodecs(
+  videoCodec: string | null | undefined,
+  audioCodec: string | null | undefined,
+  status?: string
+): string {
+  const pending = status === "uploaded" || status === "processing";
+  const video = videoCodec || (pending ? "识别中" : "未知视频编码");
+  const audio = audioCodec || (pending ? "识别中" : "无音频/未知音频");
   return `${video} / ${audio}`;
+}
+
+function getFileExtension(filename: string): string {
+  const match = filename.toLowerCase().match(/\.[^.]+$/);
+  return match?.[0] ?? "";
+}
+
+function getVideoFormatLabel(filename: string): string {
+  const extension = getFileExtension(filename);
+  return extension ? extension.slice(1).toUpperCase() : "VIDEO";
+}
+
+function isSupportedVideoFile(filename: string): boolean {
+  return supportedVideoExtensions.includes(getFileExtension(filename));
+}
+
+function isVideoCodecMissing(video: VideoDetail): boolean {
+  return video.status === "ready" && (!video.original_video_codec || !video.video_codec);
+}
+
+function isVideoMetadataRepairPending(video: VideoDetail): boolean {
+  return (
+    isVideoCodecMissing(video) ||
+    (
+      video.status === "processing_failed" &&
+      Boolean(video.processing_error?.includes("UNIQUE constraint failed: video_items.filename, video_items.size_bytes"))
+    )
+  );
 }
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
@@ -262,6 +298,8 @@ export default function App() {
   const [selectedVideoPersonIds, setSelectedVideoPersonIds] = useState<number[]>([]);
   const [videoSearch, setVideoSearch] = useState("");
   const [selectedVideo, setSelectedVideo] = useState<VideoDetail | null>(null);
+  const selectedVideoCodecRepairVideoId = useRef<number | null>(null);
+  const selectedVideoCodecRepairPolls = useRef(0);
   const [videoPlayerUrl, setVideoPlayerUrl] = useState("");
   const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const [videoTitle, setVideoTitle] = useState("");
@@ -610,11 +648,44 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedVideo) {
+      selectedVideoCodecRepairVideoId.current = null;
+      selectedVideoCodecRepairPolls.current = 0;
+      return undefined;
+    }
+    if (selectedVideoCodecRepairVideoId.current !== selectedVideo.id) {
+      selectedVideoCodecRepairVideoId.current = selectedVideo.id;
+      selectedVideoCodecRepairPolls.current = 0;
+    }
+    if (!isVideoMetadataRepairPending(selectedVideo) || selectedVideoCodecRepairPolls.current >= 5) {
+      return undefined;
+    }
+    const videoId = selectedVideo.id;
+    const timer = window.setTimeout(async () => {
+      selectedVideoCodecRepairPolls.current += 1;
+      try {
+        const detail = await getVideo(videoId);
+        setSelectedVideo(detail);
+        setVideoItems((items) => items.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)));
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "视频编码信息刷新失败。");
+      }
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [
+    selectedVideo?.id,
+    selectedVideo?.status,
+    selectedVideo?.original_video_codec,
+    selectedVideo?.video_codec,
+    selectedVideo?.processing_error
+  ]);
+
+  useEffect(() => {
+    if (!selectedVideo) {
       setVideoPlayerUrl("");
       return;
     }
     setVideoPlayerUrl(selectedVideo.play_url || selectedVideo.stream_url);
-  }, [selectedVideo?.id]);
+  }, [selectedVideo?.id, selectedVideo?.play_url, selectedVideo?.stream_url]);
 
 
   useEffect(() => {
@@ -1407,7 +1478,7 @@ export default function App() {
       title: title.trim(),
       description: description.trim() || null,
       filename: file.name,
-      content_type: file.type || "video/mp4",
+      content_type: file.type || null,
       size_bytes: file.size,
       part_size: partSize
     });
@@ -1456,8 +1527,8 @@ export default function App() {
       const file = filesToUpload[fileIndex];
       console.log(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个: ${file.name} (${file.size} bytes)`);
 
-      if (!file.name.toLowerCase().endsWith(".mp4")) {
-        lastError = `"${file.name}" 不是 MP4 文件，已跳过。`;
+      if (!isSupportedVideoFile(file.name)) {
+        lastError = `"${file.name}" 不是支持的视频格式（${supportedVideoFormatLabel}），已跳过。`;
         continue;
       }
 
@@ -1964,7 +2035,7 @@ export default function App() {
                   {video.cover_url ? (
                     <img src={video.cover_url} alt={video.title} loading="lazy" />
                   ) : (
-                    <span className="placeholder">MP4</span>
+                    <span className="placeholder">{getVideoFormatLabel(video.filename)}</span>
                   )}
                   <span className={`bili-video-status status-${video.status}`}>{videoStatusLabel(video.status)}</span>
                   <span className="bili-video-duration">
@@ -2016,9 +2087,9 @@ export default function App() {
                 </div>
 
                 <label className="upload-box video-upload-box">
-                  <input type="file" accept="video/mp4,.mp4" multiple onChange={(event) => handlePickVideoFile(event.target.files)} />
-                  <strong>{videoFiles.length === 1 ? videoFiles[0].name : videoFiles.length > 1 ? `已选 ${videoFiles.length} 个视频` : "选择 MP4 视频（可多选）"}</strong>
-                  <span>{videoFiles.length >= 1 ? videoFiles.map((f) => formatBytes(f.size)).join("、") : "支持长视频分片上传，支持多文件批量排队上传。"}</span>
+                  <input type="file" accept={supportedVideoAccept} multiple onChange={(event) => handlePickVideoFile(event.target.files)} />
+                  <strong>{videoFiles.length === 1 ? videoFiles[0].name : videoFiles.length > 1 ? `已选 ${videoFiles.length} 个视频` : `选择视频（${supportedVideoFormatLabel}，可多选）`}</strong>
+                  <span>{videoFiles.length >= 1 ? videoFiles.map((f) => formatBytes(f.size)).join("、") : "支持长视频分片上传，上传后会自动转为网页可播放格式。"}</span>
                 </label>
 
                 <div className="stack-editor">
@@ -2170,8 +2241,8 @@ export default function App() {
                 </div>
                 
                 <p><strong>文件:</strong> {selectedVideo.filename}</p>
-                <p><strong>原始格式:</strong> {formatCodecs(selectedVideo.original_video_codec, selectedVideo.original_audio_codec)}</p>
-                <p><strong>播放格式:</strong> {formatCodecs(selectedVideo.video_codec, selectedVideo.audio_codec)}</p>
+                <p><strong>原始格式:</strong> {formatCodecs(selectedVideo.original_video_codec, selectedVideo.original_audio_codec, selectedVideo.status)}</p>
+                <p><strong>播放格式:</strong> {formatCodecs(selectedVideo.video_codec, selectedVideo.audio_codec, selectedVideo.status)}</p>
                 <p><strong>体积:</strong> {formatBytes(selectedVideo.size_bytes)}</p>
                 <p>
                   {selectedVideo.faststart_applied ? "· 已完成 faststart 优化" : "· 未优化"}
