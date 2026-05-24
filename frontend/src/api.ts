@@ -10,10 +10,14 @@ import type {
   PaginatedVideos,
   UploadHistory,
   UploadSummary,
+  SubtitleJob,
+  SubtitleServiceLogs,
+  SubtitleServiceStatus,
   VideoCategoryTag,
   VideoDetail,
   VideoItem,
   VideoPerson,
+  VideoSubtitleTrack,
   VideoUploadSession
 } from "./types";
 
@@ -294,6 +298,38 @@ export async function getTask(taskId: string): Promise<Task> {
   return parse<Task>(await fetch(`/api/tasks/${taskId}`));
 }
 
+export async function getSubtitleServiceStatus(): Promise<SubtitleServiceStatus> {
+  return parse<SubtitleServiceStatus>(await fetch("/api/subtitle-service/status"));
+}
+
+export async function startSubtitleService(): Promise<SubtitleServiceStatus> {
+  return parse<SubtitleServiceStatus>(
+    await fetch("/api/subtitle-service/start", {
+      method: "POST"
+    })
+  );
+}
+
+export async function stopSubtitleService(cancelRunning = true): Promise<SubtitleServiceStatus> {
+  const url = new URL("/api/subtitle-service/stop", window.location.origin);
+  url.searchParams.set("cancel_running", String(cancelRunning));
+  return parse<SubtitleServiceStatus>(
+    await fetch(url.pathname + url.search, {
+      method: "POST"
+    })
+  );
+}
+
+export async function getSubtitleServiceLogs(tail = 200): Promise<SubtitleServiceLogs> {
+  const url = new URL("/api/subtitle-service/logs", window.location.origin);
+  url.searchParams.set("tail", String(tail));
+  return parse<SubtitleServiceLogs>(await fetch(url.pathname + url.search));
+}
+
+export async function listSubtitleJobs(): Promise<SubtitleJob[]> {
+  return parse<SubtitleJob[]>(await fetch("/api/subtitle-jobs"));
+}
+
 export async function reRecognizeGalleryPhoto(photoId: number): Promise<GalleryPhotoDetail> {
   return parse<GalleryPhotoDetail>(
     await fetch(`/api/gallery/photos/${photoId}/re-recognize`, {
@@ -467,13 +503,29 @@ export async function uploadVideoPart(sessionId: string, partIndex: number, blob
 
 export async function completeVideoUpload(
   sessionId: string,
-  payload: { category_tag_ids: number[]; category_tag_names: string[]; person_ids: number[] }
+  payload: { category_tag_ids: number[]; category_tag_names: string[]; person_ids: number[]; generate_zh_subtitles?: boolean }
 ): Promise<VideoDetail> {
   return parse<VideoDetail>(
     await fetch(`/api/videos/upload-sessions/${sessionId}/complete`, {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify(payload)
+    })
+  );
+}
+
+export async function generateVideoSubtitles(videoId: number): Promise<VideoSubtitleTrack> {
+  return parse<VideoSubtitleTrack>(
+    await fetch(`/api/videos/${videoId}/subtitles/generate`, {
+      method: "POST"
+    })
+  );
+}
+
+export async function cancelVideoSubtitles(videoId: number, trackId: number): Promise<VideoSubtitleTrack> {
+  return parse<VideoSubtitleTrack>(
+    await fetch(`/api/videos/${videoId}/subtitles/${trackId}/cancel`, {
+      method: "POST"
     })
   );
 }

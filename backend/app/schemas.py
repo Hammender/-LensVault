@@ -277,6 +277,71 @@ class VideoPersonBindCreate(BaseModel):
     person_id: int
 
 
+class VideoSubtitleTrackRead(BaseModel):
+    id: int
+    video_id: int
+    language: str
+    label: str
+    source_language: str | None
+    provider: str
+    status: str
+    error_message: str | None
+    task_id: str | None
+    generated_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    vtt_url: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class SubtitleAsrStatus(BaseModel):
+    status: str
+    loaded: bool
+    model_path: str
+    device: str
+    compute_type: str
+    current_video_id: int | None
+    current_task_id: str | None
+    message: str | None
+    last_duration_seconds: float | None
+    last_language: str | None
+    last_segment_count: int | None
+    last_error: str | None
+
+
+class SubtitleServiceStatus(BaseModel):
+    status: str
+    healthy: bool
+    managed: bool
+    pid: int | None
+    endpoint: str
+    model: str
+    model_path: str
+    server_path: str | None
+    log_path: str | None
+    message: str | None
+    asr: SubtitleAsrStatus
+
+
+class SubtitleServiceLogs(BaseModel):
+    log_path: str | None
+    exists: bool
+    content: str
+
+
+class SubtitleJobRead(BaseModel):
+    video_id: int
+    video_title: str
+    video_filename: str
+    track: VideoSubtitleTrackRead
+    task: TaskRead | None
+
+
+class VideoSubtitleTrackUpdate(BaseModel):
+    content_vtt: str
+
+
 class VideoItemListItem(BaseModel):
     id: int
     title: str
@@ -302,6 +367,7 @@ class VideoItemListItem(BaseModel):
     processing_error: str | None
     created_at: datetime
     updated_at: datetime
+    subtitle_tracks: list[VideoSubtitleTrackRead] = Field(default_factory=list)
 
 
 class VideoItemDetail(VideoItemListItem):
@@ -356,6 +422,7 @@ class VideoUploadCompleteRequest(BaseModel):
     category_tag_ids: list[int] = Field(default_factory=list)
     category_tag_names: list[str] = Field(default_factory=list)
     person_ids: list[int] = Field(default_factory=list)
+    generate_zh_subtitles: bool = False
 
     @model_validator(mode="after")
     def normalize_names(self) -> "VideoUploadCompleteRequest":

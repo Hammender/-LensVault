@@ -207,6 +207,32 @@
   border-radius: 3px !important;
 }
 
+.bili-subtitle-btn {
+  min-width: 42px !important;
+  border-radius: 3px !important;
+}
+
+.bili-subtitle-btn span {
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  padding: 1px 4px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.bili-subtitle-btn.active {
+  color: #ffd166;
+  opacity: 1;
+}
+
+.bili-video-el::cue {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.68);
+  font-size: 1.48rem;
+  line-height: 1.5;
+}
+
 .bili-rate-menu {
   position: absolute;
   bottom: 100%;

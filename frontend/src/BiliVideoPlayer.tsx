@@ -15,9 +15,14 @@ function formatTime(seconds: number): string {
 interface BiliVideoPlayerProps {
   src: string;
   poster?: string;
+  subtitles?: Array<{
+    src: string;
+    label: string;
+    srclang: string;
+  }>;
 }
 
-export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
+export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const rateMenuRef = useRef<HTMLDivElement>(null);
@@ -31,6 +36,8 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [showRateMenu, setShowRateMenu] = useState(false);
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState(subtitles.length > 0);
+  const subtitleKey = subtitles.map((track) => track.src).join("|");
   
   const [showControls, setShowControls] = useState(true);
   const controlsTimeoutRef = useRef<number | null>(null);
@@ -45,6 +52,10 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
   const [isDraggingProgress, setIsDraggingProgress] = useState(false);
 
   const RATE_OPTIONS = [2.0, 1.5, 1.25, 1.0, 0.5];
+
+  useEffect(() => {
+    setSubtitlesEnabled(subtitles.length > 0);
+  }, [subtitles]);
 
   const showIndicator = (text: string) => {
     setIndicatorText(text);
@@ -266,6 +277,22 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
     }
   };
 
+  useEffect(() => {
+    if (!videoRef.current) return;
+    Array.from(videoRef.current.textTracks).forEach((track, index) => {
+      track.mode = subtitlesEnabled && index === 0 ? "showing" : "disabled";
+    });
+  }, [subtitlesEnabled, subtitleKey]);
+
+  const toggleSubtitles = () => {
+    if (subtitles.length === 0) return;
+    setSubtitlesEnabled((current) => {
+      const next = !current;
+      showIndicator(next ? "字幕已开启" : "字幕已关闭");
+      return next;
+    });
+  };
+
   return (
     <div 
       ref={containerRef}
@@ -286,7 +313,18 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
         onPause={() => setIsPlaying(false)}
         onEnded={() => setIsPlaying(false)}
         playsInline
-      />
+      >
+        {subtitles.map((track, index) => (
+          <track
+            key={`${track.src}-${track.srclang}`}
+            src={track.src}
+            kind="subtitles"
+            srcLang={track.srclang}
+            label={track.label}
+            default={index === 0}
+          />
+        ))}
+      </video>
 
       {indicatorText && (
         <div className="bili-indicator">
@@ -322,6 +360,15 @@ export default function BiliVideoPlayer({ src, poster }: BiliVideoPlayerProps) {
           </div>
           
           <div className="bili-controls-right">
+            {subtitles.length > 0 && (
+              <button
+                className={`bili-icon-btn bili-subtitle-btn${subtitlesEnabled ? " active" : ""}`}
+                onClick={toggleSubtitles}
+                title={subtitlesEnabled ? "关闭字幕" : "开启字幕"}
+              >
+                <span>CC</span>
+              </button>
+            )}
             <div className="bili-rate-wrapper" ref={rateMenuRef}>
               <button className="bili-icon-btn bili-rate-btn" onClick={() => setShowRateMenu(!showRateMenu)} title="倍速">
                 <span style={{ fontSize: '13px', fontWeight: 700 }}>{playbackRate}x</span>

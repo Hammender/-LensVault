@@ -962,6 +962,55 @@ input:focus, select:focus, textarea:focus {
   font-size: 1.4rem;
 }
 
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  font-weight: 800;
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--fg);
+}
+
+.subtitle-upload-toggle {
+  border: 2px solid var(--panel-border);
+  background: var(--bg);
+  padding: 12px 14px;
+}
+
+.subtitle-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.subtitle-status {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg);
+  padding: 10px;
+}
+
+.subtitle-status span,
+.subtitle-status small,
+.subtitle-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.subtitle-status-ready {
+  border-color: #1f7a3f;
+}
+
+.subtitle-status-failed {
+  border-color: #ff3b30;
+}
+
 .pending-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -1237,6 +1286,16 @@ input:focus, select:focus, textarea:focus {
   .known-person-cloud { max-height: 190px; }
   .unknown-person-cloud { max-height: 220px; }
   .tag-filter-cloud { max-height: 140px; }
+  .subtitle-service-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .subtitle-job-row {
+    grid-template-columns: 1fr;
+  }
+  .subtitle-job-progress {
+    grid-template-columns: minmax(0, 1fr) 42px;
+  }
 }
 /* Bilibili Style Video Page */
 .bili-videos-page {
@@ -1274,6 +1333,168 @@ input:focus, select:focus, textarea:focus {
   background: var(--panel);
   padding: 16px 24px;
   border: 2px solid var(--panel-border);
+}
+
+.subtitle-service-panel {
+  display: grid;
+  gap: 14px;
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  padding: 16px 24px;
+}
+
+.subtitle-service-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.subtitle-service-head h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.subtitle-service-actions,
+.subtitle-service-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.subtitle-service-actions button {
+  padding: 7px 10px;
+  font-size: 0.8rem;
+}
+
+.subtitle-service-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg);
+  padding: 0 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.subtitle-service-badge-running {
+  border-color: #1f7a3f;
+  color: #1f7a3f;
+}
+
+.subtitle-service-badge-stopped {
+  color: var(--muted);
+}
+
+.subtitle-service-badge-unhealthy {
+  border-color: #ff3b30;
+  color: #ff3b30;
+}
+
+.subtitle-service-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.subtitle-service-asr-meta {
+  padding-top: 2px;
+}
+
+.subtitle-service-message {
+  border: 1px solid var(--panel-border);
+  background: var(--bg);
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.subtitle-service-message-error {
+  border-color: #ff3b30;
+  color: #b00020;
+}
+
+.subtitle-job-list {
+  display: grid;
+  gap: 8px;
+}
+
+.subtitle-job-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--panel-border);
+  background: var(--bg);
+  padding: 10px 12px;
+}
+
+.subtitle-job-row-failed {
+  border-color: #ff3b30;
+}
+
+.subtitle-job-row-canceled {
+  opacity: 0.78;
+}
+
+.subtitle-job-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.subtitle-job-main strong,
+.subtitle-job-main span,
+.subtitle-job-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-job-main span,
+.subtitle-job-main small,
+.subtitle-service-empty,
+.subtitle-log-path {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.subtitle-job-progress {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.subtitle-job-progress progress {
+  width: 100%;
+  height: 8px;
+}
+
+.ghost-button.compact {
+  padding: 7px 10px;
+  font-size: 0.78rem;
+}
+
+.subtitle-log-panel {
+  display: grid;
+  gap: 6px;
+}
+
+.subtitle-log-panel pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--panel-border);
+  background: #111;
+  color: #f4f4f4;
+  padding: 12px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .bili-filter-row {

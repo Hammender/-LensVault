@@ -111,6 +111,14 @@ def ensure_legacy_columns() -> None:
                 connection.execute(text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_video_items_filename_size ON video_items(filename, size_bytes)"
                 ))
+    if "video_subtitle_tracks" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("video_subtitle_tracks")}
+        statements: list[str] = []
+        if "task_id" not in columns:
+            statements.append("ALTER TABLE video_subtitle_tracks ADD COLUMN task_id VARCHAR(64)")
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()

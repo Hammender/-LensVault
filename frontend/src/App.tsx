@@ -26,6 +26,10 @@ import {
   deleteVideo,
   deleteVideoCategoryTag,
   deleteVideoPerson,
+  cancelVideoSubtitles,
+  generateVideoSubtitles,
+  getSubtitleServiceLogs,
+  getSubtitleServiceStatus,
   getVideo,
   getVideoUploadSession,
   getGalleryExportUrl,
@@ -41,6 +45,7 @@ import {
   listPersons,
   listPersonTags,
   listTags,
+  listSubtitleJobs,
   listVideoCategoryTags,
   listVideoPeople,
   listVideos,
@@ -56,6 +61,8 @@ import {
   removeVideoCategoryTag,
   addVideoPerson,
   removeVideoPerson,
+  startSubtitleService,
+  stopSubtitleService,
   updateVideoCategoryTag,
   updateVideoPerson,
   type GalleryExportScope,
@@ -66,6 +73,9 @@ import type {
   GalleryPhotoListItem,
   Person,
   SamplePhoto,
+  SubtitleJob,
+  SubtitleServiceLogs,
+  SubtitleServiceStatus,
   Tag,
   Task,
   VideoCategoryTag,
@@ -209,6 +219,38 @@ function videoStatusLabel(status: string): string {
   return labels[status] ?? status;
 }
 
+function subtitleTrackStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    pending: "排队中",
+    running: "生成中",
+    ready: "可用",
+    failed: "失败",
+    canceled: "已取消"
+  };
+  return labels[status] ?? status;
+}
+
+function subtitleServiceStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    running: "运行中",
+    stopped: "未运行",
+    unhealthy: "异常"
+  };
+  return labels[status] ?? status;
+}
+
+function subtitleAsrStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    not_loaded: "未加载",
+    waiting: "等待中",
+    loading: "加载中",
+    transcribing: "识别中",
+    ready: "已就绪",
+    error: "异常"
+  };
+  return labels[status] ?? status;
+}
+
 function routeFromHash(): PageKey {
   const hash = window.location.hash.replace(/^#\/?/, "");
   if (hash.startsWith("video-play/")) {
@@ -307,10 +349,18 @@ export default function App() {
   const [videoUploadCategoryIds, setVideoUploadCategoryIds] = useState<number[]>([]);
   const [videoUploadPersonIds, setVideoUploadPersonIds] = useState<number[]>([]);
   const [videoUploadNewCategories, setVideoUploadNewCategories] = useState("");
+  const [videoUploadGenerateSubtitles, setVideoUploadGenerateSubtitles] = useState(false);
   const [videoUploadProgress, setVideoUploadProgress] = useState(0);
   const [videoUploadSession, setVideoUploadSession] = useState<VideoUploadSession | null>(null);
   const [videoUploadCurrentIndex, setVideoUploadCurrentIndex] = useState(0);
   const [videoUploadTotalCount, setVideoUploadTotalCount] = useState(0);
+  const [subtitleServiceStatus, setSubtitleServiceStatus] = useState<SubtitleServiceStatus | null>(null);
+  const [subtitleServiceLogs, setSubtitleServiceLogs] = useState<SubtitleServiceLogs | null>(null);
+  const [subtitleJobs, setSubtitleJobs] = useState<SubtitleJob[]>([]);
+  const [subtitleJobsLoaded, setSubtitleJobsLoaded] = useState(false);
+  const [subtitleServiceBusy, setSubtitleServiceBusy] = useState(false);
+  const [subtitleServiceNotice, setSubtitleServiceNotice] = useState<string | null>(null);
+  const [subtitleLogsOpen, setSubtitleLogsOpen] = useState(false);
   const [newVideoCategoryName, setNewVideoCategoryName] = useState("");
   const [newVideoPersonName, setNewVideoPersonName] = useState("");
   const [newVideoPersonNote, setNewVideoPersonNote] = useState("");
@@ -442,6 +492,13 @@ export default function App() {
   );
   const videoTotalPages = Math.max(1, Math.ceil(videoTotal / videoPageSize));
   const videoCurrentPage = Math.floor(videoOffset / videoPageSize) + 1;
+  const selectedVideoSubtitlePollingKey =
+    selectedVideo?.subtitle_tracks.map((track) => `${track.id}:${track.status}`).join("|") ?? "";
+  const activeSubtitleJobs = useMemo(
+    () => subtitleJobs.filter((job) => ["pending", "running"].includes(job.track.status)),
+    [subtitleJobs]
+  );
+  const visibleSubtitleJobs = useMemo(() => subtitleJobs.slice(0, 8), [subtitleJobs]);
 
   async function refreshPeople() {
     const nextPersons = await listPersons();
@@ -498,6 +555,27 @@ export default function App() {
       const listed = response.items.find((item) => item.id === current.id);
       return listed ? { ...current, ...listed } : current;
     });
+  }
+
+  async function refreshSubtitleJobs() {
+    const jobs = await listSubtitleJobs();
+    setSubtitleJobs(jobs);
+    setSubtitleJobsLoaded(true);
+  }
+
+  async function refreshSubtitleServicePanel() {
+    const operations: Promise<unknown>[] = [
+      getSubtitleServiceStatus().then((status) => setSubtitleServiceStatus(status)),
+      refreshSubtitleJobs()
+    ];
+    if (subtitleLogsOpen) {
+      operations.push(getSubtitleServiceLogs(200).then((logs) => setSubtitleServiceLogs(logs)));
+    }
+    const results = await Promise.allSettled(operations);
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") {
+      throw failed.reason instanceof Error ? failed.reason : new Error("字幕服务状态刷新失败。");
+    }
   }
 
   async function refreshSamples(personId: number | null) {
@@ -630,7 +708,61 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedVideo || !["uploaded", "processing"].includes(selectedVideo.status)) {
+    if (page !== "videos") {
+      return undefined;
+    }
+    let canceled = false;
+    const refresh = async () => {
+      await Promise.allSettled([
+        listSubtitleJobs()
+          .then((jobs) => {
+            if (!canceled) {
+              setSubtitleJobs(jobs);
+              setSubtitleJobsLoaded(true);
+            }
+          })
+          .catch((cause) => {
+            if (!canceled) {
+              setError(cause instanceof Error ? cause.message : "字幕任务刷新失败。");
+            }
+          }),
+        getSubtitleServiceStatus()
+          .then((status) => {
+            if (!canceled) {
+              setSubtitleServiceStatus(status);
+            }
+          })
+          .catch((cause) => {
+            if (!canceled) {
+              setSubtitleServiceNotice(`状态刷新失败：${cause instanceof Error ? cause.message : "字幕服务状态刷新失败。"}`);
+            }
+          }),
+        subtitleLogsOpen
+          ? getSubtitleServiceLogs(200)
+              .then((logs) => {
+                if (!canceled) {
+                  setSubtitleServiceLogs(logs);
+                }
+              })
+              .catch((cause) => {
+                if (!canceled) {
+                  setError(cause instanceof Error ? cause.message : "字幕日志刷新失败。");
+                }
+              })
+          : Promise.resolve()
+      ]);
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 4000);
+    return () => {
+      canceled = true;
+      window.clearInterval(timer);
+    };
+  }, [page, subtitleLogsOpen]);
+
+  useEffect(() => {
+    const hasPendingSubtitle = selectedVideo?.subtitle_tracks.some((track) => ["pending", "running"].includes(track.status));
+    if (!selectedVideo || (!["uploaded", "processing"].includes(selectedVideo.status) && !hasPendingSubtitle)) {
       return undefined;
     }
     const videoId = selectedVideo.id;
@@ -644,7 +776,7 @@ export default function App() {
       }
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [selectedVideo?.id, selectedVideo?.status]);
+  }, [selectedVideo?.id, selectedVideo?.status, selectedVideoSubtitlePollingKey]);
 
   useEffect(() => {
     if (!selectedVideo) {
@@ -699,7 +831,7 @@ export default function App() {
   }, [selectedPerson]);
 
   useEffect(() => {
-    if (!task || task.status === "completed" || task.status === "failed") {
+    if (!task || task.status === "completed" || task.status === "failed" || task.status === "canceled") {
       return undefined;
     }
     const timer = window.setInterval(async () => {
@@ -717,7 +849,7 @@ export default function App() {
   }, [selectedPersonIds, selectedTagIds, task]);
 
   useEffect(() => {
-    if (!importTask || importTask.status === "completed" || importTask.status === "failed") {
+    if (!importTask || importTask.status === "completed" || importTask.status === "failed" || importTask.status === "canceled") {
       return undefined;
     }
     const timer = window.setInterval(async () => {
@@ -740,7 +872,12 @@ export default function App() {
   }, [importTask]);
 
   useEffect(() => {
-    if (!galleryImportTask || galleryImportTask.status === "completed" || galleryImportTask.status === "failed") {
+    if (
+      !galleryImportTask ||
+      galleryImportTask.status === "completed" ||
+      galleryImportTask.status === "failed" ||
+      galleryImportTask.status === "canceled"
+    ) {
       return undefined;
     }
     const timer = window.setInterval(async () => {
@@ -1563,7 +1700,8 @@ export default function App() {
         await completeVideoUpload(session.id, {
           category_tag_ids: videoUploadCategoryIds,
           category_tag_names: splitCommaList(videoUploadNewCategories),
-          person_ids: videoUploadPersonIds
+          person_ids: videoUploadPersonIds,
+          generate_zh_subtitles: videoUploadGenerateSubtitles
         });
         window.localStorage.removeItem(videoResumeStorageKey);
         completedCount += 1;
@@ -1619,6 +1757,113 @@ export default function App() {
       setError(cause instanceof Error ? cause.message : "取消视频上传失败。");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleGenerateSelectedVideoSubtitles() {
+    if (!selectedVideo) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await generateVideoSubtitles(selectedVideo.id);
+      const detail = await getVideo(selectedVideo.id);
+      setSelectedVideo(detail);
+      setVideoItems((items) => items.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)));
+      await refreshSubtitleJobs();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "提交字幕生成失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleStartSubtitleService() {
+    setSubtitleServiceBusy(true);
+    setError(null);
+    setSubtitleServiceNotice(null);
+    try {
+      setSubtitleServiceStatus(await startSubtitleService());
+      setSubtitleServiceLogs(await getSubtitleServiceLogs(200));
+      await refreshSubtitleServicePanel();
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "启动翻译服务失败。";
+      setError(message);
+      setSubtitleServiceNotice(`启动失败：${message}`);
+    } finally {
+      setSubtitleServiceBusy(false);
+    }
+  }
+
+  async function handleStopSubtitleService() {
+    const message =
+      activeSubtitleJobs.length > 0
+        ? `当前有 ${activeSubtitleJobs.length} 个字幕任务正在执行。关闭翻译服务会取消这些任务，确定继续吗？`
+        : "确定关闭翻译服务吗？";
+    if (!window.confirm(message)) {
+      return;
+    }
+    setSubtitleServiceBusy(true);
+    setError(null);
+    setSubtitleServiceNotice(null);
+    try {
+      setSubtitleServiceStatus(await stopSubtitleService(true));
+      await refreshSubtitleServicePanel();
+      setSubtitleServiceNotice("翻译服务已关闭");
+      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+      if (selectedVideo) {
+        const detail = await getVideo(selectedVideo.id);
+        setSelectedVideo(detail);
+      }
+    } catch (cause) {
+      const errorMessage = cause instanceof Error ? cause.message : "关闭翻译服务失败。";
+      setError(errorMessage);
+      setSubtitleServiceNotice(`关闭失败：${errorMessage}`);
+      try {
+        await refreshSubtitleServicePanel();
+      } catch {
+        // Keep the actionable shutdown error visible if the status refresh also fails.
+      }
+    } finally {
+      setSubtitleServiceBusy(false);
+    }
+  }
+
+  async function handleToggleSubtitleLogs() {
+    const nextOpen = !subtitleLogsOpen;
+    setSubtitleLogsOpen(nextOpen);
+    if (!nextOpen) {
+      return;
+    }
+    setSubtitleServiceBusy(true);
+    setError(null);
+    try {
+      setSubtitleServiceLogs(await getSubtitleServiceLogs(200));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "读取翻译服务日志失败。");
+    } finally {
+      setSubtitleServiceBusy(false);
+    }
+  }
+
+  async function handleCancelSubtitleJob(job: SubtitleJob) {
+    if (!window.confirm(`确定取消《${job.video_title}》的中文字幕生成吗？`)) {
+      return;
+    }
+    setSubtitleServiceBusy(true);
+    setError(null);
+    try {
+      await cancelVideoSubtitles(job.video_id, job.track.id);
+      await refreshSubtitleServicePanel();
+      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+      if (selectedVideo?.id === job.video_id) {
+        setSelectedVideo(await getVideo(job.video_id));
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "取消字幕任务失败。");
+    } finally {
+      setSubtitleServiceBusy(false);
     }
   }
 
@@ -1973,6 +2218,113 @@ export default function App() {
             </div>
           </div>
 
+          <section className="subtitle-service-panel">
+            <div className="subtitle-service-head">
+              <div>
+                <p className="eyebrow">中文字幕</p>
+                <h2>本地翻译服务</h2>
+              </div>
+              <div className="subtitle-service-actions">
+                <span className={`subtitle-service-badge subtitle-service-badge-${subtitleServiceStatus?.status ?? "unknown"}`}>
+                  {subtitleServiceStatus ? subtitleServiceStatusLabel(subtitleServiceStatus.status) : "检测中"}
+                </span>
+                <button disabled={subtitleServiceBusy} onClick={() => void handleStartSubtitleService()}>
+                  启动服务
+                </button>
+                <button disabled={subtitleServiceBusy} onClick={() => void handleStopSubtitleService()}>
+                  关闭服务
+                </button>
+                <button disabled={subtitleServiceBusy} onClick={() => void handleToggleSubtitleLogs()}>
+                  {subtitleLogsOpen ? "收起日志" : "查看日志"}
+                </button>
+              </div>
+            </div>
+
+            <div className="subtitle-service-meta">
+              <span>端点：{subtitleServiceStatus?.endpoint ?? "未检测"}</span>
+              <span>PID：{subtitleServiceStatus?.pid ?? "无"}</span>
+              <span>模型：{subtitleServiceStatus?.model ?? "Hy-MT2"}</span>
+              <span>{subtitleServiceStatus?.managed ? "由 PictureShow 启动" : "外部或未启动"}</span>
+            </div>
+
+            <div className="subtitle-service-meta subtitle-service-asr-meta">
+              <span>ASR：{subtitleServiceStatus?.asr ? subtitleAsrStatusLabel(subtitleServiceStatus.asr.status) : "检测中"}</span>
+              <span>设备：{subtitleServiceStatus?.asr ? `${subtitleServiceStatus.asr.device}/${subtitleServiceStatus.asr.compute_type}` : "未检测"}</span>
+              <span>模型：faster-whisper</span>
+              {subtitleServiceStatus?.asr?.last_duration_seconds != null && (
+                <span>上次耗时：{subtitleServiceStatus.asr.last_duration_seconds.toFixed(1)} 秒</span>
+              )}
+              {subtitleServiceStatus?.asr?.last_segment_count != null && (
+                <span>上次片段：{subtitleServiceStatus.asr.last_segment_count}</span>
+              )}
+            </div>
+
+            {(subtitleServiceNotice || subtitleServiceStatus?.message) && (
+              <div
+                className={
+                  subtitleServiceNotice?.includes("失败") || subtitleServiceStatus?.status === "unhealthy"
+                    ? "subtitle-service-message subtitle-service-message-error"
+                    : "subtitle-service-message"
+                }
+              >
+                {subtitleServiceNotice || subtitleServiceStatus?.message}
+              </div>
+            )}
+
+            {subtitleServiceStatus?.asr?.message && (
+              <div
+                className={
+                  subtitleServiceStatus.asr.status === "error"
+                    ? "subtitle-service-message subtitle-service-message-error"
+                    : "subtitle-service-message"
+                }
+              >
+                语音识别：{subtitleServiceStatus.asr.message}
+                {subtitleServiceStatus.asr.last_error ? `：${subtitleServiceStatus.asr.last_error}` : ""}
+              </div>
+            )}
+
+            {visibleSubtitleJobs.length > 0 ? (
+              <div className="subtitle-job-list">
+                {visibleSubtitleJobs.map((job) => {
+                  const progress = Math.round(Math.min(Math.max(job.task?.progress ?? 0, 0), 1) * 100);
+                  const isActive = ["pending", "running"].includes(job.track.status);
+                  return (
+                    <div className={`subtitle-job-row subtitle-job-row-${job.track.status}`} key={`${job.video_id}-${job.track.id}`}>
+                      <div className="subtitle-job-main">
+                        <strong>{job.video_title}</strong>
+                        <span>{subtitleTrackStatusLabel(job.track.status)} · {job.task?.message ?? job.video_filename}</span>
+                        {job.track.error_message && <small>{job.track.error_message}</small>}
+                      </div>
+                      <div className="subtitle-job-progress">
+                        <progress value={progress} max={100}></progress>
+                        <span>{progress}%</span>
+                      </div>
+                      <button
+                        className="ghost-button compact"
+                        disabled={subtitleServiceBusy || !isActive}
+                        onClick={() => void handleCancelSubtitleJob(job)}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : !subtitleJobsLoaded ? (
+              <p className="subtitle-service-empty">正在读取字幕任务...</p>
+            ) : (
+              <p className="subtitle-service-empty">当前没有字幕生成任务。</p>
+            )}
+
+            {subtitleLogsOpen && (
+              <div className="subtitle-log-panel">
+                <div className="subtitle-log-path">{subtitleServiceLogs?.log_path ?? "未配置日志文件"}</div>
+                <pre>{subtitleServiceLogs?.content || "暂无日志"}</pre>
+              </div>
+            )}
+          </section>
+
           <div className="bili-filters-bar">
             <div className="bili-filter-row">
               <span className="bili-filter-label">分区</span>
@@ -2138,6 +2490,15 @@ export default function App() {
                   </div>
                 </div>
 
+                <label className="toggle-row subtitle-upload-toggle">
+                  <input
+                    type="checkbox"
+                    checked={videoUploadGenerateSubtitles}
+                    onChange={(event) => setVideoUploadGenerateSubtitles(event.target.checked)}
+                  />
+                  <span>自动生成中文字幕</span>
+                </label>
+
                 {error && <div className="error-banner" style={{ margin: '8px 0', padding: '10px', fontSize: '0.85rem' }}>{error}</div>}
 
                 <div className="video-progress">
@@ -2168,7 +2529,17 @@ export default function App() {
           <section className="video-play-main">
             {selectedVideo ? (
               <div className="panel" style={{ padding: '0', overflow: 'hidden' }}>
-                  <BiliVideoPlayer src={videoPlayerUrl} poster={selectedVideo.cover_url ?? undefined} />
+                  <BiliVideoPlayer
+                    src={videoPlayerUrl}
+                    poster={selectedVideo.cover_url ?? undefined}
+                    subtitles={selectedVideo.subtitle_tracks
+                      .filter((track) => track.status === "ready" && track.vtt_url)
+                      .map((track) => ({
+                        src: track.vtt_url as string,
+                        label: track.label,
+                        srclang: track.language
+                      }))}
+                  />
               </div>
             ) : (
               <div className="panel" style={{ height: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2210,6 +2581,33 @@ export default function App() {
 
                   <div className="description-box" style={{ marginTop: '16px', padding: '12px', background: 'var(--bg)', borderRadius: '4px', fontSize: '0.9rem', lineHeight: '1.6' }}>
                     {selectedVideo.description || "无简介"}
+                  </div>
+
+                  <div className="subtitle-panel">
+                    <div className="section-head compact-head">
+                      <div>
+                        <p className="eyebrow">字幕</p>
+                        <h2>中文字幕</h2>
+                      </div>
+                    </div>
+                    {selectedVideo.subtitle_tracks.length > 0 ? (
+                      selectedVideo.subtitle_tracks.map((track) => (
+                        <div className={`subtitle-status subtitle-status-${track.status}`} key={track.id}>
+                          <strong>{track.label}</strong>
+                          <span>{subtitleTrackStatusLabel(track.status)}</span>
+                          {track.error_message && <small>{track.error_message}</small>}
+                        </div>
+                      ))
+                    ) : (
+                      <p className="subtitle-empty">当前视频还没有字幕。</p>
+                    )}
+                    <button
+                      className="ghost-button"
+                      disabled={busy || selectedVideo.subtitle_tracks.some((track) => ["pending", "running"].includes(track.status))}
+                      onClick={() => void handleGenerateSelectedVideoSubtitles()}
+                    >
+                      生成中文字幕
+                    </button>
                   </div>
                 </div>
 

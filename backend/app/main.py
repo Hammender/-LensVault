@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from io import BytesIO
 import logging
@@ -30,6 +31,7 @@ from app.models import (
     VideoItemCategoryTag,
     VideoItemPerson,
     VideoPerson,
+    VideoSubtitleTrack,
     VideoUploadSession,
 )
 from app.schemas import (
@@ -51,6 +53,9 @@ from app.schemas import (
     PersonTagCreate,
     PersonUpdate,
     SamplePhotoRead,
+    SubtitleJobRead,
+    SubtitleServiceLogs,
+    SubtitleServiceStatus,
     TagCreate,
     TagRead,
     TagStatistics,
@@ -67,6 +72,8 @@ from app.schemas import (
     VideoPersonBindCreate,
     VideoPersonRead,
     VideoPersonUpdate,
+    VideoSubtitleTrackRead,
+    VideoSubtitleTrackUpdate,
     VideoTagBindCreate,
     VideoUploadCompleteRequest,
     VideoUploadPartRead,
@@ -78,6 +85,7 @@ from app.services.importer import PictureService
 from app.services.milvus import MilvusVectorStore
 from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
+from app.services.subtitles import SubtitleService
 from app.services.tasks import create_task, fail_incomplete_tasks, update_task
 from app.services.videos import VideoService
 
@@ -107,6 +115,7 @@ vector_store = MilvusVectorStore(settings)
 ocr_service = OcrService()
 picture_service = PictureService(storage, face_service, vector_store, ocr_service, settings)
 video_service = VideoService(storage)
+subtitle_service = SubtitleService(storage, settings)
 
 
 @app.on_event("startup")
@@ -130,6 +139,7 @@ def on_startup() -> None:
         recovered += fail_incomplete_tasks(db, "gallery_rich_import")
         recovered += fail_incomplete_tasks(db, "gallery_zip_import")
         recovered += fail_incomplete_tasks(db, "person_import")
+        recovered += fail_incomplete_tasks(db, "video_subtitle_generation")
         if recovered > 0:
             logger.warning("Recovered interrupted gallery tasks count=%d", recovered)
     finally:
@@ -228,9 +238,31 @@ def _video_cover_url(video: VideoItem) -> str | None:
     return f"/api/videos/{video.id}/cover"
 
 
+def _subtitle_to_read(track: VideoSubtitleTrack) -> VideoSubtitleTrackRead:
+    vtt_url = None
+    if track.status == "ready" and track.content_vtt:
+        vtt_url = f"/api/videos/{track.video_id}/subtitles/{track.id}.vtt"
+    return VideoSubtitleTrackRead(
+        id=track.id,
+        video_id=track.video_id,
+        language=track.language,
+        label=track.label,
+        source_language=track.source_language,
+        provider=track.provider,
+        status=track.status,
+        error_message=track.error_message,
+        task_id=track.task_id,
+        generated_at=track.generated_at,
+        created_at=track.created_at,
+        updated_at=track.updated_at,
+        vtt_url=vtt_url,
+    )
+
+
 def _video_to_list_item(video: VideoItem) -> VideoItemListItem:
     categories = sorted((link.tag for link in video.category_links), key=lambda item: item.name.lower())
     people = sorted((link.person for link in video.person_links), key=lambda item: item.name.lower())
+    subtitle_tracks = sorted(video.subtitle_tracks, key=lambda item: item.created_at)
     return VideoItemListItem(
         id=video.id,
         title=video.title,
@@ -254,6 +286,7 @@ def _video_to_list_item(video: VideoItem) -> VideoItemListItem:
         faststart_applied=video.faststart_applied,
         processed_at=video.processed_at,
         processing_error=video.processing_error,
+        subtitle_tracks=[_subtitle_to_read(track) for track in subtitle_tracks],
         created_at=video.created_at,
         updated_at=video.updated_at,
     )
@@ -1126,6 +1159,61 @@ def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskRead:
     return TaskRead.model_validate(task)
 
 
+@app.get("/api/subtitle-service/status", response_model=SubtitleServiceStatus)
+def get_subtitle_service_status() -> SubtitleServiceStatus:
+    return SubtitleServiceStatus(**subtitle_service.get_translation_service_status())
+
+
+@app.post("/api/subtitle-service/start", response_model=SubtitleServiceStatus)
+def start_subtitle_service() -> SubtitleServiceStatus:
+    try:
+        return SubtitleServiceStatus(**subtitle_service.start_translation_service())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/subtitle-service/stop", response_model=SubtitleServiceStatus)
+def stop_subtitle_service(
+    cancel_running: bool = Query(default=True),
+    db: Session = Depends(get_db),
+) -> SubtitleServiceStatus:
+    try:
+        return SubtitleServiceStatus(**subtitle_service.stop_translation_service(db=db, cancel_running=cancel_running))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/subtitle-service/logs", response_model=SubtitleServiceLogs)
+def get_subtitle_service_logs(tail: int = Query(default=200, ge=1, le=1000)) -> SubtitleServiceLogs:
+    return SubtitleServiceLogs(**subtitle_service.read_translation_service_logs(tail=tail))
+
+
+@app.get("/api/subtitle-jobs", response_model=list[SubtitleJobRead])
+def list_subtitle_jobs(db: Session = Depends(get_db)) -> list[SubtitleJobRead]:
+    tracks = db.scalars(
+        select(VideoSubtitleTrack)
+        .where(VideoSubtitleTrack.status.in_(("pending", "running", "failed", "canceled")))
+        .order_by(VideoSubtitleTrack.updated_at.desc())
+        .limit(50)
+    ).all()
+    jobs: list[SubtitleJobRead] = []
+    for track in tracks:
+        video = db.get(VideoItem, track.video_id)
+        if video is None:
+            continue
+        task = db.get(Task, track.task_id) if track.task_id else None
+        jobs.append(
+            SubtitleJobRead(
+                video_id=video.id,
+                video_title=video.title,
+                video_filename=video.filename,
+                track=_subtitle_to_read(track),
+                task=TaskRead.model_validate(task) if task is not None else None,
+            )
+        )
+    return jobs
+
+
 @app.get("/api/gallery/photos", response_model=PaginatedGalleryPhotos)
 def list_gallery_photos(
     person_ids: list[int] = Query(default=[]),
@@ -1538,6 +1626,11 @@ def complete_video_upload(
     try:
         video = video_service.complete_upload(db, session, payload)
         background_tasks.add_task(video_service.optimize_video_faststart, video.id)
+        if payload.generate_zh_subtitles:
+            task = create_task(db, "video_subtitle_generation", "已排队生成中文字幕")
+            subtitle_service.prepare_track(db, video.id, task.id)
+            background_tasks.add_task(subtitle_service.generate_for_video, video.id, task.id)
+            db.refresh(video)
         return _video_to_detail(video)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1602,6 +1695,86 @@ def get_video(video_id: int, background_tasks: BackgroundTasks, db: Session = De
     if video_service.needs_metadata_repair(video):
         background_tasks.add_task(video_service.repair_video_metadata, video.id)
     return _video_to_detail(video)
+
+
+@app.get("/api/videos/{video_id}/subtitles", response_model=list[VideoSubtitleTrackRead])
+def list_video_subtitles(video_id: int, db: Session = Depends(get_db)) -> list[VideoSubtitleTrackRead]:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    tracks = db.scalars(
+        select(VideoSubtitleTrack)
+        .where(VideoSubtitleTrack.video_id == video_id)
+        .order_by(VideoSubtitleTrack.created_at.asc())
+    ).all()
+    return [_subtitle_to_read(track) for track in tracks]
+
+
+@app.post("/api/videos/{video_id}/subtitles/generate", response_model=VideoSubtitleTrackRead)
+def generate_video_subtitles(
+    video_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> VideoSubtitleTrackRead:
+    video = db.get(VideoItem, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    task = create_task(db, "video_subtitle_generation", "已排队生成中文字幕")
+    track = subtitle_service.prepare_track(db, video.id, task.id)
+    background_tasks.add_task(subtitle_service.generate_for_video, video.id, task.id)
+    return _subtitle_to_read(track)
+
+
+@app.post("/api/videos/{video_id}/subtitles/{track_id}/cancel", response_model=VideoSubtitleTrackRead)
+def cancel_video_subtitles(video_id: int, track_id: int, db: Session = Depends(get_db)) -> VideoSubtitleTrackRead:
+    try:
+        track = subtitle_service.cancel_track_generation(db, video_id, track_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _subtitle_to_read(track)
+
+
+@app.get("/api/videos/{video_id}/subtitles/{track_id}.vtt")
+def get_video_subtitle_vtt(video_id: int, track_id: int, db: Session = Depends(get_db)) -> Response:
+    track = db.get(VideoSubtitleTrack, track_id)
+    if track is None or track.video_id != video_id:
+        raise HTTPException(status_code=404, detail="Subtitle track not found")
+    if track.status != "ready" or not track.content_vtt:
+        raise HTTPException(status_code=409, detail="Subtitle track is not ready")
+    return Response(content=track.content_vtt, media_type="text/vtt; charset=utf-8")
+
+
+@app.patch("/api/videos/{video_id}/subtitles/{track_id}", response_model=VideoSubtitleTrackRead)
+def update_video_subtitle(
+    video_id: int,
+    track_id: int,
+    payload: VideoSubtitleTrackUpdate,
+    db: Session = Depends(get_db),
+) -> VideoSubtitleTrackRead:
+    track = db.get(VideoSubtitleTrack, track_id)
+    if track is None or track.video_id != video_id:
+        raise HTTPException(status_code=404, detail="Subtitle track not found")
+    try:
+        track.content_vtt = subtitle_service.validate_webvtt(payload.content_vtt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    track.status = "ready"
+    track.error_message = None
+    track.generated_at = track.generated_at or datetime.utcnow()
+    db.add(track)
+    db.commit()
+    db.refresh(track)
+    return _subtitle_to_read(track)
+
+
+@app.delete("/api/videos/{video_id}/subtitles/{track_id}")
+def delete_video_subtitle(video_id: int, track_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+    track = db.get(VideoSubtitleTrack, track_id)
+    if track is None or track.video_id != video_id:
+        raise HTTPException(status_code=404, detail="Subtitle track not found")
+    db.delete(track)
+    db.commit()
+    return {"status": "deleted"}
 
 
 @app.patch("/api/videos/{video_id}", response_model=VideoItemDetail)

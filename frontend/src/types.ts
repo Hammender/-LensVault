@@ -144,6 +144,65 @@ export type VideoPerson = {
   updated_at: string;
 };
 
+export type VideoSubtitleTrack = {
+  id: number;
+  video_id: number;
+  language: string;
+  label: string;
+  source_language: string | null;
+  provider: string;
+  status: string;
+  error_message: string | null;
+  task_id: string | null;
+  generated_at: string | null;
+  created_at: string;
+  updated_at: string;
+  vtt_url: string | null;
+};
+
+export type SubtitleAsrStatus = {
+  status: string;
+  loaded: boolean;
+  model_path: string;
+  device: string;
+  compute_type: string;
+  current_video_id: number | null;
+  current_task_id: string | null;
+  message: string | null;
+  last_duration_seconds: number | null;
+  last_language: string | null;
+  last_segment_count: number | null;
+  last_error: string | null;
+};
+
+export type SubtitleServiceStatus = {
+  status: string;
+  healthy: boolean;
+  managed: boolean;
+  pid: number | null;
+  endpoint: string;
+  model: string;
+  model_path: string;
+  server_path: string | null;
+  log_path: string | null;
+  message: string | null;
+  asr: SubtitleAsrStatus;
+};
+
+export type SubtitleServiceLogs = {
+  log_path: string | null;
+  exists: boolean;
+  content: string;
+};
+
+export type SubtitleJob = {
+  video_id: number;
+  video_title: string;
+  video_filename: string;
+  track: VideoSubtitleTrack;
+  task: Task | null;
+};
+
 export type VideoItem = {
   id: number;
   title: string;
@@ -167,6 +226,7 @@ export type VideoItem = {
   audio_codec: string | null;
   processed_at: string | null;
   processing_error: string | null;
+  subtitle_tracks: VideoSubtitleTrack[];
   created_at: string;
   updated_at: string;
 };

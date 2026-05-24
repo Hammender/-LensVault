@@ -204,6 +204,7 @@ class VideoItem(Base):
         cascade="all, delete-orphan",
     )
     person_links: Mapped[list[VideoItemPerson]] = relationship(back_populates="video", cascade="all, delete-orphan")
+    subtitle_tracks: Mapped[list[VideoSubtitleTrack]] = relationship(back_populates="video", cascade="all, delete-orphan")
 
 
 class VideoCategoryTag(Base):
@@ -259,6 +260,32 @@ class VideoItemPerson(Base):
 
     video: Mapped[VideoItem] = relationship(back_populates="person_links")
     person: Mapped[VideoPerson] = relationship(back_populates="video_links")
+
+
+class VideoSubtitleTrack(Base):
+    __tablename__ = "video_subtitle_tracks"
+    __table_args__ = (UniqueConstraint("video_id", "language", name="uq_video_subtitle_track_language"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    video_id: Mapped[int] = mapped_column(ForeignKey("video_items.id", ondelete="CASCADE"), index=True)
+    language: Mapped[str] = mapped_column(String(16), default="zh-CN", nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(128), default="中文字幕", nullable=False)
+    source_language: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider: Mapped[str] = mapped_column(String(64), default="local_hymt2", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    content_vtt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    video: Mapped[VideoItem] = relationship(back_populates="subtitle_tracks")
 
 
 class VideoUploadSession(Base):
