@@ -1,4 +1,6 @@
 import type {
+  AuthSession,
+  BootstrapStatus,
   GalleryPhotoDetail,
   PaginatedGalleryPhotos,
   Person,
@@ -18,10 +20,89 @@ import type {
   VideoItem,
   VideoPerson,
   VideoSubtitleTrack,
-  VideoUploadSession
+  VideoUploadSession,
+  WorkspaceInvitation,
+  WorkspaceMember,
+  WorkspaceRead
 } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
+const authTokenStorageKey = "pictureshow-access-token";
+const workspaceStorageKey = "pictureshow-workspace-id";
+
+export function getAuthToken(): string | null {
+  return window.localStorage.getItem(authTokenStorageKey);
+}
+
+export function setAuthToken(token: string): void {
+  window.localStorage.setItem(authTokenStorageKey, token);
+}
+
+export function clearAuthToken(): void {
+  window.localStorage.removeItem(authTokenStorageKey);
+}
+
+export function getSelectedWorkspaceId(): number | null {
+  const value = window.localStorage.getItem(workspaceStorageKey);
+  return value ? Number(value) : null;
+}
+
+export function setSelectedWorkspaceId(workspaceId: number): void {
+  window.localStorage.setItem(workspaceStorageKey, String(workspaceId));
+}
+
+export function clearSelectedWorkspaceId(): void {
+  window.localStorage.removeItem(workspaceStorageKey);
+}
+
+function withAccessToken(path: string): string {
+  const token = getAuthToken();
+  if (!token) {
+    return path;
+  }
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("access_token", token);
+  const workspaceId = getSelectedWorkspaceId();
+  if (workspaceId) {
+    url.searchParams.set("workspace_id", String(workspaceId));
+  }
+  return url.pathname + url.search;
+}
+
+function decorateMediaUrls<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => decorateMediaUrls(item)) as T;
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  Object.entries(record).forEach(([key, item]) => {
+    if (typeof item === "string" && key.endsWith("_url") && item.startsWith("/api/")) {
+      record[key] = withAccessToken(item);
+      return;
+    }
+    if (item && typeof item === "object") {
+      record[key] = decorateMediaUrls(item);
+    }
+  });
+  return value;
+}
+
+function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = getAuthToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const workspaceId = getSelectedWorkspaceId();
+  if (workspaceId) {
+    headers.set("X-Workspace-Id", String(workspaceId));
+  }
+  return window.fetch(input, { ...init, headers });
+}
+
+const fetch = authFetch;
 
 async function parse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -37,7 +118,128 @@ async function parse<T>(response: Response): Promise<T> {
     }
     throw new Error(errorMessage);
   }
-  return response.json() as Promise<T>;
+  const data = (await response.json()) as T;
+  return decorateMediaUrls(data);
+}
+
+export async function getBootstrapStatus(): Promise<BootstrapStatus> {
+  return parse<BootstrapStatus>(await fetch("/api/auth/bootstrap-status"));
+}
+
+export async function bootstrapAdmin(payload: {
+  username: string;
+  password: string;
+  display_name?: string | null;
+  workspace_name?: string | null;
+}): Promise<AuthSession> {
+  return parse<AuthSession>(
+    await fetch("/api/auth/bootstrap", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    })
+  );
+}
+
+export async function login(username: string, password: string): Promise<AuthSession> {
+  return parse<AuthSession>(
+    await fetch("/api/auth/login", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ username, password })
+    })
+  );
+}
+
+export async function getCurrentSession(): Promise<AuthSession> {
+  return parse<AuthSession>(await authFetch("/api/auth/me"));
+}
+
+export type WorkspacePermissionsPayload = {
+  can_add_gallery?: boolean;
+  can_delete_gallery?: boolean;
+  can_edit_gallery?: boolean;
+  can_add_samples?: boolean;
+  can_delete_samples?: boolean;
+  can_edit_samples?: boolean;
+  can_add_videos?: boolean;
+  can_delete_videos?: boolean;
+  can_edit_videos?: boolean;
+};
+
+export async function createWorkspace(name: string): Promise<WorkspaceRead> {
+  return parse<WorkspaceRead>(
+    await fetch("/api/workspaces", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ name })
+    })
+  );
+}
+
+export async function listWorkspaceMembers(workspaceId: number): Promise<WorkspaceMember[]> {
+  return parse<WorkspaceMember[]>(await fetch(`/api/workspaces/${workspaceId}/members`));
+}
+
+export async function updateWorkspaceMember(
+  workspaceId: number,
+  memberId: number,
+  permissions: WorkspacePermissionsPayload
+): Promise<WorkspaceMember> {
+  return parse<WorkspaceMember>(
+    await fetch(`/api/workspaces/${workspaceId}/members/${memberId}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify(permissions)
+    })
+  );
+}
+
+export async function removeWorkspaceMember(workspaceId: number, memberId: number): Promise<void> {
+  await parse<{ status: string }>(await fetch(`/api/workspaces/${workspaceId}/members/${memberId}`, { method: "DELETE" }));
+}
+
+export async function leaveWorkspace(workspaceId: number): Promise<void> {
+  await parse<{ status: string }>(await fetch(`/api/workspaces/${workspaceId}/leave`, { method: "POST" }));
+}
+
+export async function inviteWorkspaceMember(
+  workspaceId: number,
+  username: string,
+  permissions: WorkspacePermissionsPayload
+): Promise<WorkspaceInvitation> {
+  return parse<WorkspaceInvitation>(
+    await fetch(`/api/workspaces/${workspaceId}/invitations`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ username, ...permissions })
+    })
+  );
+}
+
+export async function createWorkspaceUser(
+  workspaceId: number,
+  payload: { username: string; password: string; display_name?: string | null } & WorkspacePermissionsPayload
+): Promise<void> {
+  await parse<{ id: number }>(
+    await fetch(`/api/workspaces/${workspaceId}/users`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    })
+  );
+}
+
+export async function listWorkspaceInvitations(): Promise<WorkspaceInvitation[]> {
+  return parse<WorkspaceInvitation[]>(await fetch("/api/workspace-invitations"));
+}
+
+export async function acceptWorkspaceInvitation(invitationId: number): Promise<WorkspaceRead> {
+  return parse<WorkspaceRead>(await fetch(`/api/workspace-invitations/${invitationId}/accept`, { method: "POST" }));
+}
+
+export async function declineWorkspaceInvitation(invitationId: number): Promise<void> {
+  await parse<{ status: string }>(await fetch(`/api/workspace-invitations/${invitationId}/decline`, { method: "POST" }));
 }
 
 export async function listPersons(isUnknown?: boolean): Promise<Person[]> {
@@ -270,7 +472,7 @@ export function getGalleryExportUrl(options: GalleryExportOptions): string {
   options.tagIds?.forEach((id) => url.searchParams.append("tag_ids", String(id)));
   options.excludePersonIds?.forEach((id) => url.searchParams.append("exclude_person_ids", String(id)));
   options.excludeTagIds?.forEach((id) => url.searchParams.append("exclude_tag_ids", String(id)));
-  return url.pathname + url.search;
+  return withAccessToken(url.pathname + url.search);
 }
 
 export async function importGalleryExportZip(file: File): Promise<Task> {
@@ -381,7 +583,7 @@ export async function getUploadSummary(): Promise<UploadSummary> {
 }
 
 export function getPersonExportUrl(): string {
-  return "/api/persons/export";
+  return withAccessToken("/api/persons/export");
 }
 
 export async function importPersonSamples(file: File): Promise<Task> {

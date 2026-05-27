@@ -9,15 +9,20 @@ import {
   addGalleryPhotoPerson,
   addGalleryPhotoTag,
   addPersonSamples,
+  bootstrapAdmin,
   batchDeleteGalleryPhotos,
   batchDeletePersons,
   bindPersonTag,
   cancelVideoUpload,
+  clearAuthToken,
+  clearSelectedWorkspaceId,
   completeVideoUpload,
   createPerson,
   createVideoCategoryTag,
   createVideoPerson,
   createVideoUploadSession,
+  createWorkspace,
+  createWorkspaceUser,
   deleteGalleryPhoto,
   deleteGalleryPhotoPerson,
   deleteGalleryPhotoTag,
@@ -28,6 +33,8 @@ import {
   deleteVideoPerson,
   cancelVideoSubtitles,
   generateVideoSubtitles,
+  getBootstrapStatus,
+  getCurrentSession,
   getSubtitleServiceLogs,
   getSubtitleServiceStatus,
   getVideo,
@@ -49,6 +56,9 @@ import {
   listVideoCategoryTags,
   listVideoPeople,
   listVideos,
+  listWorkspaceInvitations,
+  listWorkspaceMembers,
+  login,
   renamePerson,
   replaceVideoCover,
   reRecognizeGalleryPhoto,
@@ -62,13 +72,23 @@ import {
   addVideoPerson,
   removeVideoPerson,
   startSubtitleService,
+  setAuthToken,
+  setSelectedWorkspaceId,
   stopSubtitleService,
+  acceptWorkspaceInvitation,
+  declineWorkspaceInvitation,
+  inviteWorkspaceMember,
+  leaveWorkspace,
+  removeWorkspaceMember,
   updateVideoCategoryTag,
   updateVideoPerson,
+  updateWorkspaceMember,
   type GalleryExportScope,
-  type GalleryUploadMetadata
+  type GalleryUploadMetadata,
+  type WorkspacePermissionsPayload
 } from "./api";
 import type {
+  AuthSession,
   GalleryPhotoDetail,
   GalleryPhotoListItem,
   Person,
@@ -82,7 +102,9 @@ import type {
   VideoDetail,
   VideoItem,
   VideoPerson,
-  VideoUploadSession
+  VideoUploadSession,
+  WorkspaceInvitation,
+  WorkspaceMember,
 } from "./types";
 
 type PageKey = "home" | "gallery" | "people" | "upload" | "videos" | "statistics" | "video-play";
@@ -115,6 +137,21 @@ const videoLongPressRate = 3;
 const supportedVideoExtensions = [".mp4", ".mkv", ".mov", ".webm"];
 const supportedVideoAccept = "video/mp4,video/x-matroska,video/quicktime,video/webm,.mp4,.mkv,.mov,.webm";
 const supportedVideoFormatLabel = "MP4/MKV/MOV/WEBM";
+const workspacePermissionFields: Array<{ key: keyof WorkspacePermissionsPayload; label: string }> = [
+  { key: "can_add_gallery", label: "新增展示图" },
+  { key: "can_delete_gallery", label: "删除展示图" },
+  { key: "can_edit_gallery", label: "修改展示图" },
+  { key: "can_add_samples", label: "新增样本图" },
+  { key: "can_delete_samples", label: "删除样本图" },
+  { key: "can_edit_samples", label: "修改样本图" },
+  { key: "can_add_videos", label: "新增视频" },
+  { key: "can_delete_videos", label: "删除视频" },
+  { key: "can_edit_videos", label: "修改视频" }
+];
+
+const emptyWorkspacePermissions: WorkspacePermissionsPayload = Object.fromEntries(
+  workspacePermissionFields.map((item) => [item.key, false])
+) as WorkspacePermissionsPayload;
 
 function formatDate(value: string | null | undefined): string {
   if (!value) {
@@ -281,8 +318,248 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-export default function App() {
+function withImageWidth(url: string, width: number): string {
+  const next = new URL(url, window.location.origin);
+  next.searchParams.set("width", String(width));
+  return next.pathname + next.search;
+}
+
+function toWorkspacePermissions(source: Record<string, boolean> | WorkspacePermissionsPayload): WorkspacePermissionsPayload {
+  return Object.fromEntries(
+    workspacePermissionFields.map((item) => [item.key, Boolean(source[item.key])])
+  ) as WorkspacePermissionsPayload;
+}
+
+type PermissionEditorProps = {
+  value: WorkspacePermissionsPayload;
+  onChange: (value: WorkspacePermissionsPayload) => void;
+  disabled?: boolean;
+};
+
+function PermissionEditor({ value, onChange, disabled = false }: PermissionEditorProps) {
+  return (
+    <div className="workspace-permissions">
+      {workspacePermissionFields.map((item) => (
+        <label key={item.key} className="workspace-permission">
+          <input
+            type="checkbox"
+            checked={Boolean(value[item.key])}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...value, [item.key]: event.target.checked })}
+          />
+          <span>{item.label}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+type WorkspacePanelProps = {
+  session: AuthSession;
+  onSessionChange: (session: AuthSession) => void;
+  onClose: () => void;
+};
+
+function WorkspacePanel({ session, onSessionChange, onClose }: WorkspacePanelProps) {
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [inviteUsername, setInviteUsername] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newDisplayName, setNewDisplayName] = useState("");
+  const [invitePermissions, setInvitePermissions] = useState<WorkspacePermissionsPayload>({ ...emptyWorkspacePermissions });
+  const [newUserPermissions, setNewUserPermissions] = useState<WorkspacePermissionsPayload>({ ...emptyWorkspacePermissions });
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const isSharedOwner = session.workspace.kind === "shared" && session.workspace.role === "owner";
+
+  const reloadSession = async () => {
+    const next = await getCurrentSession();
+    onSessionChange(next);
+  };
+
+  const reloadPanel = async () => {
+    const [nextInvitations, nextMembers] = await Promise.all([
+      listWorkspaceInvitations(),
+      isSharedOwner ? listWorkspaceMembers(session.workspace.id) : Promise.resolve([])
+    ]);
+    setInvitations(nextInvitations);
+    setMembers(nextMembers);
+  };
+
+  useEffect(() => {
+    void reloadPanel().catch((error) => setMessage(error instanceof Error ? error.message : "加载工作区信息失败"));
+  }, [session.workspace.id, isSharedOwner]);
+
+  const run = async (action: () => Promise<void>, success: string) => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await action();
+      setMessage(success);
+      await reloadPanel();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "操作失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section className="export-modal workspace-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-heading">
+          <p className="eyebrow">Workspace</p>
+          <h2>内容空间</h2>
+        </div>
+        {message && <p className="inline-error">{message}</p>}
+        <div className="workspace-section">
+          <h3>我的空间</h3>
+          <div className="workspace-list">
+            {session.workspaces.map((workspace) => (
+              <button
+                key={workspace.id}
+                type="button"
+                className={workspace.id === session.workspace.id ? "workspace-row active" : "workspace-row"}
+                onClick={async () => {
+                  setSelectedWorkspaceId(workspace.id);
+                  await reloadSession();
+                }}
+              >
+                <span>{workspace.name}</span>
+                <small>{workspace.kind === "private" ? "私人" : workspace.role === "owner" ? "共享 owner" : "共享成员"}</small>
+              </button>
+            ))}
+          </div>
+          <div className="workspace-inline-form">
+            <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="新共享空间名称" />
+            <button
+              disabled={busy || !workspaceName.trim()}
+              onClick={() => run(async () => {
+                const workspace = await createWorkspace(workspaceName.trim());
+                setSelectedWorkspaceId(workspace.id);
+                setWorkspaceName("");
+                await reloadSession();
+              }, "已创建共享空间")}
+            >
+              新建共享空间
+            </button>
+            {session.workspace.can_leave && (
+              <button
+                disabled={busy}
+                onClick={() => run(async () => {
+                  await leaveWorkspace(session.workspace.id);
+                  clearSelectedWorkspaceId();
+                  await reloadSession();
+                }, "已退出共享空间")}
+              >
+                退出当前空间
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="workspace-section">
+          <h3>收到的邀请</h3>
+          {invitations.length === 0 ? (
+            <p className="muted-text">暂无邀请</p>
+          ) : invitations.map((invitation) => (
+            <div key={invitation.id} className="workspace-member-row">
+              <div>
+                <strong>{invitation.workspace_name}</strong>
+                <small>来自 {invitation.inviter_username}</small>
+              </div>
+              <div className="micro-row">
+                <button disabled={busy} onClick={() => run(async () => {
+                  const workspace = await acceptWorkspaceInvitation(invitation.id);
+                  setSelectedWorkspaceId(workspace.id);
+                  await reloadSession();
+                }, "已加入内容空间")}>接受</button>
+                <button disabled={busy} onClick={() => run(async () => {
+                  await declineWorkspaceInvitation(invitation.id);
+                  await reloadSession();
+                }, "已拒绝邀请")}>拒绝</button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {isSharedOwner && (
+          <>
+            <div className="workspace-section">
+              <h3>邀请现有账号</h3>
+              <div className="workspace-inline-form">
+                <input value={inviteUsername} onChange={(event) => setInviteUsername(event.target.value)} placeholder="用户名" />
+                <button disabled={busy || !inviteUsername.trim()} onClick={() => run(async () => {
+                  await inviteWorkspaceMember(session.workspace.id, inviteUsername.trim(), invitePermissions);
+                  setInviteUsername("");
+                }, "已发送邀请")}>发送邀请</button>
+              </div>
+              <PermissionEditor value={invitePermissions} onChange={setInvitePermissions} />
+            </div>
+            <div className="workspace-section">
+              <h3>创建成员账号</h3>
+              <div className="workspace-inline-form">
+                <input value={newUsername} onChange={(event) => setNewUsername(event.target.value)} placeholder="用户名" />
+                <input value={newDisplayName} onChange={(event) => setNewDisplayName(event.target.value)} placeholder="显示名" />
+                <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="初始密码" />
+                <button disabled={busy || !newUsername.trim() || newPassword.length < 8} onClick={() => run(async () => {
+                  await createWorkspaceUser(session.workspace.id, {
+                    username: newUsername.trim(),
+                    password: newPassword,
+                    display_name: newDisplayName.trim() || null,
+                    ...newUserPermissions
+                  });
+                  setNewUsername("");
+                  setNewDisplayName("");
+                  setNewPassword("");
+                }, "已创建账号并加入当前空间")}>创建并加入</button>
+              </div>
+              <PermissionEditor value={newUserPermissions} onChange={setNewUserPermissions} />
+            </div>
+            <div className="workspace-section">
+              <h3>成员权限</h3>
+              {members.map((member) => (
+                <div key={member.id} className="workspace-member-row">
+                  <div>
+                    <strong>{member.user.display_name || member.user.username}</strong>
+                    <small>{member.role === "owner" ? "owner" : member.user.username}</small>
+                  </div>
+                  <PermissionEditor
+                    value={toWorkspacePermissions(member.permissions)}
+                    disabled={member.role === "owner" || busy}
+                    onChange={(permissions) => {
+                      void run(async () => {
+                        await updateWorkspaceMember(session.workspace.id, member.id, permissions);
+                      }, "已更新成员权限");
+                    }}
+                  />
+                  {member.role !== "owner" && (
+                    <button disabled={busy} onClick={() => run(async () => {
+                      await removeWorkspaceMember(session.workspace.id, member.id);
+                    }, "已移除成员")}>移除</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>关闭</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+type MainAppProps = {
+  authSession: AuthSession;
+  onLogout: () => void;
+  onSessionChange: (session: AuthSession) => void;
+};
+
+function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const [page, setPageState] = useState<PageKey>(() => routeFromHash());
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [playVideoId, setPlayVideoId] = useState<string | null>(null);
   const [isVideoUploadModalOpen, setIsVideoUploadModalOpen] = useState(false);
   const [persons, setPersons] = useState<Person[]>([]);
@@ -2166,6 +2443,14 @@ export default function App() {
           <p className="eyebrow">Local Face Archive</p>
           <h1>PictureShow</h1>
           <p className="lead">将人物样本库、展示图库和展示图上传拆成独立页面，围绕本地识别与人工修正形成完整闭环。</p>
+          <div className="session-strip">
+            <button type="button" onClick={() => setWorkspacePanelOpen(true)}>
+              {authSession.workspace.name}
+            </button>
+            <span>{authSession.user.display_name || authSession.user.username}</span>
+            <span>{authSession.workspace.kind === "private" ? "私人空间" : authSession.workspace.role === "owner" ? "共享 owner" : "共享成员"}</span>
+            <button type="button" onClick={onLogout}>退出登录</button>
+          </div>
         </div>
         <nav className="nav-tabs">
           {[
@@ -2189,6 +2474,14 @@ export default function App() {
           ))}
         </nav>
       </header>
+
+      {workspacePanelOpen && (
+        <WorkspacePanel
+          session={authSession}
+          onSessionChange={onSessionChange}
+          onClose={() => setWorkspacePanelOpen(false)}
+        />
+      )}
 
       {page === "statistics" && <Statistics />}
 
@@ -2993,7 +3286,7 @@ export default function App() {
                     <button className={photo.is_rich_text ? "photo-card rich-card" : "photo-card"} onClick={() => openGalleryLightbox(photo.id)}>
                     {photo.is_rich_text ? (
                       <div className="rich-card-layout">
-                        <img src={`${photo.thumbnail_url}?width=720`} alt="图库预览" loading="lazy" />
+                        <img src={withImageWidth(photo.thumbnail_url, 720)} alt="图库预览" loading="lazy" />
                         <div className="rich-card-copy">
                           <p className="rich-snippet">{photo.rich_text || "未识别到文本，可在详情里手动补录。"}</p>
                           <div className="micro-row">
@@ -3014,7 +3307,7 @@ export default function App() {
                       </div>
                     ) : (
                       <>
-                        <img src={`${photo.thumbnail_url}?width=720`} alt="图库预览" loading="lazy" />
+                        <img src={withImageWidth(photo.thumbnail_url, 720)} alt="图库预览" loading="lazy" />
                         <div className="photo-meta">
                           <div className="micro-row">
                             {photo.persons.map((person) => (
@@ -3434,7 +3727,7 @@ export default function App() {
                     return (
                       <article key={sample.id} className={cardClass}>
                         <a href={sample.original_url} target="_blank" rel="noreferrer">
-                          <img src={`${sample.thumbnail_url}?width=480`} alt="样本缩略图" />
+                          <img src={withImageWidth(sample.thumbnail_url, 480)} alt="样本缩略图" />
                         </a>
                         <div className="sample-copy">
                           <strong>样本记录 #{sample.id}</strong>
@@ -3932,4 +4225,188 @@ export default function App() {
       {error && <div className="error-banner">{error}</div>}
     </div>
   );
+}
+
+type AuthScreenProps = {
+  bootstrapRequired: boolean;
+  busy: boolean;
+  error: string | null;
+  onBootstrap: (payload: { username: string; password: string; display_name?: string | null; workspace_name?: string | null }) => Promise<void>;
+  onLogin: (username: string, password: string) => Promise<void>;
+};
+
+function AuthScreen({ bootstrapRequired, busy, error, onBootstrap, onLogin }: AuthScreenProps) {
+  const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [workspaceName, setWorkspaceName] = useState("我的内容空间");
+  const [password, setPassword] = useState("");
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel">
+        <p className="eyebrow">PictureShow</p>
+        <h1>{bootstrapRequired ? "初始化管理员" : "登录"}</h1>
+        <p className="lead">{bootstrapRequired ? "首次使用需要创建管理员和默认内容空间。" : "登录后只会看到当前账号所属内容空间的数据。"}</p>
+        <form
+          className="auth-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (bootstrapRequired) {
+              void onBootstrap({
+                username,
+                password,
+                display_name: displayName || null,
+                workspace_name: workspaceName || null
+              });
+              return;
+            }
+            void onLogin(username, password);
+          }}
+        >
+          <label>
+            账号
+            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required />
+          </label>
+          {bootstrapRequired && (
+            <>
+              <label>
+                显示名称
+                <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" />
+              </label>
+              <label>
+                内容空间
+                <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
+              </label>
+            </>
+          )}
+          <label>
+            密码
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete={bootstrapRequired ? "new-password" : "current-password"}
+              required
+            />
+          </label>
+          <button className="primary" type="submit" disabled={busy}>
+            {busy ? "处理中..." : bootstrapRequired ? "创建并进入" : "进入"}
+          </button>
+        </form>
+        {error && <div className="error-banner">{error}</div>}
+      </section>
+    </main>
+  );
+}
+
+export default function App() {
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [bootstrapRequired, setBootstrapRequired] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAuth() {
+      try {
+        const session = await getCurrentSession();
+        if (!cancelled) {
+          setSelectedWorkspaceId(session.workspace.id);
+          setAuthSession(session);
+          setBootstrapRequired(false);
+        }
+      } catch {
+        clearAuthToken();
+        try {
+          const status = await getBootstrapStatus();
+          if (!cancelled) {
+            setBootstrapRequired(status.required);
+          }
+        } catch (error) {
+          if (!cancelled) {
+            setAuthError(error instanceof Error ? error.message : "无法连接服务");
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthReady(true);
+        }
+      }
+    }
+    void loadAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSession = (session: AuthSession) => {
+    setAuthToken(session.access_token);
+    setSelectedWorkspaceId(session.workspace.id);
+    setAuthSession(session);
+    setBootstrapRequired(false);
+    setAuthError(null);
+  };
+
+  const handleBootstrap = async (payload: { username: string; password: string; display_name?: string | null; workspace_name?: string | null }) => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      handleSession(await bootstrapAdmin(payload));
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "初始化失败");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogin = async (username: string, password: string) => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      handleSession(await login(username, password));
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "登录失败");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = () => {
+    clearAuthToken();
+    clearSelectedWorkspaceId();
+    setAuthSession(null);
+    setAuthError(null);
+  };
+
+  const handleSessionChange = (session: AuthSession) => {
+    setAuthToken(session.access_token);
+    setSelectedWorkspaceId(session.workspace.id);
+    setAuthSession(session);
+  };
+
+  if (!authReady) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-panel">
+          <p className="eyebrow">PictureShow</p>
+          <h1>加载中</h1>
+        </section>
+      </main>
+    );
+  }
+
+  if (!authSession) {
+    return (
+      <AuthScreen
+        bootstrapRequired={bootstrapRequired}
+        busy={authBusy}
+        error={authError}
+        onBootstrap={handleBootstrap}
+        onLogin={handleLogin}
+      />
+    );
+  }
+
+  return <MainApp authSession={authSession} onLogout={handleLogout} onSessionChange={handleSessionChange} />;
 }

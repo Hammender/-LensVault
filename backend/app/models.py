@@ -8,15 +8,115 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
 
-class Person(Base):
-    __tablename__ = "persons"
+class User(Base):
+    __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    password_hash: Mapped[str] = mapped_column(String(512))
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    memberships: Mapped[list[WorkspaceMember]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    owned_workspaces: Mapped[list[Workspace]] = relationship(back_populates="owner", foreign_keys="Workspace.owner_user_id")
+
+
+class Workspace(Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="private", nullable=False, index=True)
+    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    members: Mapped[list[WorkspaceMember]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
+    owner: Mapped[User | None] = relationship(back_populates="owned_workspaces", foreign_keys=[owner_user_id])
+    invitations: Mapped[list[WorkspaceInvitation]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+    __table_args__ = (UniqueConstraint("workspace_id", "user_id", name="uq_workspace_member"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(32), default="member", nullable=False)
+    can_add_gallery: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_delete_gallery: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_edit_gallery: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_add_samples: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_delete_samples: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_edit_samples: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_add_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_delete_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_edit_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace: Mapped[Workspace] = relationship(back_populates="members")
+    user: Mapped[User] = relationship(back_populates="memberships")
+
+
+class WorkspaceInvitation(Base):
+    __tablename__ = "workspace_invitations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    inviter_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    invitee_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(32), default="member", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    can_add_gallery: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_delete_gallery: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_edit_gallery: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_add_samples: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_delete_samples: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_edit_samples: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_add_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_delete_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_edit_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="invitations")
+    inviter: Mapped[User] = relationship(foreign_keys=[inviter_user_id])
+    invitee: Mapped[User] = relationship(foreign_keys=[invitee_user_id])
+
+
+class Person(Base):
+    __tablename__ = "persons"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_persons_workspace_name"),
+        UniqueConstraint("workspace_id", "unknown_serial", name="uq_persons_workspace_unknown_serial"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
     display_name: Mapped[str] = mapped_column(String(256), index=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_unknown: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
-    unknown_serial: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
+    unknown_serial: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -33,12 +133,14 @@ class Person(Base):
 
 class SamplePhoto(Base):
     __tablename__ = "sample_photos"
+    __table_args__ = (UniqueConstraint("workspace_id", "sha256", name="uq_sample_photos_workspace_sha256"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"), index=True)
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
     object_key: Mapped[str] = mapped_column(String(512), unique=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -53,11 +155,13 @@ class SamplePhoto(Base):
 
 class GalleryPhoto(Base):
     __tablename__ = "gallery_photos"
+    __table_args__ = (UniqueConstraint("workspace_id", "sha256", name="uq_gallery_photos_workspace_sha256"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
     object_key: Mapped[str] = mapped_column(String(512), unique=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -85,6 +189,7 @@ class FaceRecord(Base):
     __tablename__ = "face_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     sample_photo_id: Mapped[int | None] = mapped_column(ForeignKey("sample_photos.id", ondelete="CASCADE"), nullable=True)
     gallery_photo_id: Mapped[int | None] = mapped_column(
         ForeignKey("gallery_photos.id", ondelete="CASCADE"),
@@ -113,9 +218,11 @@ class FaceRecord(Base):
 
 class Tag(Base):
     __tablename__ = "tags"
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_tags_workspace_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -167,10 +274,11 @@ class GalleryPhotoTag(Base):
 class VideoItem(Base):
     __tablename__ = "video_items"
     __table_args__ = (
-        UniqueConstraint("filename", "size_bytes", name="uq_video_items_filename_size"),
+        UniqueConstraint("workspace_id", "filename", "size_bytes", name="uq_video_items_workspace_filename_size"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(256), index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     filename: Mapped[str] = mapped_column(String(512))
@@ -209,9 +317,11 @@ class VideoItem(Base):
 
 class VideoCategoryTag(Base):
     __tablename__ = "video_category_tags"
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_video_category_tags_workspace_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     video_links: Mapped[list[VideoItemCategoryTag]] = relationship(back_populates="tag", cascade="all, delete-orphan")
@@ -219,9 +329,11 @@ class VideoCategoryTag(Base):
 
 class VideoPerson(Base):
     __tablename__ = "video_people"
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_video_people_workspace_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     avatar_object_key: Mapped[str | None] = mapped_column(String(512), unique=True, nullable=True)
     avatar_content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -292,6 +404,7 @@ class VideoUploadSession(Base):
     __tablename__ = "video_upload_sessions"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     filename: Mapped[str] = mapped_column(String(512))
     title: Mapped[str] = mapped_column(String(256))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -331,6 +444,7 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -348,6 +462,7 @@ class UploadHistory(Base):
     __tablename__ = "upload_history"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     upload_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # "gallery" | "rich"
     total_count: Mapped[int] = mapped_column(Integer, nullable=False)
     success_count: Mapped[int] = mapped_column(Integer, nullable=False)

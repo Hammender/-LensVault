@@ -62,13 +62,19 @@ class VideoService:
         self.storage = storage
         self.settings = settings or get_settings()
 
-    def create_upload_session(self, db: Session, payload: VideoUploadSessionCreate) -> VideoUploadSession:
+    def create_upload_session(self, db: Session, payload: VideoUploadSessionCreate, workspace_id: int | None) -> VideoUploadSession:
         title = payload.title.strip()
         filename = Path(payload.filename).name.strip()
         content_type = self._normalize_upload_content_type(filename, payload.content_type)
         self._validate_video_file(filename, content_type)
 
-        existing = db.scalar(select(VideoItem).where(VideoItem.filename == filename, VideoItem.size_bytes == payload.size_bytes))
+        existing = db.scalar(
+            select(VideoItem).where(
+                VideoItem.workspace_id == workspace_id,
+                VideoItem.filename == filename,
+                VideoItem.size_bytes == payload.size_bytes,
+            )
+        )
         if existing is not None:
             raise ValueError("已存在相同文件名和大小的视频，请勿重复上传")
 
@@ -80,6 +86,7 @@ class VideoService:
         total_parts = (payload.size_bytes + part_size - 1) // part_size
         session = VideoUploadSession(
             id=uuid4().hex,
+            workspace_id=workspace_id,
             filename=filename,
             title=title,
             description=payload.description,
@@ -121,7 +128,7 @@ class VideoService:
                 VideoUploadPart.part_index == part_index,
             )
         )
-        object_key = self._build_part_object_key(session.id, part_index)
+        object_key = self._build_part_object_key(session.workspace_id, session.id, part_index)
         self.storage.put_bytes(object_key, payload, session.content_type)
         if existing:
             if existing.object_key != object_key:
@@ -162,12 +169,13 @@ class VideoService:
             select(VideoItem).where(
                 VideoItem.filename == session.filename,
                 VideoItem.size_bytes == session.size_bytes,
+                VideoItem.workspace_id == session.workspace_id,
             )
         )
         if existing is not None:
             raise ValueError("已存在相同文件名和大小的视频，请勿重复上传")
 
-        final_key = self._build_video_object_key(session.filename)
+        final_key = self._build_video_object_key(session.workspace_id, session.filename)
         try:
             if len(parts) == 1:
                 self.storage.put_bytes(final_key, self.storage.get_bytes(parts[0].object_key), session.content_type)
@@ -182,6 +190,7 @@ class VideoService:
 
             probe_info = self._probe_object(final_key, session.filename)
             video = VideoItem(
+                workspace_id=session.workspace_id,
                 title=session.title,
                 description=session.description,
                 filename=session.filename,
@@ -248,7 +257,7 @@ class VideoService:
                 cover_key: str | None = None
                 old_cover_key: str | None = None
                 if cover_path.exists() and cover_path.stat().st_size > 0:
-                    cover_key = self._build_cover_object_key(video_id)
+                    cover_key = self._build_cover_object_key(video.workspace_id, video_id)
                     with cover_path.open("rb") as stream:
                         self.storage.put_stream(cover_key, stream, cover_path.stat().st_size, "image/jpeg")
                     video = db.get(VideoItem, video_id)
@@ -355,7 +364,13 @@ class VideoService:
                 self.metadata_repair_video_ids.discard(video_id)
 
     def _is_size_unique_processing_error(self, error: str | None) -> bool:
-        return bool(error and "UNIQUE constraint failed: video_items.filename, video_items.size_bytes" in error)
+        return bool(
+            error
+            and (
+                "UNIQUE constraint failed: video_items.filename, video_items.size_bytes" in error
+                or "UNIQUE constraint failed: video_items.workspace_id, video_items.filename, video_items.size_bytes" in error
+            )
+        )
 
     def _mark_video_ready_without_processing(self, video_id: int) -> None:
         db = SessionLocal()
@@ -387,12 +402,13 @@ class VideoService:
         if cover_key:
             self.storage.remove_object(cover_key)
 
-    def save_person_avatar(self, payload: bytes, filename: str, content_type: str | None) -> tuple[str, str | None]:
+    def save_person_avatar(self, payload: bytes, filename: str, content_type: str | None, workspace_id: int | None) -> tuple[str, str | None]:
         clean_name = Path(filename).name or "avatar"
         avatar_type = content_type or "application/octet-stream"
         if not avatar_type.startswith("image/"):
             raise ValueError("人物展示照片必须是图片")
-        object_key = f"videos/people/{uuid4().hex}-{clean_name}"
+        prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""
+        object_key = f"{prefix}videos/people/{uuid4().hex}-{clean_name}"
         self.storage.put_bytes(object_key, payload, avatar_type)
         return object_key, avatar_type
 
@@ -402,7 +418,8 @@ class VideoService:
         suffix = Path(filename).suffix.lower()
         if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
             suffix = ".jpg"
-        object_key = f"videos/covers/{video.id}-{uuid4().hex}{suffix}"
+        prefix = f"workspaces/{video.workspace_id}/" if video.workspace_id is not None else ""
+        object_key = f"{prefix}videos/covers/{video.id}-{uuid4().hex}{suffix}"
         old_cover_key = video.cover_object_key
         self.storage.put_bytes(object_key, payload, content_type)
         video.cover_object_key = object_key
@@ -427,11 +444,11 @@ class VideoService:
         tags: list[VideoCategoryTag] = []
         for tag_id in dict.fromkeys(tag_ids):
             tag = db.get(VideoCategoryTag, tag_id)
-            if tag is None:
+            if tag is None or tag.workspace_id != video.workspace_id:
                 raise ValueError("视频类别标签不存在")
             tags.append(tag)
         for name in dict.fromkeys(name.strip() for name in tag_names if name.strip()):
-            tags.append(self.find_or_create_category_tag(db, name))
+            tags.append(self.find_or_create_category_tag(db, name, video.workspace_id))
         seen: set[int] = set()
         for tag in tags:
             if tag.id in seen:
@@ -445,17 +462,17 @@ class VideoService:
         db.flush()
         for person_id in dict.fromkeys(person_ids):
             person = db.get(VideoPerson, person_id)
-            if person is None:
+            if person is None or person.workspace_id != video.workspace_id:
                 raise ValueError("视频人物不存在")
             db.add(VideoItemPerson(video_id=video.id, person_id=person.id))
 
-    def find_or_create_category_tag(self, db: Session, name: str) -> VideoCategoryTag:
+    def find_or_create_category_tag(self, db: Session, name: str, workspace_id: int | None) -> VideoCategoryTag:
         normalized = name.strip()
         if not normalized:
             raise ValueError("标签名称不能为空")
-        tag = db.scalar(select(VideoCategoryTag).where(VideoCategoryTag.name == normalized))
+        tag = db.scalar(select(VideoCategoryTag).where(VideoCategoryTag.workspace_id == workspace_id, VideoCategoryTag.name == normalized))
         if tag is None:
-            tag = VideoCategoryTag(name=normalized)
+            tag = VideoCategoryTag(workspace_id=workspace_id, name=normalized)
             db.add(tag)
             db.flush()
         return tag
@@ -641,8 +658,9 @@ class VideoService:
             return False
         return info.audio_codec is None or info.audio_codec in self.browser_audio_codecs
 
-    def _build_cover_object_key(self, video_id: int) -> str:
-        return f"videos/covers/{video_id}-{uuid4().hex}.jpg"
+    def _build_cover_object_key(self, workspace_id: int | None, video_id: int) -> str:
+        prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""
+        return f"{prefix}videos/covers/{video_id}-{uuid4().hex}.jpg"
 
     def _normalize_codec(self, value: object) -> str | None:
         if not isinstance(value, str):
@@ -711,12 +729,14 @@ class VideoService:
         suffix = Path(filename).suffix.lower()
         return self.extension_content_types.get(suffix, "application/octet-stream")
 
-    def _build_video_object_key(self, filename: str) -> str:
+    def _build_video_object_key(self, workspace_id: int | None, filename: str) -> str:
         suffix = Path(filename).suffix.lower() or ".mp4"
-        return f"videos/library/{uuid4().hex}{suffix}"
+        prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""
+        return f"{prefix}videos/library/{uuid4().hex}{suffix}"
 
-    def _build_part_object_key(self, session_id: str, part_index: int) -> str:
-        return f"videos/tmp/{session_id}/part-{part_index:06d}"
+    def _build_part_object_key(self, workspace_id: int | None, session_id: str, part_index: int) -> str:
+        prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""
+        return f"{prefix}videos/tmp/{session_id}/part-{part_index:06d}"
 
 
 class VideoProbeInfo:

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 import json
 from io import BytesIO
 import logging
 from urllib.parse import quote
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from PIL import Image
@@ -26,6 +27,7 @@ from app.models import (
     Tag,
     Task,
     UploadHistory,
+    User,
     VideoCategoryTag,
     VideoItem,
     VideoItemCategoryTag,
@@ -33,8 +35,15 @@ from app.models import (
     VideoPerson,
     VideoSubtitleTrack,
     VideoUploadSession,
+    Workspace,
+    WorkspaceInvitation,
+    WorkspaceMember,
 )
 from app.schemas import (
+    AdminUserCreate,
+    AuthSession,
+    BootstrapCreate,
+    BootstrapStatus,
     FaceRead,
     GalleryPersonTagRead,
     GalleryPhotoDetail,
@@ -44,6 +53,7 @@ from app.schemas import (
     GalleryPhotoPersonTagCreate,
     GalleryPhotoTagCreate,
     GalleryTagRead,
+    LoginRequest,
     PaginatedGalleryPhotos,
     PersonBatchDeleteRequest,
     PersonCreate,
@@ -62,6 +72,7 @@ from app.schemas import (
     TagUpdate,
     TaskRead,
     UploadHistoryRead,
+    UserRead,
     PaginatedVideos,
     VideoCategoryTagCreate,
     VideoCategoryTagRead,
@@ -79,7 +90,15 @@ from app.schemas import (
     VideoUploadPartRead,
     VideoUploadSessionCreate,
     VideoUploadSessionRead,
+    WorkspaceCreate,
+    WorkspaceInvitationCreate,
+    WorkspaceInvitationRead,
+    WorkspaceMemberRead,
+    WorkspacePermissionUpdate,
+    WorkspaceRead,
+    WorkspaceUpdate,
 )
+from app.services.auth import create_access_token, decode_access_token, hash_password, verify_password
 from app.services.face import FaceService
 from app.services.importer import PictureService
 from app.services.milvus import MilvusVectorStore
@@ -118,6 +137,262 @@ video_service = VideoService(storage)
 subtitle_service = SubtitleService(storage, settings)
 
 
+@dataclass
+class CurrentContext:
+    user: User
+    workspace_id: int
+    role: str
+    workspace: Workspace
+    membership: WorkspaceMember
+
+
+PERMISSION_FIELDS = (
+    "can_add_gallery",
+    "can_delete_gallery",
+    "can_edit_gallery",
+    "can_add_samples",
+    "can_delete_samples",
+    "can_edit_samples",
+    "can_add_videos",
+    "can_delete_videos",
+    "can_edit_videos",
+)
+
+ALL_PERMISSIONS = {field: True for field in PERMISSION_FIELDS}
+NO_PERMISSIONS = {field: False for field in PERMISSION_FIELDS}
+
+
+def _permission_dict(membership: WorkspaceMember) -> dict[str, bool]:
+    if membership.role == "owner":
+        return dict(ALL_PERMISSIONS)
+    return {field: bool(getattr(membership, field)) for field in PERMISSION_FIELDS}
+
+
+def _permission_kwargs(payload: WorkspacePermissionUpdate | WorkspaceInvitationCreate) -> dict[str, bool]:
+    return {field: bool(getattr(payload, field)) for field in PERMISSION_FIELDS}
+
+
+def _apply_permissions(target: WorkspaceMember | WorkspaceInvitation, permissions: dict[str, bool]) -> None:
+    for field, value in permissions.items():
+        setattr(target, field, bool(value))
+
+
+def _workspace_read(membership: WorkspaceMember) -> WorkspaceRead:
+    workspace = membership.workspace
+    can_leave = workspace.kind == "shared" and membership.role != "owner"
+    return WorkspaceRead(
+        id=workspace.id,
+        name=workspace.name,
+        kind=workspace.kind,
+        role=membership.role,
+        permissions=_permission_dict(membership),
+        can_leave=can_leave,
+    )
+
+
+def _workspace_reads(db: Session, user: User) -> list[WorkspaceRead]:
+    db.expire(user, ["memberships"])
+    user_memberships = db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user.id)).all()
+    memberships = sorted(
+        (membership for membership in user_memberships if membership.workspace is not None),
+        key=lambda item: (0 if item.workspace.kind == "private" else 1, item.workspace.id),
+    )
+    return [_workspace_read(membership) for membership in memberships]
+
+
+def _ensure_private_workspace(db: Session, user: User) -> Workspace:
+    workspace = db.scalar(select(Workspace).where(Workspace.kind == "private", Workspace.owner_user_id == user.id))
+    if workspace is None:
+        workspace = Workspace(name=f"{user.display_name}的私人空间", kind="private", owner_user_id=user.id)
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+        db.flush()
+    else:
+        membership = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user.id))
+        if membership is None:
+            db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+            db.flush()
+    return workspace
+
+
+def _auth_session(db: Session, user: User, selected_workspace_id: int | None = None) -> AuthSession:
+    _ensure_private_workspace(db, user)
+    db.commit()
+    db.refresh(user)
+    workspaces = _workspace_reads(db, user)
+    selected = next((workspace for workspace in workspaces if workspace.id == selected_workspace_id), None)
+    if selected is None:
+        selected = workspaces[0]
+    token = create_access_token(user.id, settings.auth_secret_key, settings.access_token_expire_minutes)
+    return AuthSession(
+        access_token=token,
+        user=UserRead.model_validate(user),
+        workspace=selected,
+        workspaces=workspaces,
+    )
+
+
+def _legacy_tenant_models() -> tuple[type, ...]:
+    return (
+        Person,
+        SamplePhoto,
+        GalleryPhoto,
+        FaceRecord,
+        Tag,
+        VideoItem,
+        VideoCategoryTag,
+        VideoPerson,
+        VideoUploadSession,
+        Task,
+        UploadHistory,
+    )
+
+
+def _assign_legacy_data_to_workspace(db: Session, workspace_id: int) -> None:
+    for model in _legacy_tenant_models():
+        db.query(model).filter(model.workspace_id.is_(None)).update({"workspace_id": workspace_id}, synchronize_session=False)
+    db.commit()
+
+
+def require_context(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    access_token: str | None = Query(default=None),
+    workspace_id_query: int | None = Query(default=None, alias="workspace_id"),
+    x_workspace_id: int | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> CurrentContext:
+    token = access_token
+    if not token and authorization:
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer" and value:
+            token = value
+    if not token:
+        raise HTTPException(status_code=401, detail="请先登录")
+    user_id = decode_access_token(token, settings.auth_secret_key)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="账号不可用")
+    _ensure_private_workspace(db, user)
+    db.commit()
+    db.refresh(user)
+    memberships = list(user.memberships)
+    if not memberships:
+        raise HTTPException(status_code=403, detail="账号没有内容空间")
+    selected_workspace_id = x_workspace_id if x_workspace_id is not None else workspace_id_query
+    if selected_workspace_id is not None:
+        membership = next((item for item in memberships if item.workspace_id == selected_workspace_id), None)
+        if membership is None:
+            raise HTTPException(status_code=403, detail="无权访问该内容空间")
+    else:
+        membership = sorted(memberships, key=lambda item: (0 if item.workspace.kind == "private" else 1, item.workspace_id))[0]
+    current = CurrentContext(user=user, workspace_id=membership.workspace_id, role=membership.role, workspace=membership.workspace, membership=membership)
+    _enforce_request_permission(request, current)
+    return current
+
+
+def _has_permission(current: CurrentContext, field: str) -> bool:
+    if current.role == "owner":
+        return True
+    return bool(getattr(current.membership, field))
+
+
+def _require_permission(current: CurrentContext, field: str) -> None:
+    if not _has_permission(current, field):
+        raise HTTPException(status_code=403, detail="当前账号没有该操作权限")
+
+
+def _enforce_request_permission(request: Request, current: CurrentContext) -> None:
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    path = request.url.path
+    if path.startswith("/api/auth/") or path.startswith("/api/workspaces") or path.startswith("/api/workspace-invitations"):
+        return
+    if path in {"/api/gallery/photos/import", "/api/gallery/rich-photos/import", "/api/gallery/photos/import-zip"}:
+        _require_permission(current, "can_add_gallery")
+        return
+    if path == "/api/gallery/photos/batch-delete" or (path.startswith("/api/gallery/photos") and request.method == "DELETE"):
+        _require_permission(current, "can_delete_gallery")
+        return
+    if path.startswith("/api/gallery/photos") or path.startswith("/api/tags"):
+        _require_permission(current, "can_edit_gallery")
+        return
+    if path == "/api/persons/import" or (path == "/api/persons" and request.method == "POST") or path.endswith("/samples"):
+        _require_permission(current, "can_add_samples")
+        return
+    if path == "/api/persons/batch-delete" or (path.startswith("/api/persons") and request.method == "DELETE"):
+        _require_permission(current, "can_delete_samples")
+        return
+    if path.startswith("/api/persons"):
+        _require_permission(current, "can_edit_samples")
+        return
+    if path.startswith("/api/videos/upload-sessions"):
+        _require_permission(current, "can_add_videos")
+        return
+    if "/subtitles" in path:
+        _require_permission(current, "can_edit_videos")
+        return
+    if path.startswith("/api/videos") and request.method == "DELETE":
+        _require_permission(current, "can_delete_videos")
+        return
+    if path.startswith("/api/videos") or path.startswith("/api/video-category-tags") or path.startswith("/api/video-people") or path.startswith("/api/subtitle-service"):
+        _require_permission(current, "can_edit_videos")
+        return
+
+
+def require_workspace_owner(current: CurrentContext = Depends(require_context)) -> CurrentContext:
+    if current.role != "owner":
+        raise HTTPException(status_code=403, detail="需要该内容空间的 owner 权限")
+    return current
+
+
+def _get_workspace_object(db: Session, model, object_id: int, workspace_id: int, label: str):
+    item = db.get(model, object_id)
+    if item is None or item.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    return item
+
+
+def _member_to_read(membership: WorkspaceMember) -> WorkspaceMemberRead:
+    return WorkspaceMemberRead(
+        id=membership.id,
+        user=UserRead.model_validate(membership.user),
+        role=membership.role,
+        permissions=_permission_dict(membership),
+        created_at=membership.created_at,
+    )
+
+
+def _invitation_to_read(invitation: WorkspaceInvitation) -> WorkspaceInvitationRead:
+    return WorkspaceInvitationRead(
+        id=invitation.id,
+        workspace_id=invitation.workspace_id,
+        workspace_name=invitation.workspace.name,
+        inviter_username=invitation.inviter.username,
+        invitee_username=invitation.invitee.username,
+        status=invitation.status,
+        role=invitation.role,
+        permissions={field: bool(getattr(invitation, field)) for field in PERMISSION_FIELDS},
+        created_at=invitation.created_at,
+    )
+
+
+def _owner_count(db: Session, workspace_id: int) -> int:
+    return db.scalar(
+        select(func.count(WorkspaceMember.id)).where(WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.role == "owner")
+    ) or 0
+
+
+def _require_shared_workspace_owner(current: CurrentContext) -> None:
+    if current.workspace.kind != "shared":
+        raise HTTPException(status_code=400, detail="私人空间不能添加或邀请其他账号")
+    if current.role != "owner":
+        raise HTTPException(status_code=403, detail="需要该内容空间的 owner 权限")
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     logger.info("Application startup begin")
@@ -134,7 +409,8 @@ def on_startup() -> None:
     )
     db = SessionLocal()
     try:
-        picture_service.ensure_system_tags(db)
+        for workspace in db.scalars(select(Workspace)).all():
+            picture_service.ensure_system_tags(db, workspace.id)
         recovered = fail_incomplete_tasks(db, "gallery_import")
         recovered += fail_incomplete_tasks(db, "gallery_rich_import")
         recovered += fail_incomplete_tasks(db, "gallery_zip_import")
@@ -222,14 +498,7 @@ def _video_category_to_read(tag: VideoCategoryTag) -> VideoCategoryTagRead:
 
 
 def _video_play_url(video: VideoItem) -> str:
-    fallback_url = f"/api/videos/{video.id}/stream"
-    if not settings.video_use_presigned_play_url:
-        return fallback_url
-    try:
-        return storage.presigned_get_url(video.object_key, settings.video_presigned_url_expires_seconds)
-    except Exception:
-        logger.exception("Failed to create video presigned URL video_id=%s", video.id)
-        return fallback_url
+    return f"/api/videos/{video.id}/stream"
 
 
 def _video_cover_url(video: VideoItem) -> str | None:
@@ -494,6 +763,7 @@ def _process_gallery_import_task(
     uploads: list[tuple[str, bytes, str | None]],
     metadata_by_index: list[dict[str, list[str] | str | None]],
     rich_mode: bool,
+    workspace_id: int,
 ) -> None:
     logger.info("Gallery import task started task_id=%s files=%d rich_mode=%s", task_id, len(uploads), rich_mode)
     db = SessionLocal()
@@ -524,14 +794,15 @@ def _process_gallery_import_task(
                 metadata.get("tag_names", []),  # type: ignore[arg-type]
                 rich_mode,
                 metadata.get("rich_text"),  # type: ignore[arg-type]
+                workspace_id,
             )
             for raw_name in metadata.get("person_names", []):  # type: ignore[assignment]
                 person_name = raw_name.strip()
                 if not person_name:
                     continue
-                person = db.scalar(select(Person).where(Person.name == person_name))
+                person = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
                 if person is None:
-                    person = Person(name=person_name, display_name=person_name, note=None, is_unknown=False)
+                    person = Person(workspace_id=workspace_id, name=person_name, display_name=person_name, note=None, is_unknown=False)
                     db.add(person)
                     db.flush()
                     logger.info(
@@ -577,6 +848,7 @@ def _process_gallery_import_task(
         # 记录上传历史
         try:
             history = UploadHistory(
+                workspace_id=workspace_id,
                 upload_type="rich" if rich_mode else "gallery",
                 total_count=total,
                 success_count=total - total_duplicated,
@@ -621,7 +893,7 @@ def _process_gallery_import_task(
         logger.debug("Gallery import task db session closed task_id=%s", task_id)
 
 
-def _process_person_import_task(task_id: str, zip_bytes: bytes) -> None:
+def _process_person_import_task(task_id: str, zip_bytes: bytes, workspace_id: int) -> None:
     logger.info("Person import task started task_id=%s bytes=%d", task_id, len(zip_bytes))
     db = SessionLocal()
     try:
@@ -637,7 +909,7 @@ def _process_person_import_task(task_id: str, zip_bytes: bytes) -> None:
                 message=f"正在处理 {processed}/{total} 个样本",
             )
 
-        result = picture_service.import_persons_from_zip(db, zip_bytes, progress_callback)
+        result = picture_service.import_persons_from_zip(db, zip_bytes, workspace_id, progress_callback)
 
         message = (
             f"导入完成：创建 {result['created_persons']} 个人物，"
@@ -667,7 +939,7 @@ def _process_person_import_task(task_id: str, zip_bytes: bytes) -> None:
         logger.debug("Person import task db session closed task_id=%s", task_id)
 
 
-def _process_gallery_zip_import_task(task_id: str, zip_bytes: bytes) -> None:
+def _process_gallery_zip_import_task(task_id: str, zip_bytes: bytes, workspace_id: int) -> None:
     logger.info("Gallery zip import task started task_id=%s bytes=%d", task_id, len(zip_bytes))
     db = SessionLocal()
     try:
@@ -683,7 +955,7 @@ def _process_gallery_zip_import_task(task_id: str, zip_bytes: bytes) -> None:
                 message=f"正在还原展示图 {processed}/{total}",
             )
 
-        result = picture_service.import_gallery_from_zip(db, zip_bytes, progress_callback)
+        result = picture_service.import_gallery_from_zip(db, zip_bytes, workspace_id, progress_callback)
         message = (
             f"导入完成：新增 {result['added_photos']} 张，"
             f"更新 {result['updated_existing']} 张已有图，"
@@ -717,9 +989,308 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/auth/bootstrap-status", response_model=BootstrapStatus)
+def get_bootstrap_status(db: Session = Depends(get_db)) -> BootstrapStatus:
+    return BootstrapStatus(required=(db.scalar(select(func.count(User.id))) or 0) == 0)
+
+
+@app.post("/api/auth/bootstrap", response_model=AuthSession)
+def bootstrap_admin(payload: BootstrapCreate, db: Session = Depends(get_db)) -> AuthSession:
+    if db.scalar(select(func.count(User.id))) > 0:
+        raise HTTPException(status_code=409, detail="系统已初始化")
+    username = payload.username.strip()
+    display_name = (payload.display_name or username).strip()
+    user = User(username=username, display_name=display_name, password_hash=hash_password(payload.password), is_admin=True)
+    workspace_name = (payload.workspace_name or f"{display_name}的私人空间").strip()
+    workspace = Workspace(name=workspace_name, kind="private")
+    db.add_all([user, workspace])
+    db.flush()
+    workspace.owner_user_id = user.id
+    db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+    db.commit()
+    db.refresh(user)
+    _assign_legacy_data_to_workspace(db, workspace.id)
+    picture_service.ensure_system_tags(db, workspace.id)
+    db.refresh(user)
+    return _auth_session(db, user)
+
+
+@app.post("/api/auth/login", response_model=AuthSession)
+def login(payload: LoginRequest, db: Session = Depends(get_db)) -> AuthSession:
+    user = db.scalar(select(User).where(User.username == payload.username.strip()))
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="用户名或密码不正确")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="账号已停用")
+    return _auth_session(db, user)
+
+
+@app.get("/api/auth/me", response_model=AuthSession)
+def get_current_session(current: CurrentContext = Depends(require_context), db: Session = Depends(get_db)) -> AuthSession:
+    db.refresh(current.user)
+    return _auth_session(db, current.user, current.workspace_id)
+
+
+@app.get("/api/workspaces", response_model=list[WorkspaceRead])
+def list_workspaces(current: CurrentContext = Depends(require_context), db: Session = Depends(get_db)) -> list[WorkspaceRead]:
+    db.refresh(current.user)
+    return _workspace_reads(db, current.user)
+
+
+@app.post("/api/workspaces", response_model=WorkspaceRead)
+def create_workspace(payload: WorkspaceCreate, current: CurrentContext = Depends(require_context), db: Session = Depends(get_db)) -> WorkspaceRead:
+    name = payload.name.strip()
+    workspace = Workspace(name=name, kind="shared", owner_user_id=current.user.id)
+    db.add(workspace)
+    db.flush()
+    membership = WorkspaceMember(workspace_id=workspace.id, user_id=current.user.id, role="owner")
+    db.add(membership)
+    db.commit()
+    db.refresh(membership)
+    picture_service.ensure_system_tags(db, workspace.id)
+    return _workspace_read(membership)
+
+
+@app.patch("/api/workspaces/{workspace_id}", response_model=WorkspaceRead)
+def update_workspace(
+    workspace_id: int,
+    payload: WorkspaceUpdate,
+    current: CurrentContext = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+) -> WorkspaceRead:
+    if current.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="无权管理该内容空间")
+    current.workspace.name = payload.name.strip()
+    db.commit()
+    db.refresh(current.membership)
+    return _workspace_read(current.membership)
+
+
+@app.get("/api/workspaces/{workspace_id}/members", response_model=list[WorkspaceMemberRead])
+def list_workspace_members(
+    workspace_id: int,
+    current: CurrentContext = Depends(require_context),
+    db: Session = Depends(get_db),
+) -> list[WorkspaceMemberRead]:
+    if current.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="无权访问该内容空间")
+    members = db.scalars(
+        select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id).order_by(WorkspaceMember.role.desc(), WorkspaceMember.id.asc())
+    ).all()
+    return [_member_to_read(member) for member in members]
+
+
+@app.patch("/api/workspaces/{workspace_id}/members/{member_id}", response_model=WorkspaceMemberRead)
+def update_workspace_member(
+    workspace_id: int,
+    member_id: int,
+    payload: WorkspacePermissionUpdate,
+    current: CurrentContext = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+) -> WorkspaceMemberRead:
+    if current.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="无权管理该内容空间")
+    _require_shared_workspace_owner(current)
+    member = db.get(WorkspaceMember, member_id)
+    if member is None or member.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="成员不存在")
+    if member.role == "owner":
+        raise HTTPException(status_code=400, detail="owner 拥有全部权限，不需要配置")
+    _apply_permissions(member, _permission_kwargs(payload))
+    db.commit()
+    db.refresh(member)
+    return _member_to_read(member)
+
+
+@app.delete("/api/workspaces/{workspace_id}/members/{member_id}")
+def remove_workspace_member(
+    workspace_id: int,
+    member_id: int,
+    current: CurrentContext = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    if current.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="无权管理该内容空间")
+    _require_shared_workspace_owner(current)
+    member = db.get(WorkspaceMember, member_id)
+    if member is None or member.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="成员不存在")
+    if member.role == "owner" and _owner_count(db, workspace_id) <= 1:
+        raise HTTPException(status_code=400, detail="不能移除最后一个 owner")
+    db.delete(member)
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/workspaces/{workspace_id}/leave")
+def leave_workspace(
+    workspace_id: int,
+    current: CurrentContext = Depends(require_context),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    if current.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="只能退出当前内容空间")
+    if current.workspace.kind == "private":
+        raise HTTPException(status_code=400, detail="不能退出自己的私人空间")
+    if current.role == "owner" and _owner_count(db, workspace_id) <= 1:
+        raise HTTPException(status_code=400, detail="不能退出最后一个 owner 所在空间")
+    db.delete(current.membership)
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/workspaces/{workspace_id}/invitations", response_model=WorkspaceInvitationRead)
+def invite_workspace_member(
+    workspace_id: int,
+    payload: WorkspaceInvitationCreate,
+    current: CurrentContext = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+) -> WorkspaceInvitationRead:
+    if current.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="无权管理该内容空间")
+    _require_shared_workspace_owner(current)
+    username = payload.username.strip()
+    invitee = db.scalar(select(User).where(User.username == username))
+    if invitee is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    if db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == invitee.id)) is not None:
+        raise HTTPException(status_code=409, detail="该账号已经在此内容空间中")
+    existing = db.scalar(
+        select(WorkspaceInvitation).where(
+            WorkspaceInvitation.workspace_id == workspace_id,
+            WorkspaceInvitation.invitee_user_id == invitee.id,
+            WorkspaceInvitation.status == "pending",
+        )
+    )
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="该账号已有待处理邀请")
+    invitation = WorkspaceInvitation(
+        workspace_id=workspace_id,
+        inviter_user_id=current.user.id,
+        invitee_user_id=invitee.id,
+        role="member",
+    )
+    _apply_permissions(invitation, _permission_kwargs(payload))
+    db.add(invitation)
+    db.commit()
+    db.refresh(invitation)
+    return _invitation_to_read(invitation)
+
+
+@app.get("/api/workspace-invitations", response_model=list[WorkspaceInvitationRead])
+def list_my_workspace_invitations(current: CurrentContext = Depends(require_context), db: Session = Depends(get_db)) -> list[WorkspaceInvitationRead]:
+    invitations = db.scalars(
+        select(WorkspaceInvitation)
+        .where(WorkspaceInvitation.invitee_user_id == current.user.id, WorkspaceInvitation.status == "pending")
+        .order_by(WorkspaceInvitation.created_at.desc())
+    ).all()
+    return [_invitation_to_read(invitation) for invitation in invitations]
+
+
+@app.post("/api/workspace-invitations/{invitation_id}/accept", response_model=WorkspaceRead)
+def accept_workspace_invitation(
+    invitation_id: int,
+    current: CurrentContext = Depends(require_context),
+    db: Session = Depends(get_db),
+) -> WorkspaceRead:
+    invitation = db.get(WorkspaceInvitation, invitation_id)
+    if invitation is None or invitation.invitee_user_id != current.user.id or invitation.status != "pending":
+        raise HTTPException(status_code=404, detail="邀请不存在")
+    if invitation.workspace.kind != "shared":
+        raise HTTPException(status_code=400, detail="该内容空间不能加入")
+    existing = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == invitation.workspace_id, WorkspaceMember.user_id == current.user.id))
+    if existing is not None:
+        invitation.status = "accepted"
+        db.commit()
+        db.refresh(existing)
+        return _workspace_read(existing)
+    membership = WorkspaceMember(workspace_id=invitation.workspace_id, user_id=current.user.id, role=invitation.role)
+    _apply_permissions(membership, {field: bool(getattr(invitation, field)) for field in PERMISSION_FIELDS})
+    invitation.status = "accepted"
+    db.add(membership)
+    db.commit()
+    db.refresh(membership)
+    return _workspace_read(membership)
+
+
+@app.post("/api/workspace-invitations/{invitation_id}/decline")
+def decline_workspace_invitation(
+    invitation_id: int,
+    current: CurrentContext = Depends(require_context),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    invitation = db.get(WorkspaceInvitation, invitation_id)
+    if invitation is None or invitation.invitee_user_id != current.user.id or invitation.status != "pending":
+        raise HTTPException(status_code=404, detail="邀请不存在")
+    invitation.status = "declined"
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.delete("/api/workspaces/{workspace_id}/invitations/{invitation_id}")
+def revoke_workspace_invitation(
+    workspace_id: int,
+    invitation_id: int,
+    current: CurrentContext = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    if current.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="无权管理该内容空间")
+    _require_shared_workspace_owner(current)
+    invitation = db.get(WorkspaceInvitation, invitation_id)
+    if invitation is None or invitation.workspace_id != workspace_id or invitation.status != "pending":
+        raise HTTPException(status_code=404, detail="邀请不存在")
+    invitation.status = "revoked"
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/workspaces/{workspace_id}/users", response_model=UserRead)
+def create_workspace_user(
+    workspace_id: int,
+    payload: AdminUserCreate,
+    current: CurrentContext = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+) -> UserRead:
+    if current.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="无权管理该内容空间")
+    _require_shared_workspace_owner(current)
+    username = payload.username.strip()
+    if db.scalar(select(User).where(User.username == username)) is not None:
+        raise HTTPException(status_code=409, detail="用户名已存在")
+    display_name = (payload.display_name or username).strip()
+    user = User(
+        username=username,
+        display_name=display_name,
+        password_hash=hash_password(payload.password),
+        is_admin=False,
+    )
+    db.add(user)
+    db.flush()
+    private_workspace = _ensure_private_workspace(db, user)
+    shared_membership = WorkspaceMember(workspace_id=workspace_id, user_id=user.id, role="member")
+    _apply_permissions(shared_membership, _permission_kwargs(payload))
+    db.add(shared_membership)
+    db.commit()
+    db.refresh(user)
+    picture_service.ensure_system_tags(db, private_workspace.id)
+    return UserRead.model_validate(user)
+
+
+@app.post("/api/admin/users", response_model=UserRead)
+def create_user(payload: AdminUserCreate, current: CurrentContext = Depends(require_workspace_owner), db: Session = Depends(get_db)) -> UserRead:
+    if current.workspace.kind != "shared":
+        raise HTTPException(status_code=400, detail="请在共享内容空间中创建成员账号")
+    return create_workspace_user(current.workspace_id, payload, current, db)
+
+
 @app.get("/api/persons", response_model=list[PersonRead])
-def list_persons(is_unknown: bool | None = None, db: Session = Depends(get_db)) -> list[PersonRead]:
-    query = select(Person).order_by(Person.is_unknown.asc(), Person.display_name.asc())
+def list_persons(
+    is_unknown: bool | None = None,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[PersonRead]:
+    query = select(Person).where(Person.workspace_id == current.workspace_id).order_by(Person.is_unknown.asc(), Person.display_name.asc())
     if is_unknown is not None:
         query = query.where(Person.is_unknown.is_(is_unknown))
     persons = db.scalars(query).all()
@@ -727,11 +1298,15 @@ def list_persons(is_unknown: bool | None = None, db: Session = Depends(get_db)) 
 
 
 @app.post("/api/persons", response_model=PersonRead)
-def create_person(payload: PersonCreate, db: Session = Depends(get_db)) -> PersonRead:
+def create_person(
+    payload: PersonCreate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> PersonRead:
     normalized = payload.name.strip()
-    if db.scalar(select(Person).where(Person.name == normalized)) is not None:
+    if db.scalar(select(Person).where(Person.workspace_id == current.workspace_id, Person.name == normalized)) is not None:
         raise HTTPException(status_code=409, detail="Person already exists")
-    person = Person(name=normalized, display_name=normalized, note=payload.note, is_unknown=False)
+    person = Person(workspace_id=current.workspace_id, name=normalized, display_name=normalized, note=payload.note, is_unknown=False)
     db.add(person)
     db.commit()
     db.refresh(person)
@@ -739,8 +1314,14 @@ def create_person(payload: PersonCreate, db: Session = Depends(get_db)) -> Perso
 
 
 @app.post("/api/persons/batch-delete")
-def batch_delete_persons(payload: PersonBatchDeleteRequest, db: Session = Depends(get_db)) -> dict[str, int]:
-    persons = db.scalars(select(Person).where(Person.id.in_(payload.person_ids))).all()
+def batch_delete_persons(
+    payload: PersonBatchDeleteRequest,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, int]:
+    persons = db.scalars(
+        select(Person).where(Person.workspace_id == current.workspace_id, Person.id.in_(payload.person_ids))
+    ).all()
     if not persons:
         return {"deleted": 0}
     deleted = picture_service.delete_persons(db, persons)
@@ -748,12 +1329,14 @@ def batch_delete_persons(payload: PersonBatchDeleteRequest, db: Session = Depend
 
 
 @app.get("/api/persons/export")
-def export_persons(db: Session = Depends(get_db)) -> StreamingResponse:
+def export_persons(db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> StreamingResponse:
     from datetime import datetime as dt
     from zipfile import ZIP_DEFLATED, ZipFile
 
     persons = db.scalars(
-        select(Person).where(Person.is_unknown == False).order_by(Person.display_name)
+        select(Person)
+        .where(Person.workspace_id == current.workspace_id, Person.is_unknown == False)
+        .order_by(Person.display_name)
     ).all()
 
     export_persons: list[dict] = []
@@ -815,30 +1398,34 @@ async def import_persons(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
     zip_bytes = await file.read()
-    task = create_task(db, "person_import", "已排队样本库导入")
+    task = create_task(db, "person_import", "已排队样本库导入", current.workspace_id)
     logger.info("Person import enqueued task_id=%s bytes=%d", task.id, len(zip_bytes))
-    background_tasks.add_task(_process_person_import_task, task.id, zip_bytes)
+    background_tasks.add_task(_process_person_import_task, task.id, zip_bytes, current.workspace_id)
     return TaskRead.model_validate(task)
 
 
 @app.get("/api/persons/{person_id}", response_model=PersonRead)
-def get_person(person_id: int, db: Session = Depends(get_db)) -> PersonRead:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def get_person(person_id: int, db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> PersonRead:
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     return _person_to_read(db, person)
 
 
 @app.patch("/api/persons/{person_id}", response_model=PersonRead)
-def update_person(person_id: int, payload: PersonUpdate, db: Session = Depends(get_db)) -> PersonRead:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def update_person(
+    person_id: int,
+    payload: PersonUpdate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> PersonRead:
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     if payload.name is not None:
         normalized = payload.name.strip()
-        duplicate = db.scalar(select(Person).where(Person.name == normalized, Person.id != person_id))
+        duplicate = db.scalar(
+            select(Person).where(Person.workspace_id == current.workspace_id, Person.name == normalized, Person.id != person_id)
+        )
         if duplicate is not None:
             raise HTTPException(status_code=409, detail="Person already exists")
         person.name = normalized
@@ -853,10 +1440,13 @@ def update_person(person_id: int, payload: PersonUpdate, db: Session = Depends(g
 
 
 @app.post("/api/persons/{person_id}/rename", response_model=PersonRead)
-def rename_person(person_id: int, payload: PersonRenameRequest, db: Session = Depends(get_db)) -> PersonRead:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def rename_person(
+    person_id: int,
+    payload: PersonRenameRequest,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> PersonRead:
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     try:
         person = picture_service.rename_person(db, person, payload.name)
     except ValueError as exc:
@@ -865,51 +1455,55 @@ def rename_person(person_id: int, payload: PersonRenameRequest, db: Session = De
 
 
 @app.delete("/api/persons/{person_id}")
-def delete_person(person_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def delete_person(person_id: int, db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> dict[str, str]:
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     picture_service.delete_persons(db, [person])
     return {"status": "ok"}
 
 
 @app.get("/api/persons/{person_id}/samples", response_model=list[SamplePhotoRead])
-def list_person_samples(person_id: int, db: Session = Depends(get_db)) -> list[SamplePhotoRead]:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def list_person_samples(
+    person_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[SamplePhotoRead]:
+    _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     photos = db.scalars(select(SamplePhoto).where(SamplePhoto.person_id == person_id).order_by(SamplePhoto.created_at.desc())).all()
     return [_sample_photo_to_read(photo) for photo in photos]
 
 
 @app.get("/api/persons/{person_id}/tags", response_model=list[TagRead])
-def list_person_tags(person_id: int, db: Session = Depends(get_db)) -> list[TagRead]:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def list_person_tags(person_id: int, db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> list[TagRead]:
+    _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     return [TagRead.model_validate(tag) for tag in picture_service.list_person_tags(db, person_id)]
 
 
 @app.post("/api/persons/{person_id}/tags", response_model=list[TagRead])
-def bind_person_tag(person_id: int, payload: PersonTagCreate, db: Session = Depends(get_db)) -> list[TagRead]:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def bind_person_tag(
+    person_id: int,
+    payload: PersonTagCreate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[TagRead]:
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     if payload.tag_id is not None:
         tag = db.get(Tag, payload.tag_id)
-        if tag is None:
+        if tag is None or tag.workspace_id != current.workspace_id:
             raise HTTPException(status_code=404, detail="Tag not found")
     else:
-        tag = picture_service._find_or_create_tag(db, payload.name or "")
+        tag = picture_service._find_or_create_tag(db, payload.name or "", current.workspace_id)
     picture_service.bind_person_tag(db, person, tag)
     return [TagRead.model_validate(item) for item in picture_service.list_person_tags(db, person_id)]
 
 
 @app.delete("/api/persons/{person_id}/tags/{tag_id}", response_model=list[TagRead])
-def unbind_person_tag(person_id: int, tag_id: int, db: Session = Depends(get_db)) -> list[TagRead]:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+def unbind_person_tag(
+    person_id: int,
+    tag_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[TagRead]:
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     picture_service.unbind_person_tag(db, person, tag_id)
     return [TagRead.model_validate(item) for item in picture_service.list_person_tags(db, person_id)]
 
@@ -919,28 +1513,37 @@ async def add_person_samples(
     person_id: int,
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> list[SamplePhotoRead]:
-    person = db.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     uploads = [(file.filename, await file.read(), file.content_type) for file in files]
     samples = picture_service.add_person_samples(db, person, uploads)
     return [_sample_photo_to_read(sample) for sample in samples]
 
 
 @app.delete("/api/persons/{person_id}/samples/{sample_photo_id}")
-def delete_person_sample(person_id: int, sample_photo_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+def delete_person_sample(
+    person_id: int,
+    sample_photo_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, str]:
     photo = db.get(SamplePhoto, sample_photo_id)
-    if photo is None or photo.person_id != person_id:
+    if photo is None or photo.workspace_id != current.workspace_id or photo.person_id != person_id:
         raise HTTPException(status_code=404, detail="Sample photo not found")
     picture_service.delete_sample_photo(db, photo)
     return {"status": "ok"}
 
 
 @app.get("/api/persons/{person_id}/samples/{sample_photo_id}/original")
-def get_sample_original(person_id: int, sample_photo_id: int, db: Session = Depends(get_db)) -> StreamingResponse:
+def get_sample_original(
+    person_id: int,
+    sample_photo_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> StreamingResponse:
     photo = db.get(SamplePhoto, sample_photo_id)
-    if photo is None or photo.person_id != person_id:
+    if photo is None or photo.workspace_id != current.workspace_id or photo.person_id != person_id:
         raise HTTPException(status_code=404, detail="Sample photo not found")
     payload = storage.get_bytes(photo.object_key)
     headers = {"Content-Disposition": f'inline; filename="{photo.filename}"'}
@@ -948,9 +1551,15 @@ def get_sample_original(person_id: int, sample_photo_id: int, db: Session = Depe
 
 
 @app.get("/api/persons/{person_id}/samples/{sample_photo_id}/thumbnail")
-def get_sample_thumbnail(person_id: int, sample_photo_id: int, width: int = 480, db: Session = Depends(get_db)) -> Response:
+def get_sample_thumbnail(
+    person_id: int,
+    sample_photo_id: int,
+    width: int = 480,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> Response:
     photo = db.get(SamplePhoto, sample_photo_id)
-    if photo is None or photo.person_id != person_id:
+    if photo is None or photo.workspace_id != current.workspace_id or photo.person_id != person_id:
         raise HTTPException(status_code=404, detail="Sample photo not found")
     payload = storage.get_bytes(photo.object_key)
     image = Image.open(BytesIO(payload)).convert("RGB")
@@ -961,18 +1570,18 @@ def get_sample_thumbnail(person_id: int, sample_photo_id: int, width: int = 480,
 
 
 @app.get("/api/tags", response_model=list[TagRead])
-def list_tags(db: Session = Depends(get_db)) -> list[TagRead]:
-    tags = db.scalars(select(Tag).order_by(Tag.name.asc())).all()
+def list_tags(db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> list[TagRead]:
+    tags = db.scalars(select(Tag).where(Tag.workspace_id == current.workspace_id).order_by(Tag.name.asc())).all()
     return [TagRead.model_validate(tag) for tag in tags]
 
 
 @app.post("/api/tags", response_model=TagRead)
-def create_tag(payload: TagCreate, db: Session = Depends(get_db)) -> TagRead:
+def create_tag(payload: TagCreate, db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> TagRead:
     normalized = payload.name.strip()
-    existing = db.scalar(select(Tag).where(Tag.name == normalized))
+    existing = db.scalar(select(Tag).where(Tag.workspace_id == current.workspace_id, Tag.name == normalized))
     if existing is not None:
         return TagRead.model_validate(existing)
-    tag = Tag(name=normalized)
+    tag = Tag(workspace_id=current.workspace_id, name=normalized)
     db.add(tag)
     db.commit()
     db.refresh(tag)
@@ -980,12 +1589,15 @@ def create_tag(payload: TagCreate, db: Session = Depends(get_db)) -> TagRead:
 
 
 @app.patch("/api/tags/{tag_id}", response_model=TagRead)
-def update_tag(tag_id: int, payload: TagUpdate, db: Session = Depends(get_db)) -> TagRead:
-    tag = db.get(Tag, tag_id)
-    if tag is None:
-        raise HTTPException(status_code=404, detail="Tag not found")
+def update_tag(
+    tag_id: int,
+    payload: TagUpdate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> TagRead:
+    tag = _get_workspace_object(db, Tag, tag_id, current.workspace_id, "Tag")
     normalized = payload.name.strip()
-    duplicate = db.scalar(select(Tag).where(Tag.name == normalized, Tag.id != tag_id))
+    duplicate = db.scalar(select(Tag).where(Tag.workspace_id == current.workspace_id, Tag.name == normalized, Tag.id != tag_id))
     if duplicate is not None:
         raise HTTPException(status_code=409, detail="Tag already exists")
     tag.name = normalized
@@ -996,10 +1608,8 @@ def update_tag(tag_id: int, payload: TagUpdate, db: Session = Depends(get_db)) -
 
 
 @app.delete("/api/tags/{tag_id}")
-def delete_tag(tag_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    tag = db.get(Tag, tag_id)
-    if tag is None:
-        raise HTTPException(status_code=404, detail="Tag not found")
+def delete_tag(tag_id: int, db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> dict[str, str]:
+    tag = _get_workspace_object(db, Tag, tag_id, current.workspace_id, "Tag")
     if tag.is_system:
         raise HTTPException(status_code=400, detail="System tag cannot be deleted")
     db.delete(tag)
@@ -1013,17 +1623,18 @@ async def import_gallery_photos(
     files: list[UploadFile] = File(...),
     metadata_json: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
     uploads = [(file.filename, await file.read(), file.content_type) for file in files]
     metadata = _parse_gallery_metadata(metadata_json, len(uploads))
-    task = create_task(db, "gallery_import", f"已排队 {len(uploads)} 张普通图片")
+    task = create_task(db, "gallery_import", f"已排队 {len(uploads)} 张普通图片", current.workspace_id)
     logger.info(
         "Gallery import enqueued task_id=%s files=%d metadata_items=%d rich_mode=false",
         task.id,
         len(uploads),
         len(metadata),
     )
-    background_tasks.add_task(_process_gallery_import_task, task.id, uploads, metadata, False)
+    background_tasks.add_task(_process_gallery_import_task, task.id, uploads, metadata, False, current.workspace_id)
     return TaskRead.model_validate(task)
 
 
@@ -1033,17 +1644,18 @@ async def import_gallery_rich_photos(
     files: list[UploadFile] = File(...),
     metadata_json: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
     uploads = [(file.filename, await file.read(), file.content_type) for file in files]
     metadata = _parse_gallery_metadata(metadata_json, len(uploads))
-    task = create_task(db, "gallery_rich_import", f"已排队 {len(uploads)} 张图文图片")
+    task = create_task(db, "gallery_rich_import", f"已排队 {len(uploads)} 张图文图片", current.workspace_id)
     logger.info(
         "Gallery rich import enqueued task_id=%s files=%d metadata_items=%d rich_mode=true",
         task.id,
         len(uploads),
         len(metadata),
     )
-    background_tasks.add_task(_process_gallery_import_task, task.id, uploads, metadata, True)
+    background_tasks.add_task(_process_gallery_import_task, task.id, uploads, metadata, True, current.workspace_id)
     return TaskRead.model_validate(task)
 
 
@@ -1055,11 +1667,16 @@ def export_gallery_photos(
     exclude_person_ids: list[int] = Query(default=[]),
     exclude_tag_ids: list[int] = Query(default=[]),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> StreamingResponse:
     from datetime import datetime as dt
     from zipfile import ZIP_DEFLATED, ZipFile
 
-    base_query = select(GalleryPhoto).order_by(GalleryPhoto.taken_at.desc().nullslast(), GalleryPhoto.created_at.desc())
+    base_query = (
+        select(GalleryPhoto)
+        .where(GalleryPhoto.workspace_id == current.workspace_id)
+        .order_by(GalleryPhoto.taken_at.desc().nullslast(), GalleryPhoto.created_at.desc())
+    )
     if scope == "filtered":
         query = _apply_gallery_filters(base_query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
     else:
@@ -1143,29 +1760,30 @@ async def import_gallery_export_zip(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
     zip_bytes = await file.read()
-    task = create_task(db, "gallery_zip_import", "已排队展示图 ZIP 导入")
+    task = create_task(db, "gallery_zip_import", "已排队展示图 ZIP 导入", current.workspace_id)
     logger.info("Gallery zip import enqueued task_id=%s bytes=%d", task.id, len(zip_bytes))
-    background_tasks.add_task(_process_gallery_zip_import_task, task.id, zip_bytes)
+    background_tasks.add_task(_process_gallery_zip_import_task, task.id, zip_bytes, current.workspace_id)
     return TaskRead.model_validate(task)
 
 
 @app.get("/api/tasks/{task_id}", response_model=TaskRead)
-def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskRead:
+def get_task(task_id: str, db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> TaskRead:
     task = db.get(Task, task_id)
-    if task is None:
+    if task is None or task.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Task not found")
     return TaskRead.model_validate(task)
 
 
 @app.get("/api/subtitle-service/status", response_model=SubtitleServiceStatus)
-def get_subtitle_service_status() -> SubtitleServiceStatus:
+def get_subtitle_service_status(current: CurrentContext = Depends(require_context)) -> SubtitleServiceStatus:
     return SubtitleServiceStatus(**subtitle_service.get_translation_service_status())
 
 
 @app.post("/api/subtitle-service/start", response_model=SubtitleServiceStatus)
-def start_subtitle_service() -> SubtitleServiceStatus:
+def start_subtitle_service(current: CurrentContext = Depends(require_context)) -> SubtitleServiceStatus:
     try:
         return SubtitleServiceStatus(**subtitle_service.start_translation_service())
     except RuntimeError as exc:
@@ -1176,6 +1794,7 @@ def start_subtitle_service() -> SubtitleServiceStatus:
 def stop_subtitle_service(
     cancel_running: bool = Query(default=True),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> SubtitleServiceStatus:
     try:
         return SubtitleServiceStatus(**subtitle_service.stop_translation_service(db=db, cancel_running=cancel_running))
@@ -1184,15 +1803,23 @@ def stop_subtitle_service(
 
 
 @app.get("/api/subtitle-service/logs", response_model=SubtitleServiceLogs)
-def get_subtitle_service_logs(tail: int = Query(default=200, ge=1, le=1000)) -> SubtitleServiceLogs:
+def get_subtitle_service_logs(
+    tail: int = Query(default=200, ge=1, le=1000),
+    current: CurrentContext = Depends(require_context),
+) -> SubtitleServiceLogs:
     return SubtitleServiceLogs(**subtitle_service.read_translation_service_logs(tail=tail))
 
 
 @app.get("/api/subtitle-jobs", response_model=list[SubtitleJobRead])
-def list_subtitle_jobs(db: Session = Depends(get_db)) -> list[SubtitleJobRead]:
+def list_subtitle_jobs(
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[SubtitleJobRead]:
     tracks = db.scalars(
         select(VideoSubtitleTrack)
+        .join(VideoItem, VideoItem.id == VideoSubtitleTrack.video_id)
         .where(VideoSubtitleTrack.status.in_(("pending", "running", "failed", "canceled")))
+        .where(VideoItem.workspace_id == current.workspace_id)
         .order_by(VideoSubtitleTrack.updated_at.desc())
         .limit(50)
     ).all()
@@ -1223,9 +1850,14 @@ def list_gallery_photos(
     offset: int = 0,
     limit: int = 24,
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> PaginatedGalleryPhotos:
-    query = select(GalleryPhoto).order_by(GalleryPhoto.taken_at.desc().nullslast(), GalleryPhoto.created_at.desc())
-    count_query = select(func.count(GalleryPhoto.id))
+    query = (
+        select(GalleryPhoto)
+        .where(GalleryPhoto.workspace_id == current.workspace_id)
+        .order_by(GalleryPhoto.taken_at.desc().nullslast(), GalleryPhoto.created_at.desc())
+    )
+    count_query = select(func.count(GalleryPhoto.id)).where(GalleryPhoto.workspace_id == current.workspace_id)
     query = _apply_gallery_filters(query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
     count_query = _apply_gallery_filters(count_query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
 
@@ -1242,10 +1874,12 @@ def list_gallery_photos(
 
 
 @app.get("/api/gallery/photos/{photo_id}", response_model=GalleryPhotoDetail)
-def get_gallery_photo(photo_id: int, db: Session = Depends(get_db)) -> GalleryPhotoDetail:
-    photo = db.get(GalleryPhoto, photo_id)
-    if photo is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
+def get_gallery_photo(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     photo.person_tags
     photo.tags
     photo.faces
@@ -1257,8 +1891,14 @@ def get_gallery_photo(photo_id: int, db: Session = Depends(get_db)) -> GalleryPh
 
 
 @app.post("/api/gallery/photos/batch-delete")
-def batch_delete_gallery_photos(payload: GalleryPhotoBatchDeleteRequest, db: Session = Depends(get_db)) -> dict[str, int]:
-    photos = db.scalars(select(GalleryPhoto).where(GalleryPhoto.id.in_(payload.photo_ids))).all()
+def batch_delete_gallery_photos(
+    payload: GalleryPhotoBatchDeleteRequest,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, int]:
+    photos = db.scalars(
+        select(GalleryPhoto).where(GalleryPhoto.workspace_id == current.workspace_id, GalleryPhoto.id.in_(payload.photo_ids))
+    ).all()
     if not photos:
         return {"deleted": 0}
     deleted = picture_service.delete_gallery_photos(db, photos)
@@ -1266,29 +1906,36 @@ def batch_delete_gallery_photos(payload: GalleryPhotoBatchDeleteRequest, db: Ses
 
 
 @app.delete("/api/gallery/photos/{photo_id}")
-def delete_gallery_photo(photo_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    photo = db.get(GalleryPhoto, photo_id)
-    if photo is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
+def delete_gallery_photo(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, str]:
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     picture_service.delete_gallery_photos(db, [photo])
     return {"status": "ok"}
 
 
 @app.get("/api/gallery/photos/{photo_id}/original")
-def get_gallery_original(photo_id: int, db: Session = Depends(get_db)) -> StreamingResponse:
-    photo = db.get(GalleryPhoto, photo_id)
-    if photo is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
+def get_gallery_original(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> StreamingResponse:
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     payload = storage.get_bytes(photo.object_key)
     headers = {"Content-Disposition": f'inline; filename="{photo.filename}"'}
     return StreamingResponse(BytesIO(payload), media_type=photo.content_type or "application/octet-stream", headers=headers)
 
 
 @app.get("/api/gallery/photos/{photo_id}/thumbnail")
-def get_gallery_thumbnail(photo_id: int, width: int = 480, db: Session = Depends(get_db)) -> Response:
-    photo = db.get(GalleryPhoto, photo_id)
-    if photo is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
+def get_gallery_thumbnail(
+    photo_id: int,
+    width: int = 480,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> Response:
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     payload = storage.get_bytes(photo.object_key)
     image = Image.open(BytesIO(payload)).convert("RGB")
     image.thumbnail((width, width))
@@ -1302,13 +1949,10 @@ def add_gallery_photo_person(
     photo_id: int,
     payload: GalleryPhotoPersonTagCreate,
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> GalleryPhotoDetail:
-    photo = db.get(GalleryPhoto, photo_id)
-    if photo is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
-    person = db.get(Person, payload.person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+    _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    person = _get_workspace_object(db, Person, payload.person_id, current.workspace_id, "Person")
     picture_service._ensure_gallery_person_tag(db, photo_id, person.id, "manual")
     picture_service._apply_person_tags_to_gallery_photo(db, photo_id, person.id)
 
@@ -1323,11 +1967,18 @@ def add_gallery_photo_person(
         picture_service.move_gallery_face_to_known(db, face, person, vector)
 
     db.commit()
-    return get_gallery_photo(photo_id, db)
+    return get_gallery_photo(photo_id, db, current)
 
 
 @app.delete("/api/gallery/photos/{photo_id}/persons/{person_id}", response_model=GalleryPhotoDetail)
-def delete_gallery_photo_person(photo_id: int, person_id: int, db: Session = Depends(get_db)) -> GalleryPhotoDetail:
+def delete_gallery_photo_person(
+    photo_id: int,
+    person_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     link = db.scalar(
         select(GalleryPhotoPersonTag).where(
             GalleryPhotoPersonTag.gallery_photo_id == photo_id,
@@ -1370,27 +2021,36 @@ def delete_gallery_photo_person(photo_id: int, person_id: int, db: Session = Dep
             db.delete(gallery_tag)
     
     db.commit()
-    return get_gallery_photo(photo_id, db)
+    return get_gallery_photo(photo_id, db, current)
 
 
 @app.post("/api/gallery/photos/{photo_id}/tags", response_model=GalleryPhotoDetail)
-def add_gallery_photo_tag(photo_id: int, payload: GalleryPhotoTagCreate, db: Session = Depends(get_db)) -> GalleryPhotoDetail:
-    photo = db.get(GalleryPhoto, photo_id)
-    if photo is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
+def add_gallery_photo_tag(
+    photo_id: int,
+    payload: GalleryPhotoTagCreate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     if payload.tag_id is not None:
         tag = db.get(Tag, payload.tag_id)
-        if tag is None:
+        if tag is None or tag.workspace_id != current.workspace_id:
             raise HTTPException(status_code=404, detail="Tag not found")
     else:
-        tag = picture_service._find_or_create_tag(db, payload.name or "")
+        tag = picture_service._find_or_create_tag(db, payload.name or "", current.workspace_id)
     picture_service._ensure_gallery_tag(db, photo_id, tag, source="manual")
     db.commit()
-    return get_gallery_photo(photo_id, db)
+    return get_gallery_photo(photo_id, db, current)
 
 
 @app.delete("/api/gallery/photos/{photo_id}/tags/{tag_id}", response_model=GalleryPhotoDetail)
-def delete_gallery_photo_tag(photo_id: int, tag_id: int, db: Session = Depends(get_db)) -> GalleryPhotoDetail:
+def delete_gallery_photo_tag(
+    photo_id: int,
+    tag_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     link = db.scalar(
         select(GalleryPhotoTag).where(
             GalleryPhotoTag.gallery_photo_id == photo_id,
@@ -1403,14 +2063,17 @@ def delete_gallery_photo_tag(photo_id: int, tag_id: int, db: Session = Depends(g
         raise HTTPException(status_code=400, detail="System tag cannot be removed")
     db.delete(link)
     db.commit()
-    return get_gallery_photo(photo_id, db)
+    return get_gallery_photo(photo_id, db, current)
 
 
 @app.patch("/api/gallery/photos/{photo_id}/rich-text", response_model=GalleryPhotoDetail)
-def update_gallery_photo_rich_text(photo_id: int, payload: GalleryPhotoRichTextUpdate, db: Session = Depends(get_db)) -> GalleryPhotoDetail:
-    photo = db.get(GalleryPhoto, photo_id)
-    if photo is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
+def update_gallery_photo_rich_text(
+    photo_id: int,
+    payload: GalleryPhotoRichTextUpdate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     if not photo.is_rich_text:
         raise HTTPException(status_code=400, detail="Photo is not rich-text type")
     value = (payload.rich_text or "").strip()
@@ -1418,33 +2081,49 @@ def update_gallery_photo_rich_text(photo_id: int, payload: GalleryPhotoRichTextU
     photo.ocr_status = "manual" if value else "empty"
     db.add(photo)
     db.commit()
-    return get_gallery_photo(photo_id, db)
+    return get_gallery_photo(photo_id, db, current)
 
 
 @app.post("/api/gallery/photos/{photo_id}/re-recognize", response_model=GalleryPhotoDetail)
-def re_recognize_gallery_photo(photo_id: int, db: Session = Depends(get_db)) -> GalleryPhotoDetail:
-    photo = db.get(GalleryPhoto, photo_id)
-    if photo is None:
-        raise HTTPException(status_code=404, detail="Photo not found")
+def re_recognize_gallery_photo(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     photo = picture_service.re_recognize_gallery_photo(db, photo)
     return _gallery_photo_to_detail(photo)
 
 
 @app.post("/api/gallery/photos/re-recognize-unknown")
-def re_recognize_unknown_gallery_photos(db: Session = Depends(get_db)) -> dict[str, int]:
-    return picture_service.re_recognize_unknown_gallery_photos(db)
+def re_recognize_unknown_gallery_photos(
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, int]:
+    return picture_service.re_recognize_unknown_gallery_photos(db, current.workspace_id)
 
 
 @app.get("/api/video-category-tags", response_model=list[VideoCategoryTagRead])
-def list_video_category_tags(db: Session = Depends(get_db)) -> list[VideoCategoryTagRead]:
-    tags = db.scalars(select(VideoCategoryTag).order_by(VideoCategoryTag.name.asc())).all()
+def list_video_category_tags(
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[VideoCategoryTagRead]:
+    tags = db.scalars(
+        select(VideoCategoryTag)
+        .where(VideoCategoryTag.workspace_id == current.workspace_id)
+        .order_by(VideoCategoryTag.name.asc())
+    ).all()
     return [_video_category_to_read(tag) for tag in tags]
 
 
 @app.post("/api/video-category-tags", response_model=VideoCategoryTagRead)
-def create_video_category_tag(payload: VideoCategoryTagCreate, db: Session = Depends(get_db)) -> VideoCategoryTagRead:
+def create_video_category_tag(
+    payload: VideoCategoryTagCreate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoCategoryTagRead:
     try:
-        tag = video_service.find_or_create_category_tag(db, payload.name)
+        tag = video_service.find_or_create_category_tag(db, payload.name, current.workspace_id)
         db.commit()
         db.refresh(tag)
         return _video_category_to_read(tag)
@@ -1457,12 +2136,17 @@ def update_video_category_tag(
     tag_id: int,
     payload: VideoCategoryTagUpdate,
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> VideoCategoryTagRead:
-    tag = db.get(VideoCategoryTag, tag_id)
-    if tag is None:
-        raise HTTPException(status_code=404, detail="Video category tag not found")
+    tag = _get_workspace_object(db, VideoCategoryTag, tag_id, current.workspace_id, "Video category tag")
     normalized = payload.name.strip()
-    duplicate = db.scalar(select(VideoCategoryTag).where(VideoCategoryTag.name == normalized, VideoCategoryTag.id != tag_id))
+    duplicate = db.scalar(
+        select(VideoCategoryTag).where(
+            VideoCategoryTag.workspace_id == current.workspace_id,
+            VideoCategoryTag.name == normalized,
+            VideoCategoryTag.id != tag_id,
+        )
+    )
     if duplicate:
         raise HTTPException(status_code=409, detail="Video category tag already exists")
     tag.name = normalized
@@ -1473,18 +2157,27 @@ def update_video_category_tag(
 
 
 @app.delete("/api/video-category-tags/{tag_id}")
-def delete_video_category_tag(tag_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    tag = db.get(VideoCategoryTag, tag_id)
-    if tag is None:
-        raise HTTPException(status_code=404, detail="Video category tag not found")
+def delete_video_category_tag(
+    tag_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, str]:
+    tag = _get_workspace_object(db, VideoCategoryTag, tag_id, current.workspace_id, "Video category tag")
     db.delete(tag)
     db.commit()
     return {"status": "deleted"}
 
 
 @app.get("/api/video-people", response_model=list[VideoPersonRead])
-def list_video_people(db: Session = Depends(get_db)) -> list[VideoPersonRead]:
-    people = db.scalars(select(VideoPerson).order_by(VideoPerson.name.asc())).all()
+def list_video_people(
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[VideoPersonRead]:
+    people = db.scalars(
+        select(VideoPerson)
+        .where(VideoPerson.workspace_id == current.workspace_id)
+        .order_by(VideoPerson.name.asc())
+    ).all()
     return [_video_person_to_read(person) for person in people]
 
 
@@ -1494,20 +2187,29 @@ async def create_video_person(
     note: str | None = Form(default=None),
     avatar: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> VideoPersonRead:
     normalized = name.strip()
     if not normalized:
         raise HTTPException(status_code=400, detail="Video person name is required")
-    if db.scalar(select(VideoPerson).where(VideoPerson.name == normalized)):
+    if db.scalar(select(VideoPerson).where(VideoPerson.workspace_id == current.workspace_id, VideoPerson.name == normalized)):
         raise HTTPException(status_code=409, detail="Video person already exists")
     avatar_key = None
     avatar_type = None
     if avatar is not None and avatar.filename:
         try:
-            avatar_key, avatar_type = video_service.save_person_avatar(await avatar.read(), avatar.filename, avatar.content_type)
+            avatar_key, avatar_type = video_service.save_person_avatar(
+                await avatar.read(), avatar.filename, avatar.content_type, current.workspace_id
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    person = VideoPerson(name=normalized, note=note, avatar_object_key=avatar_key, avatar_content_type=avatar_type)
+    person = VideoPerson(
+        workspace_id=current.workspace_id,
+        name=normalized,
+        note=note,
+        avatar_object_key=avatar_key,
+        avatar_content_type=avatar_type,
+    )
     db.add(person)
     db.commit()
     db.refresh(person)
@@ -1521,15 +2223,20 @@ async def update_video_person(
     note: str | None = Form(default=None),
     avatar: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> VideoPersonRead:
-    person = db.get(VideoPerson, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Video person not found")
+    person = _get_workspace_object(db, VideoPerson, person_id, current.workspace_id, "Video person")
     if name is not None:
         normalized = name.strip()
         if not normalized:
             raise HTTPException(status_code=400, detail="Video person name is required")
-        duplicate = db.scalar(select(VideoPerson).where(VideoPerson.name == normalized, VideoPerson.id != person_id))
+        duplicate = db.scalar(
+            select(VideoPerson).where(
+                VideoPerson.workspace_id == current.workspace_id,
+                VideoPerson.name == normalized,
+                VideoPerson.id != person_id,
+            )
+        )
         if duplicate:
             raise HTTPException(status_code=409, detail="Video person already exists")
         person.name = normalized
@@ -1537,7 +2244,9 @@ async def update_video_person(
     old_avatar_key = None
     if avatar is not None and avatar.filename:
         try:
-            avatar_key, avatar_type = video_service.save_person_avatar(await avatar.read(), avatar.filename, avatar.content_type)
+            avatar_key, avatar_type = video_service.save_person_avatar(
+                await avatar.read(), avatar.filename, avatar.content_type, current.workspace_id
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         old_avatar_key = person.avatar_object_key
@@ -1552,10 +2261,12 @@ async def update_video_person(
 
 
 @app.delete("/api/video-people/{person_id}")
-def delete_video_person(person_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    person = db.get(VideoPerson, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Video person not found")
+def delete_video_person(
+    person_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, str]:
+    person = _get_workspace_object(db, VideoPerson, person_id, current.workspace_id, "Video person")
     avatar_key = person.avatar_object_key
     db.delete(person)
     db.commit()
@@ -1565,27 +2276,39 @@ def delete_video_person(person_id: int, db: Session = Depends(get_db)) -> dict[s
 
 
 @app.get("/api/video-people/{person_id}/avatar")
-def get_video_person_avatar(person_id: int, db: Session = Depends(get_db)) -> Response:
-    person = db.get(VideoPerson, person_id)
-    if person is None or not person.avatar_object_key:
+def get_video_person_avatar(
+    person_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> Response:
+    person = _get_workspace_object(db, VideoPerson, person_id, current.workspace_id, "Video person")
+    if not person.avatar_object_key:
         raise HTTPException(status_code=404, detail="Video person avatar not found")
     payload = storage.get_bytes(person.avatar_object_key)
     return Response(content=payload, media_type=person.avatar_content_type or "application/octet-stream")
 
 
 @app.post("/api/videos/upload-sessions", response_model=VideoUploadSessionRead)
-def create_video_upload_session(payload: VideoUploadSessionCreate, db: Session = Depends(get_db)) -> VideoUploadSessionRead:
+def create_video_upload_session(
+    payload: VideoUploadSessionCreate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoUploadSessionRead:
     try:
-        session = video_service.create_upload_session(db, payload)
+        session = video_service.create_upload_session(db, payload, current.workspace_id)
         return _video_session_to_read(session)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/videos/upload-sessions/{session_id}", response_model=VideoUploadSessionRead)
-def get_video_upload_session(session_id: str, db: Session = Depends(get_db)) -> VideoUploadSessionRead:
+def get_video_upload_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoUploadSessionRead:
     session = db.get(VideoUploadSession, session_id)
-    if session is None:
+    if session is None or session.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Video upload session not found")
     return _video_session_to_read(session)
 
@@ -1597,9 +2320,10 @@ async def upload_video_part(
     file: UploadFile = File(...),
     sha256: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> VideoUploadPartRead:
     session = db.get(VideoUploadSession, session_id)
-    if session is None:
+    if session is None or session.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Video upload session not found")
     try:
         part = video_service.put_upload_part(db, session, part_index, await file.read(), sha256)
@@ -1619,15 +2343,16 @@ def complete_video_upload(
     payload: VideoUploadCompleteRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> VideoItemDetail:
     session = db.get(VideoUploadSession, session_id)
-    if session is None:
+    if session is None or session.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Video upload session not found")
     try:
         video = video_service.complete_upload(db, session, payload)
         background_tasks.add_task(video_service.optimize_video_faststart, video.id)
         if payload.generate_zh_subtitles:
-            task = create_task(db, "video_subtitle_generation", "已排队生成中文字幕")
+            task = create_task(db, "video_subtitle_generation", "已排队生成中文字幕", current.workspace_id)
             subtitle_service.prepare_track(db, video.id, task.id)
             background_tasks.add_task(subtitle_service.generate_for_video, video.id, task.id)
             db.refresh(video)
@@ -1637,9 +2362,13 @@ def complete_video_upload(
 
 
 @app.delete("/api/videos/upload-sessions/{session_id}")
-def cancel_video_upload(session_id: str, db: Session = Depends(get_db)) -> dict[str, str]:
+def cancel_video_upload(
+    session_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, str]:
     session = db.get(VideoUploadSession, session_id)
-    if session is None:
+    if session is None or session.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Video upload session not found")
     video_service.cancel_upload(db, session)
     return {"status": "cancelled"}
@@ -1653,9 +2382,10 @@ def list_videos(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=24, ge=1, le=100),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> PaginatedVideos:
-    query = select(VideoItem).order_by(VideoItem.created_at.desc())
-    count_query = select(func.count(VideoItem.id))
+    query = select(VideoItem).where(VideoItem.workspace_id == current.workspace_id).order_by(VideoItem.created_at.desc())
+    count_query = select(func.count(VideoItem.id)).where(VideoItem.workspace_id == current.workspace_id)
     if query_text and query_text.strip():
         keyword = f"%{query_text.strip()}%"
         query = query.where((VideoItem.title.like(keyword)) | (VideoItem.description.like(keyword)) | (VideoItem.filename.like(keyword)))
@@ -1688,20 +2418,25 @@ def list_videos(
 
 
 @app.get("/api/videos/{video_id}", response_model=VideoItemDetail)
-def get_video(video_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> VideoItemDetail:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+def get_video(
+    video_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoItemDetail:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     if video_service.needs_metadata_repair(video):
         background_tasks.add_task(video_service.repair_video_metadata, video.id)
     return _video_to_detail(video)
 
 
 @app.get("/api/videos/{video_id}/subtitles", response_model=list[VideoSubtitleTrackRead])
-def list_video_subtitles(video_id: int, db: Session = Depends(get_db)) -> list[VideoSubtitleTrackRead]:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+def list_video_subtitles(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[VideoSubtitleTrackRead]:
+    _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     tracks = db.scalars(
         select(VideoSubtitleTrack)
         .where(VideoSubtitleTrack.video_id == video_id)
@@ -1715,18 +2450,23 @@ def generate_video_subtitles(
     video_id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> VideoSubtitleTrackRead:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
-    task = create_task(db, "video_subtitle_generation", "已排队生成中文字幕")
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    task = create_task(db, "video_subtitle_generation", "已排队生成中文字幕", current.workspace_id)
     track = subtitle_service.prepare_track(db, video.id, task.id)
     background_tasks.add_task(subtitle_service.generate_for_video, video.id, task.id)
     return _subtitle_to_read(track)
 
 
 @app.post("/api/videos/{video_id}/subtitles/{track_id}/cancel", response_model=VideoSubtitleTrackRead)
-def cancel_video_subtitles(video_id: int, track_id: int, db: Session = Depends(get_db)) -> VideoSubtitleTrackRead:
+def cancel_video_subtitles(
+    video_id: int,
+    track_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoSubtitleTrackRead:
+    _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     try:
         track = subtitle_service.cancel_track_generation(db, video_id, track_id)
     except ValueError as exc:
@@ -1735,7 +2475,13 @@ def cancel_video_subtitles(video_id: int, track_id: int, db: Session = Depends(g
 
 
 @app.get("/api/videos/{video_id}/subtitles/{track_id}.vtt")
-def get_video_subtitle_vtt(video_id: int, track_id: int, db: Session = Depends(get_db)) -> Response:
+def get_video_subtitle_vtt(
+    video_id: int,
+    track_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> Response:
+    _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     track = db.get(VideoSubtitleTrack, track_id)
     if track is None or track.video_id != video_id:
         raise HTTPException(status_code=404, detail="Subtitle track not found")
@@ -1750,7 +2496,9 @@ def update_video_subtitle(
     track_id: int,
     payload: VideoSubtitleTrackUpdate,
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> VideoSubtitleTrackRead:
+    _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     track = db.get(VideoSubtitleTrack, track_id)
     if track is None or track.video_id != video_id:
         raise HTTPException(status_code=404, detail="Subtitle track not found")
@@ -1768,7 +2516,13 @@ def update_video_subtitle(
 
 
 @app.delete("/api/videos/{video_id}/subtitles/{track_id}")
-def delete_video_subtitle(video_id: int, track_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
+def delete_video_subtitle(
+    video_id: int,
+    track_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, str]:
+    _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     track = db.get(VideoSubtitleTrack, track_id)
     if track is None or track.video_id != video_id:
         raise HTTPException(status_code=404, detail="Subtitle track not found")
@@ -1778,10 +2532,13 @@ def delete_video_subtitle(video_id: int, track_id: int, db: Session = Depends(ge
 
 
 @app.patch("/api/videos/{video_id}", response_model=VideoItemDetail)
-def update_video(video_id: int, payload: VideoMetadataUpdate, db: Session = Depends(get_db)) -> VideoItemDetail:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+def update_video(
+    video_id: int,
+    payload: VideoMetadataUpdate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoItemDetail:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     if payload.title is not None:
         video.title = payload.title.strip()
     if payload.description is not None:
@@ -1793,18 +2550,24 @@ def update_video(video_id: int, payload: VideoMetadataUpdate, db: Session = Depe
 
 
 @app.delete("/api/videos/{video_id}")
-def delete_video(video_id: int, db: Session = Depends(get_db)) -> dict[str, str]:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+def delete_video(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, str]:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     video_service.delete_video(db, video)
     return {"status": "deleted"}
 
 
 @app.get("/api/videos/{video_id}/cover")
-def get_video_cover(video_id: int, db: Session = Depends(get_db)) -> Response:
-    video = db.get(VideoItem, video_id)
-    if video is None or not video.cover_object_key:
+def get_video_cover(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> Response:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    if not video.cover_object_key:
         raise HTTPException(status_code=404, detail="Video cover not found")
     payload = storage.get_bytes(video.cover_object_key)
     return Response(content=payload, media_type=video.cover_content_type or "image/jpeg")
@@ -1815,10 +2578,9 @@ async def replace_video_cover(
     video_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> VideoItemDetail:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     try:
         updated = video_service.save_video_cover(db, video, await file.read(), file.filename or "cover.jpg", file.content_type)
         return _video_to_detail(updated)
@@ -1827,13 +2589,20 @@ async def replace_video_cover(
 
 
 @app.post("/api/videos/{video_id}/category-tags", response_model=VideoItemDetail)
-def add_video_category_tag(video_id: int, payload: VideoTagBindCreate, db: Session = Depends(get_db)) -> VideoItemDetail:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+def add_video_category_tag(
+    video_id: int,
+    payload: VideoTagBindCreate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoItemDetail:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     try:
-        tag = db.get(VideoCategoryTag, payload.tag_id) if payload.tag_id else video_service.find_or_create_category_tag(db, payload.name or "")
-        if tag is None:
+        tag = (
+            db.get(VideoCategoryTag, payload.tag_id)
+            if payload.tag_id
+            else video_service.find_or_create_category_tag(db, payload.name or "", current.workspace_id)
+        )
+        if tag is None or tag.workspace_id != current.workspace_id:
             raise HTTPException(status_code=404, detail="Video category tag not found")
         existing = db.scalar(select(VideoItemCategoryTag).where(VideoItemCategoryTag.video_id == video.id, VideoItemCategoryTag.tag_id == tag.id))
         if existing is None:
@@ -1846,10 +2615,14 @@ def add_video_category_tag(video_id: int, payload: VideoTagBindCreate, db: Sessi
 
 
 @app.delete("/api/videos/{video_id}/category-tags/{tag_id}", response_model=VideoItemDetail)
-def remove_video_category_tag(video_id: int, tag_id: int, db: Session = Depends(get_db)) -> VideoItemDetail:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+def remove_video_category_tag(
+    video_id: int,
+    tag_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoItemDetail:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    _get_workspace_object(db, VideoCategoryTag, tag_id, current.workspace_id, "Video category tag")
     link = db.scalar(select(VideoItemCategoryTag).where(VideoItemCategoryTag.video_id == video_id, VideoItemCategoryTag.tag_id == tag_id))
     if link is None:
         raise HTTPException(status_code=404, detail="Video category tag link not found")
@@ -1860,13 +2633,14 @@ def remove_video_category_tag(video_id: int, tag_id: int, db: Session = Depends(
 
 
 @app.post("/api/videos/{video_id}/people", response_model=VideoItemDetail)
-def add_video_person(video_id: int, payload: VideoPersonBindCreate, db: Session = Depends(get_db)) -> VideoItemDetail:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
-    person = db.get(VideoPerson, payload.person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Video person not found")
+def add_video_person(
+    video_id: int,
+    payload: VideoPersonBindCreate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoItemDetail:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    person = _get_workspace_object(db, VideoPerson, payload.person_id, current.workspace_id, "Video person")
     existing = db.scalar(select(VideoItemPerson).where(VideoItemPerson.video_id == video.id, VideoItemPerson.person_id == person.id))
     if existing is None:
         db.add(VideoItemPerson(video_id=video.id, person_id=person.id))
@@ -1876,10 +2650,14 @@ def add_video_person(video_id: int, payload: VideoPersonBindCreate, db: Session 
 
 
 @app.delete("/api/videos/{video_id}/people/{person_id}", response_model=VideoItemDetail)
-def remove_video_person(video_id: int, person_id: int, db: Session = Depends(get_db)) -> VideoItemDetail:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+def remove_video_person(
+    video_id: int,
+    person_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoItemDetail:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    _get_workspace_object(db, VideoPerson, person_id, current.workspace_id, "Video person")
     link = db.scalar(select(VideoItemPerson).where(VideoItemPerson.video_id == video_id, VideoItemPerson.person_id == person_id))
     if link is None:
         raise HTTPException(status_code=404, detail="Video person link not found")
@@ -1890,10 +2668,13 @@ def remove_video_person(video_id: int, person_id: int, db: Session = Depends(get
 
 
 @app.get("/api/videos/{video_id}/stream")
-def stream_video(video_id: int, request: Request, db: Session = Depends(get_db)) -> StreamingResponse:
-    video = db.get(VideoItem, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+def stream_video(
+    video_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> StreamingResponse:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
     stat = storage.stat_object(video.object_key)
     size = stat.size
     range_tuple = _parse_range_header(request.headers.get("range"), size)
@@ -1927,6 +2708,7 @@ def stream_video(video_id: int, request: Request, db: Session = Depends(get_db))
 def get_tag_statistics(
     is_system: bool | None = Query(default=None, description="Filter by system tag status"),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> list[TagStatistics]:
     """Get photo count statistics for each tag."""
     query = (
@@ -1937,6 +2719,7 @@ def get_tag_statistics(
             func.count(GalleryPhotoTag.gallery_photo_id).label("photo_count"),
         )
         .outerjoin(GalleryPhotoTag, Tag.id == GalleryPhotoTag.tag_id)
+        .where(Tag.workspace_id == current.workspace_id)
         .group_by(Tag.id)
     )
     if is_system is not None:
@@ -1959,9 +2742,14 @@ def get_upload_history(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> list[UploadHistoryRead]:
     """Get upload history records."""
-    query = select(UploadHistory).order_by(UploadHistory.created_at.desc())
+    query = (
+        select(UploadHistory)
+        .where(UploadHistory.workspace_id == current.workspace_id)
+        .order_by(UploadHistory.created_at.desc())
+    )
     if upload_type:
         query = query.where(UploadHistory.upload_type == upload_type)
     query = query.offset(offset).limit(limit)
@@ -1972,20 +2760,27 @@ def get_upload_history(
 @app.get("/api/statistics/upload-summary")
 def get_upload_summary(
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> dict:
     """Get summary statistics of uploads."""
-    total_uploads = db.scalar(select(func.count(UploadHistory.id)))
-    total_photos = db.scalar(select(func.sum(UploadHistory.total_count))) or 0
-    total_success = db.scalar(select(func.sum(UploadHistory.success_count))) or 0
-    total_duplicates = db.scalar(select(func.sum(UploadHistory.duplicate_count))) or 0
+    total_uploads = db.scalar(select(func.count(UploadHistory.id)).where(UploadHistory.workspace_id == current.workspace_id))
+    total_photos = db.scalar(select(func.sum(UploadHistory.total_count)).where(UploadHistory.workspace_id == current.workspace_id)) or 0
+    total_success = db.scalar(select(func.sum(UploadHistory.success_count)).where(UploadHistory.workspace_id == current.workspace_id)) or 0
+    total_duplicates = db.scalar(select(func.sum(UploadHistory.duplicate_count)).where(UploadHistory.workspace_id == current.workspace_id)) or 0
     
     by_type = {}
     for upload_type in ["gallery", "rich"]:
         count = db.scalar(
-            select(func.count(UploadHistory.id)).where(UploadHistory.upload_type == upload_type)
+            select(func.count(UploadHistory.id)).where(
+                UploadHistory.workspace_id == current.workspace_id,
+                UploadHistory.upload_type == upload_type,
+            )
         )
         photos = db.scalar(
-            select(func.sum(UploadHistory.total_count)).where(UploadHistory.upload_type == upload_type)
+            select(func.sum(UploadHistory.total_count)).where(
+                UploadHistory.workspace_id == current.workspace_id,
+                UploadHistory.upload_type == upload_type,
+            )
         ) or 0
         by_type[upload_type] = {"count": count, "photos": photos}
     
@@ -2002,6 +2797,7 @@ def get_upload_summary(
 def get_person_statistics(
     is_unknown: bool | None = Query(default=None, description="Filter by unknown person status"),
     db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
 ) -> list[PersonStatistics]:
     """Get photo count statistics for each person."""
     # Create subqueries for counts to avoid cartesian product inflation
@@ -2010,6 +2806,8 @@ def get_person_statistics(
             GalleryPhotoPersonTag.person_id,
             func.count(GalleryPhotoPersonTag.gallery_photo_id).label("count")
         )
+        .join(GalleryPhoto, GalleryPhoto.id == GalleryPhotoPersonTag.gallery_photo_id)
+        .where(GalleryPhoto.workspace_id == current.workspace_id)
         .group_by(GalleryPhotoPersonTag.person_id)
         .subquery()
     )
@@ -2019,6 +2817,7 @@ def get_person_statistics(
             SamplePhoto.person_id,
             func.count(SamplePhoto.id).label("count")
         )
+        .where(SamplePhoto.workspace_id == current.workspace_id)
         .group_by(SamplePhoto.person_id)
         .subquery()
     )
@@ -2034,6 +2833,7 @@ def get_person_statistics(
         )
         .outerjoin(photo_count_sq, Person.id == photo_count_sq.c.person_id)
         .outerjoin(sample_count_sq, Person.id == sample_count_sq.c.person_id)
+        .where(Person.workspace_id == current.workspace_id)
     )
     
     if is_unknown is not None:

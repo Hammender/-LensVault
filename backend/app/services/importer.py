@@ -64,23 +64,24 @@ class PictureService:
         self.settings = settings or get_settings()
         self.rich_text_tag_name = "图文"
 
-    def _build_object_key(self, prefix: str, filename: str) -> str:
+    def _build_object_key(self, workspace_id: int | None, prefix: str, filename: str) -> str:
         suffix = Path(filename).suffix.lower()
-        return f"{prefix}/{uuid4().hex}{suffix}"
+        tenant_prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""
+        return f"{tenant_prefix}{prefix}/{uuid4().hex}{suffix}"
 
-    def _find_or_create_tag(self, db: Session, name: str) -> Tag:
+    def _find_or_create_tag(self, db: Session, name: str, workspace_id: int | None) -> Tag:
         normalized = name.strip()
-        tag = db.scalar(select(Tag).where(Tag.name == normalized))
+        tag = db.scalar(select(Tag).where(Tag.workspace_id == workspace_id, Tag.name == normalized))
         if tag is None:
-            tag = Tag(name=normalized)
+            tag = Tag(workspace_id=workspace_id, name=normalized)
             db.add(tag)
             db.flush()
         return tag
 
-    def ensure_system_tags(self, db: Session) -> None:
-        rich_tag = db.scalar(select(Tag).where(Tag.name == self.rich_text_tag_name))
+    def ensure_system_tags(self, db: Session, workspace_id: int | None) -> None:
+        rich_tag = db.scalar(select(Tag).where(Tag.workspace_id == workspace_id, Tag.name == self.rich_text_tag_name))
         if rich_tag is None:
-            db.add(Tag(name=self.rich_text_tag_name, is_system=True))
+            db.add(Tag(workspace_id=workspace_id, name=self.rich_text_tag_name, is_system=True))
             db.commit()
             logger.info("Created system tag name=%s", self.rich_text_tag_name)
             return
@@ -128,15 +129,15 @@ class PictureService:
             link.tag
             self._ensure_gallery_tag(db, gallery_photo_id, link.tag, source="person")
 
-    def _next_unknown_serial(self, db: Session) -> int:
-        # Serial must be globally monotonic even after unknown persons are renamed to known.
-        current = db.scalar(select(func.max(Person.unknown_serial)))
+    def _next_unknown_serial(self, db: Session, workspace_id: int | None) -> int:
+        current = db.scalar(select(func.max(Person.unknown_serial)).where(Person.workspace_id == workspace_id))
         return int(current or 0) + 1
 
-    def create_unknown_person(self, db: Session) -> Person:
-        serial = self._next_unknown_serial(db)
+    def create_unknown_person(self, db: Session, workspace_id: int | None) -> Person:
+        serial = self._next_unknown_serial(db, workspace_id)
         display_name = f"未知人物-{serial:04d}"
         person = Person(
+            workspace_id=workspace_id,
             name=display_name,
             display_name=display_name,
             is_unknown=True,
@@ -160,7 +161,9 @@ class PictureService:
                 content_type,
             )
             sha256 = hashlib.sha256(payload).hexdigest()
-            duplicate = db.scalar(select(SamplePhoto).where(SamplePhoto.sha256 == sha256))
+            duplicate = db.scalar(
+                select(SamplePhoto).where(SamplePhoto.workspace_id == person.workspace_id, SamplePhoto.sha256 == sha256)
+            )
             if duplicate is not None:
                 logger.info(
                     "Sample duplicate skipped person_id=%s filename=%s sha256=%s duplicate_sample_id=%s",
@@ -171,7 +174,7 @@ class PictureService:
                 )
                 continue
             width, height, taken_at = parse_image_metadata(payload)
-            object_key = self._build_object_key("samples", filename)
+            object_key = self._build_object_key(person.workspace_id, "samples", filename)
             self.storage.put_bytes(object_key, payload, content_type)
             logger.debug(
                 "Stored sample object person_id=%s filename=%s object_key=%s size=%sx%s",
@@ -183,6 +186,7 @@ class PictureService:
             )
 
             sample = SamplePhoto(
+                workspace_id=person.workspace_id,
                 person_id=person.id,
                 filename=filename,
                 content_type=content_type,
@@ -231,6 +235,7 @@ class PictureService:
 
             detected = detected_faces[0]
             face = FaceRecord(
+                workspace_id=person.workspace_id,
                 sample_photo_id=sample.id,
                 bbox_left=detected.bbox[0],
                 bbox_top=detected.bbox[1],
@@ -274,6 +279,7 @@ class PictureService:
         tag_names: list[str] | None = None,
         is_rich_text: bool = False,
         rich_text: str | None = None,
+        workspace_id: int | None = None,
     ) -> tuple[GalleryPhoto, GalleryImportSummary]:
         summary = GalleryImportSummary()
         logger.info(
@@ -284,7 +290,9 @@ class PictureService:
             len(tag_names or []),
         )
         sha256 = hashlib.sha256(payload).hexdigest()
-        existing = db.scalar(select(GalleryPhoto).where(GalleryPhoto.sha256 == sha256))
+        existing = db.scalar(
+            select(GalleryPhoto).where(GalleryPhoto.workspace_id == workspace_id, GalleryPhoto.sha256 == sha256)
+        )
         if existing is not None:
             summary.duplicated = 1
             logger.info(
@@ -296,7 +304,7 @@ class PictureService:
             return existing, summary
 
         width, height, taken_at = parse_image_metadata(payload)
-        object_key = self._build_object_key("gallery", filename)
+        object_key = self._build_object_key(workspace_id, "gallery", filename)
         self.storage.put_bytes(object_key, payload, content_type)
         logger.debug(
             "Stored gallery object filename=%s object_key=%s size=%sx%s",
@@ -307,6 +315,7 @@ class PictureService:
         )
 
         photo = GalleryPhoto(
+            workspace_id=workspace_id,
             filename=filename,
             content_type=content_type,
             sha256=sha256,
@@ -322,7 +331,7 @@ class PictureService:
         db.flush()
 
         if is_rich_text:
-            rich_tag = self._find_or_create_tag(db, self.rich_text_tag_name)
+            rich_tag = self._find_or_create_tag(db, self.rich_text_tag_name, workspace_id)
             rich_tag.is_system = True
             self._ensure_gallery_tag(db, photo.id, rich_tag, source="system")
             if not photo.rich_text:
@@ -339,7 +348,7 @@ class PictureService:
         for tag_name in tag_names or []:
             if not tag_name.strip():
                 continue
-            tag = self._find_or_create_tag(db, tag_name)
+            tag = self._find_or_create_tag(db, tag_name, workspace_id)
             self._ensure_gallery_tag(db, photo.id, tag, source="manual")
         if tag_names:
             logger.info("Gallery manual tags applied photo_id=%s tags=%d", photo.id, len(tag_names))
@@ -363,30 +372,38 @@ class PictureService:
                         self.settings.milvus_known_collection,
                         detected.embedding,
                     )
-                    if matched_score is not None and matched_score >= self.settings.face_recognition_threshold and matched_person_id is not None:
+                    matched_person = None
+                    if matched_person_id is not None:
+                        matched_person = db.scalar(select(Person).where(Person.id == matched_person_id, Person.workspace_id == workspace_id))
+                    if (
+                        matched_score is not None
+                        and matched_score >= self.settings.face_recognition_threshold
+                        and matched_person is not None
+                    ):
                         face = FaceRecord(
+                            workspace_id=workspace_id,
                             gallery_photo_id=photo.id,
                             bbox_left=detected.bbox[0],
                             bbox_top=detected.bbox[1],
                             bbox_right=detected.bbox[2],
                             bbox_bottom=detected.bbox[3],
                             detection_score=detected.score,
-                            matched_person_id=matched_person_id,
+                            matched_person_id=matched_person.id,
                             match_score=matched_score,
                             needs_review=False,
                             vector_collection="known",
                         )
                         db.add(face)
                         db.flush()
-                        self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, matched_person_id, detected.embedding)
-                        self._ensure_gallery_person_tag(db, photo.id, matched_person_id, "auto")
-                        self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person_id)
+                        self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, matched_person.id, detected.embedding)
+                        self._ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
+                        self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
                         summary.known_matches += 1
                         logger.info(
                             "Gallery known face matched photo_id=%s face_id=%s person_id=%s score=%.4f",
                             photo.id,
                             face.id,
-                            matched_person_id,
+                            matched_person.id,
                             matched_score,
                         )
                         continue
@@ -396,9 +413,9 @@ class PictureService:
                         detected.embedding,
                     )
                     if unknown_score is not None and unknown_score >= self.settings.face_unknown_match_threshold and unknown_person_id is not None:
-                        person = db.get(Person, unknown_person_id)
+                        person = db.scalar(select(Person).where(Person.id == unknown_person_id, Person.workspace_id == workspace_id))
                         if person is None:
-                            person = self.create_unknown_person(db)
+                            person = self.create_unknown_person(db, workspace_id)
                             summary.unknown_created += 1
                             logger.warning(
                                 "Unknown vector hit missing person, created new person old_person_id=%s new_person_id=%s score=%.4f",
@@ -415,7 +432,7 @@ class PictureService:
                                 unknown_score,
                             )
                     else:
-                        person = self.create_unknown_person(db)
+                        person = self.create_unknown_person(db, workspace_id)
                         summary.unknown_created += 1
                         logger.info(
                             "Gallery unknown created photo_id=%s person_id=%s unknown_score=%s",
@@ -425,6 +442,7 @@ class PictureService:
                         )
 
                     face = FaceRecord(
+                        workspace_id=workspace_id,
                         gallery_photo_id=photo.id,
                         bbox_left=detected.bbox[0],
                         bbox_top=detected.bbox[1],
@@ -468,7 +486,9 @@ class PictureService:
         new_name = new_name.strip()
         if not new_name:
             raise ValueError("人物名称不能为空")
-        existing = db.scalar(select(Person).where(Person.name == new_name, Person.id != person.id))
+        existing = db.scalar(
+            select(Person).where(Person.workspace_id == person.workspace_id, Person.name == new_name, Person.id != person.id)
+        )
         if existing is not None:
             raise ValueError("人物名称已存在")
 
@@ -645,11 +665,12 @@ class PictureService:
             tags.append(link.tag)
         return sorted(tags, key=lambda item: item.name.lower())
 
-    def re_recognize_unknown_gallery_photos(self, db: Session) -> dict[str, int]:
+    def re_recognize_unknown_gallery_photos(self, db: Session, workspace_id: int | None) -> dict[str, int]:
         photo_ids = db.scalars(
             select(func.distinct(GalleryPhotoPersonTag.gallery_photo_id))
+            .join(GalleryPhoto, GalleryPhoto.id == GalleryPhotoPersonTag.gallery_photo_id)
             .join(Person, Person.id == GalleryPhotoPersonTag.person_id)
-            .where(Person.is_unknown.is_(True))
+            .where(GalleryPhoto.workspace_id == workspace_id, Person.workspace_id == workspace_id, Person.is_unknown.is_(True))
             .order_by(GalleryPhotoPersonTag.gallery_photo_id.asc())
         ).all()
         succeeded = 0
@@ -718,30 +739,40 @@ class PictureService:
                         self.settings.milvus_known_collection,
                         detected.embedding,
                     )
-                    if matched_score is not None and matched_score >= self.settings.face_recognition_threshold and matched_person_id is not None:
+                    matched_person = None
+                    if matched_person_id is not None:
+                        matched_person = db.scalar(
+                            select(Person).where(Person.id == matched_person_id, Person.workspace_id == photo.workspace_id)
+                        )
+                    if (
+                        matched_score is not None
+                        and matched_score >= self.settings.face_recognition_threshold
+                        and matched_person is not None
+                    ):
                         face = FaceRecord(
+                            workspace_id=photo.workspace_id,
                             gallery_photo_id=photo.id,
                             bbox_left=detected.bbox[0],
                             bbox_top=detected.bbox[1],
                             bbox_right=detected.bbox[2],
                             bbox_bottom=detected.bbox[3],
                             detection_score=detected.score,
-                            matched_person_id=matched_person_id,
+                            matched_person_id=matched_person.id,
                             match_score=matched_score,
                             needs_review=False,
                             vector_collection="known",
                         )
                         db.add(face)
                         db.flush()
-                        self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, matched_person_id, detected.embedding)
-                        self._ensure_gallery_person_tag(db, photo.id, matched_person_id, "auto")
-                        self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person_id)
+                        self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, matched_person.id, detected.embedding)
+                        self._ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
+                        self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
                         summary.known_matches += 1
                         logger.info(
                             "Re-recognize known face matched photo_id=%s face_id=%s person_id=%s score=%.4f",
                             photo.id,
                             face.id,
-                            matched_person_id,
+                            matched_person.id,
                             matched_score,
                         )
                         continue
@@ -751,17 +782,20 @@ class PictureService:
                         detected.embedding,
                     )
                     if unknown_score is not None and unknown_score >= self.settings.face_unknown_match_threshold and unknown_person_id is not None:
-                        person = db.get(Person, unknown_person_id)
+                        person = db.scalar(
+                            select(Person).where(Person.id == unknown_person_id, Person.workspace_id == photo.workspace_id)
+                        )
                         if person is None:
-                            person = self.create_unknown_person(db)
+                            person = self.create_unknown_person(db, photo.workspace_id)
                             summary.unknown_created += 1
                         else:
                             summary.unknown_reused += 1
                     else:
-                        person = self.create_unknown_person(db)
+                        person = self.create_unknown_person(db, photo.workspace_id)
                         summary.unknown_created += 1
 
                     face = FaceRecord(
+                        workspace_id=photo.workspace_id,
                         gallery_photo_id=photo.id,
                         bbox_left=detected.bbox[0],
                         bbox_top=detected.bbox[1],
@@ -805,7 +839,7 @@ class PictureService:
         )
         return photo
 
-    def import_persons_from_zip(self, db: Session, zip_bytes: bytes, progress_callback=None) -> dict:
+    def import_persons_from_zip(self, db: Session, zip_bytes: bytes, workspace_id: int | None, progress_callback=None) -> dict:
         logger.info("Start person import from zip bytes=%d", len(zip_bytes))
         result = {"created_persons": 0, "existing_persons": 0, "added_samples": 0, "skipped_samples": 0, "tags_added": 0}
 
@@ -817,10 +851,11 @@ class PictureService:
             processed_samples = 0
             for person_index, person_data in enumerate(manifest["persons"]):
                 person_name = person_data["name"].strip()
-                existing = db.scalar(select(Person).where(Person.name == person_name))
+                existing = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
 
                 if existing is None:
                     person = Person(
+                        workspace_id=workspace_id,
                         name=person_name,
                         display_name=person_data.get("display_name", person_name),
                         note=person_data.get("note"),
@@ -836,7 +871,7 @@ class PictureService:
                     logger.info("Matched existing person name=%s person_id=%s", person_name, person.id)
 
                 for tag_name in person_data.get("tags", []):
-                    tag = self._find_or_create_tag(db, tag_name.strip())
+                    tag = self._find_or_create_tag(db, tag_name.strip(), workspace_id)
                     existing_link = db.scalar(
                         select(PersonTag).where(PersonTag.person_id == person.id, PersonTag.tag_id == tag.id)
                     )
@@ -848,7 +883,9 @@ class PictureService:
                 samples_dir = f"samples/{person_name}"
                 for sample_data in person_data.get("samples", []):
                     sha256 = sample_data["sha256"]
-                    duplicate = db.scalar(select(SamplePhoto).where(SamplePhoto.sha256 == sha256))
+                    duplicate = db.scalar(
+                        select(SamplePhoto).where(SamplePhoto.workspace_id == workspace_id, SamplePhoto.sha256 == sha256)
+                    )
                     if duplicate is not None:
                         result["skipped_samples"] += 1
                         processed_samples += 1
@@ -879,9 +916,10 @@ class PictureService:
                         except (ValueError, TypeError):
                             pass
 
-                    object_key = self._build_object_key("samples", filename)
+                    object_key = self._build_object_key(workspace_id, "samples", filename)
                     self.storage.put_bytes(object_key, payload, content_type)
                     sample_photo = SamplePhoto(
+                        workspace_id=workspace_id,
                         person_id=person.id,
                         filename=filename,
                         content_type=content_type,
@@ -927,6 +965,7 @@ class PictureService:
 
                     detected = detected_faces[0]
                     face = FaceRecord(
+                        workspace_id=workspace_id,
                         sample_photo_id=sample_photo.id,
                         bbox_left=detected.bbox[0],
                         bbox_top=detected.bbox[1],
@@ -961,7 +1000,7 @@ class PictureService:
         )
         return result
 
-    def import_gallery_from_zip(self, db: Session, zip_bytes: bytes, progress_callback=None) -> dict:
+    def import_gallery_from_zip(self, db: Session, zip_bytes: bytes, workspace_id: int | None, progress_callback=None) -> dict:
         logger.info("Start gallery import from zip bytes=%d", len(zip_bytes))
         result = {
             "added_photos": 0,
@@ -1006,7 +1045,9 @@ class PictureService:
                     continue
 
                 sha256 = photo_data.get("sha256") or hashlib.sha256(payload).hexdigest()
-                photo = db.scalar(select(GalleryPhoto).where(GalleryPhoto.sha256 == sha256))
+                photo = db.scalar(
+                    select(GalleryPhoto).where(GalleryPhoto.workspace_id == workspace_id, GalleryPhoto.sha256 == sha256)
+                )
                 is_existing = photo is not None
                 tag_names = [
                     str(name).strip()
@@ -1024,6 +1065,7 @@ class PictureService:
                         tag_names,
                         bool(photo_data.get("is_rich_text")),
                         photo_data.get("rich_text"),
+                        workspace_id,
                     )
                     if summary.duplicated:
                         result["updated_existing"] += 1
@@ -1039,12 +1081,12 @@ class PictureService:
                         photo.rich_text = str(rich_text)
                     if photo_data.get("ocr_status"):
                         photo.ocr_status = str(photo_data.get("ocr_status"))
-                    rich_tag = self._find_or_create_tag(db, self.rich_text_tag_name)
+                    rich_tag = self._find_or_create_tag(db, self.rich_text_tag_name, workspace_id)
                     rich_tag.is_system = True
                     self._ensure_gallery_tag(db, photo.id, rich_tag, source="system")
 
                 for tag_name in tag_names:
-                    tag = self._find_or_create_tag(db, tag_name)
+                    tag = self._find_or_create_tag(db, tag_name, workspace_id)
                     existing_tag_link = db.scalar(
                         select(GalleryPhotoTag).where(
                             GalleryPhotoTag.gallery_photo_id == photo.id,
@@ -1061,11 +1103,12 @@ class PictureService:
                     person_name = str(person_data.get("name") or person_data.get("display_name") or "").strip()
                     if not person_name:
                         continue
-                    person = db.scalar(select(Person).where(Person.name == person_name))
+                    person = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
                     manifest_is_unknown = bool(person_data.get("is_unknown"))
                     if person is None:
-                        unknown_serial = self._next_unknown_serial(db) if manifest_is_unknown else None
+                        unknown_serial = self._next_unknown_serial(db, workspace_id) if manifest_is_unknown else None
                         person = Person(
+                            workspace_id=workspace_id,
                             name=person_name,
                             display_name=str(person_data.get("display_name") or person_name).strip() or person_name,
                             note=None,
@@ -1078,7 +1121,7 @@ class PictureService:
                         person.display_name = str(person_data.get("display_name") or person.display_name).strip() or person.display_name
                         person.is_unknown = manifest_is_unknown
                         if person.is_unknown and person.unknown_serial is None:
-                            person.unknown_serial = self._next_unknown_serial(db)
+                            person.unknown_serial = self._next_unknown_serial(db, workspace_id)
                     existing_person_link = db.scalar(
                         select(GalleryPhotoPersonTag).where(
                             GalleryPhotoPersonTag.gallery_photo_id == photo.id,

@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from app.models import Task
 
 
-def create_task(db: Session, kind: str, message: str | None = None) -> Task:
-    task = Task(id=uuid4().hex, kind=kind, status="pending", message=message, progress=0.0)
+def create_task(db: Session, kind: str, message: str | None = None, workspace_id: int | None = None) -> Task:
+    task = Task(id=uuid4().hex, workspace_id=workspace_id, kind=kind, status="pending", message=message, progress=0.0)
     db.add(task)
     db.commit()
     db.refresh(task)

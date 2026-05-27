@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///E:/dockerVolums/picture-show/sqllite/app.db"
     data_dir: Path = Path("E:/dockerVolums/picture-show/sqllite")
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    auth_secret_key: str = "pictureshow-local-dev-secret-change-me"
+    access_token_expire_minutes: int = 7 * 24 * 60
 
     minio_endpoint: str = "127.0.0.1:9000"
     minio_access_key: str = "pictureshow"
