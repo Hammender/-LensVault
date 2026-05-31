@@ -1,6 +1,7 @@
 .bili-player-container {
   position: relative;
   width: 100%;
+  max-height: inherit;
   aspect-ratio: 16 / 9;
   background: #000;
   overflow: hidden;

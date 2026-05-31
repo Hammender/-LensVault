@@ -5,7 +5,9 @@ from datetime import datetime
 import json
 from io import BytesIO
 import logging
+from pathlib import Path
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +55,8 @@ from app.schemas import (
     GalleryPhotoPersonTagCreate,
     GalleryPhotoTagCreate,
     GalleryTagRead,
+    EmbeddedSubtitleStreamRead,
+    ImportSubtitleFromVideoRequest,
     LoginRequest,
     PaginatedGalleryPhotos,
     PersonBatchDeleteRequest,
@@ -62,6 +66,7 @@ from app.schemas import (
     PersonStatistics,
     PersonTagCreate,
     PersonUpdate,
+    RegisterRequest,
     SamplePhotoRead,
     SubtitleJobRead,
     SubtitleServiceLogs,
@@ -255,6 +260,99 @@ def _assign_legacy_data_to_workspace(db: Session, workspace_id: int) -> None:
     db.commit()
 
 
+def _legacy_workspace(db: Session) -> Workspace | None:
+    return db.get(Workspace, 1)
+
+
+def _assign_null_workspace_data_to_legacy_workspace(db: Session) -> None:
+    workspace = _legacy_workspace(db)
+    if workspace is None:
+        null_counts = {
+            model.__tablename__: db.query(model).filter(model.workspace_id.is_(None)).count()
+            for model in _legacy_tenant_models()
+        }
+        pending = {name: count for name, count in null_counts.items() if count}
+        if pending:
+            logger.error("Legacy workspace id=1 is missing; cannot backfill workspace_id for legacy rows counts=%s", pending)
+        return
+
+    updated: dict[str, int] = {}
+    for model in _legacy_tenant_models():
+        count = db.query(model).filter(model.workspace_id.is_(None)).update({"workspace_id": workspace.id}, synchronize_session=False)
+        if count:
+            updated[model.__tablename__] = count
+    if updated:
+        db.commit()
+        logger.warning("Assigned legacy tenant rows to workspace_id=%s counts=%s", workspace.id, updated)
+    else:
+        db.rollback()
+
+
+def _legacy_object_target_key(workspace_id: int, prefix: str, object_key: str) -> str:
+    suffix = Path(object_key).suffix.lower()
+    return f"workspaces/{workspace_id}/{prefix}/{uuid4().hex}{suffix}"
+
+
+def _migrate_legacy_object_key(db: Session, item, attribute: str, prefix: str) -> bool:
+    object_key = getattr(item, attribute)
+    workspace_id = getattr(item, "workspace_id", None)
+    if not object_key or workspace_id is None or object_key.startswith("workspaces/"):
+        return False
+    target_key = _legacy_object_target_key(workspace_id, prefix, object_key)
+    try:
+        storage.copy_object(object_key, target_key)
+        storage.stat_object(target_key)
+    except Exception:
+        logger.exception(
+            "Failed to copy legacy object table=%s id=%s attribute=%s source=%s target=%s",
+            item.__tablename__,
+            getattr(item, "id", None),
+            attribute,
+            object_key,
+            target_key,
+        )
+        return False
+    setattr(item, attribute, target_key)
+    db.add(item)
+    logger.info(
+        "Migrated legacy object table=%s id=%s attribute=%s source=%s target=%s",
+        item.__tablename__,
+        getattr(item, "id", None),
+        attribute,
+        object_key,
+        target_key,
+    )
+    return True
+
+
+def _migrate_legacy_minio_objects(db: Session) -> None:
+    migrated: dict[str, int] = {}
+    specs = (
+        (SamplePhoto, "object_key", "samples"),
+        (GalleryPhoto, "object_key", "gallery"),
+        (VideoItem, "object_key", "videos/library"),
+        (VideoItem, "cover_object_key", "videos/covers"),
+        (VideoPerson, "avatar_object_key", "videos/people"),
+    )
+    for model, attribute, prefix in specs:
+        rows = db.scalars(
+            select(model).where(
+                model.workspace_id.is_not(None),
+                getattr(model, attribute).is_not(None),
+                getattr(model, attribute).not_like("workspaces/%"),
+            )
+        ).all()
+        for item in rows:
+            if _migrate_legacy_object_key(db, item, attribute, prefix):
+                key = f"{model.__tablename__}.{attribute}"
+                migrated[key] = migrated.get(key, 0) + 1
+                db.commit()
+            else:
+                db.rollback()
+    if migrated:
+        logger.warning("Migrated legacy MinIO objects to workspace-scoped keys counts=%s", migrated)
+
+
 def require_context(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -409,6 +507,8 @@ def on_startup() -> None:
     )
     db = SessionLocal()
     try:
+        _assign_null_workspace_data_to_legacy_workspace(db)
+        _migrate_legacy_minio_objects(db)
         for workspace in db.scalars(select(Workspace)).all():
             picture_service.ensure_system_tags(db, workspace.id)
         recovered = fail_incomplete_tasks(db, "gallery_import")
@@ -615,6 +715,50 @@ def _iter_minio_response(response, chunk_size: int = 1024 * 1024):
     finally:
         response.close()
         response.release_conn()
+
+
+def _content_disposition(disposition: str, filename: str) -> str:
+    original = filename or "file"
+    fallback = "".join(ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\", ";"} else "_" for ch in original)
+    fallback = fallback.strip(" ._") or "file"
+    encoded = quote(original, safe="")
+    return f'{disposition}; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
+
+
+def _stream_storage_object(
+    request: Request,
+    object_key: str,
+    filename: str,
+    content_type: str | None,
+) -> StreamingResponse:
+    stat = storage.stat_object(object_key)
+    size = stat.size
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": _content_disposition("inline", filename),
+    }
+    media_type = content_type or "application/octet-stream"
+    range_tuple = _parse_range_header(request.headers.get("range"), size)
+    if range_tuple is None:
+        response = storage.get_stream(object_key)
+        headers["Content-Length"] = str(size)
+        return StreamingResponse(_iter_minio_response(response), media_type=media_type, headers=headers)
+
+    start, end = range_tuple
+    length = end - start + 1
+    response = storage.get_stream(object_key, offset=start, length=length)
+    headers.update(
+        {
+            "Content-Range": f"bytes {start}-{end}/{size}",
+            "Content-Length": str(length),
+        }
+    )
+    return StreamingResponse(
+        _iter_minio_response(response),
+        status_code=206,
+        media_type=media_type,
+        headers=headers,
+    )
 
 
 def _sample_photo_to_read(photo: SamplePhoto) -> SamplePhotoRead:
@@ -1022,6 +1166,30 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> AuthSession:
         raise HTTPException(status_code=401, detail="用户名或密码不正确")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="账号已停用")
+    return _auth_session(db, user)
+
+
+@app.post("/api/auth/register", response_model=AuthSession)
+def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> AuthSession:
+    if db.scalar(select(func.count(User.id))) == 0:
+        raise HTTPException(status_code=409, detail="系统尚未初始化，请先创建管理员")
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="用户名不能为空")
+    if db.scalar(select(User).where(User.username == username)) is not None:
+        raise HTTPException(status_code=409, detail="用户名已存在")
+    display_name = (payload.display_name or username).strip() or username
+    user = User(username=username, display_name=display_name, password_hash=hash_password(payload.password), is_admin=False, is_active=True)
+    db.add(user)
+    db.flush()
+    private_workspace = Workspace(name=f"{display_name}的私人空间", kind="private", owner_user_id=user.id)
+    db.add(private_workspace)
+    db.flush()
+    db.add(WorkspaceMember(workspace_id=private_workspace.id, user_id=user.id, role="owner"))
+    db.commit()
+    db.refresh(user)
+    picture_service.ensure_system_tags(db, private_workspace.id)
+    db.refresh(user)
     return _auth_session(db, user)
 
 
@@ -1539,15 +1707,14 @@ def delete_person_sample(
 def get_sample_original(
     person_id: int,
     sample_photo_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> StreamingResponse:
     photo = db.get(SamplePhoto, sample_photo_id)
     if photo is None or photo.workspace_id != current.workspace_id or photo.person_id != person_id:
         raise HTTPException(status_code=404, detail="Sample photo not found")
-    payload = storage.get_bytes(photo.object_key)
-    headers = {"Content-Disposition": f'inline; filename="{photo.filename}"'}
-    return StreamingResponse(BytesIO(payload), media_type=photo.content_type or "application/octet-stream", headers=headers)
+    return _stream_storage_object(request, photo.object_key, photo.filename, photo.content_type)
 
 
 @app.get("/api/persons/{person_id}/samples/{sample_photo_id}/thumbnail")
@@ -1919,13 +2086,12 @@ def delete_gallery_photo(
 @app.get("/api/gallery/photos/{photo_id}/original")
 def get_gallery_original(
     photo_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> StreamingResponse:
     photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
-    payload = storage.get_bytes(photo.object_key)
-    headers = {"Content-Disposition": f'inline; filename="{photo.filename}"'}
-    return StreamingResponse(BytesIO(payload), media_type=photo.content_type or "application/octet-stream", headers=headers)
+    return _stream_storage_object(request, photo.object_key, photo.filename, photo.content_type)
 
 
 @app.get("/api/gallery/photos/{photo_id}/thumbnail")
@@ -2443,6 +2609,50 @@ def list_video_subtitles(
         .order_by(VideoSubtitleTrack.created_at.asc())
     ).all()
     return [_subtitle_to_read(track) for track in tracks]
+
+
+@app.get("/api/videos/{video_id}/embedded-subtitle-streams", response_model=list[EmbeddedSubtitleStreamRead])
+def list_embedded_subtitle_streams(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[EmbeddedSubtitleStreamRead]:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    try:
+        return [EmbeddedSubtitleStreamRead(**stream) for stream in subtitle_service.list_embedded_subtitle_streams(video)]
+    except Exception as exc:
+        logger.exception("Failed to list embedded subtitle streams video_id=%s", video_id)
+        raise HTTPException(status_code=400, detail=str(exc) or "读取视频字幕轨道失败") from exc
+
+
+@app.post("/api/videos/{video_id}/subtitles/import-from-video", response_model=VideoSubtitleTrackRead)
+def import_video_subtitle_from_video(
+    video_id: int,
+    payload: ImportSubtitleFromVideoRequest,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoSubtitleTrackRead:
+    target = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    source = _get_workspace_object(db, VideoItem, payload.source_video_id, current.workspace_id, "Video")
+    try:
+        track = subtitle_service.import_embedded_subtitle(
+            db,
+            target,
+            source,
+            payload.stream_index,
+            replace=payload.replace,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "Failed to import embedded subtitle target_video_id=%s source_video_id=%s stream_index=%s",
+            video_id,
+            payload.source_video_id,
+            payload.stream_index,
+        )
+        raise HTTPException(status_code=400, detail=str(exc) or "导入字幕失败") from exc
+    return _subtitle_to_read(track)
 
 
 @app.post("/api/videos/{video_id}/subtitles/generate", response_model=VideoSubtitleTrackRead)

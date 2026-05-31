@@ -47,6 +47,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=8, max_length=256)
+    display_name: str | None = Field(default=None, max_length=128)
+
+
 class AdminUserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=8, max_length=256)
@@ -442,6 +448,19 @@ class SubtitleJobRead(BaseModel):
 
 class VideoSubtitleTrackUpdate(BaseModel):
     content_vtt: str
+
+
+class EmbeddedSubtitleStreamRead(BaseModel):
+    stream_index: int
+    codec_name: str | None = None
+    language: str | None = None
+    title: str | None = None
+
+
+class ImportSubtitleFromVideoRequest(BaseModel):
+    source_video_id: int
+    stream_index: int
+    replace: bool = False
 
 
 class VideoItemListItem(BaseModel):

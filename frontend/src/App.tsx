@@ -43,6 +43,7 @@ import {
   getGalleryPhoto,
   getPersonExportUrl,
   getTask,
+  importSubtitleFromVideo,
   importGalleryExportZip,
   importGalleryPhotos,
   importGalleryRichPhotos,
@@ -53,12 +54,14 @@ import {
   listPersonTags,
   listTags,
   listSubtitleJobs,
+  listEmbeddedSubtitleStreams,
   listVideoCategoryTags,
   listVideoPeople,
   listVideos,
   listWorkspaceInvitations,
   listWorkspaceMembers,
   login,
+  registerAccount,
   renamePerson,
   replaceVideoCover,
   reRecognizeGalleryPhoto,
@@ -100,6 +103,7 @@ import type {
   Task,
   VideoCategoryTag,
   VideoDetail,
+  EmbeddedSubtitleStream,
   VideoItem,
   VideoPerson,
   VideoUploadSession,
@@ -638,6 +642,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const [subtitleServiceBusy, setSubtitleServiceBusy] = useState(false);
   const [subtitleServiceNotice, setSubtitleServiceNotice] = useState<string | null>(null);
   const [subtitleLogsOpen, setSubtitleLogsOpen] = useState(false);
+  const [subtitleImportSourceVideoId, setSubtitleImportSourceVideoId] = useState("");
+  const [subtitleImportStreams, setSubtitleImportStreams] = useState<EmbeddedSubtitleStream[]>([]);
+  const [subtitleImportStreamIndex, setSubtitleImportStreamIndex] = useState("");
+  const [subtitleImportNotice, setSubtitleImportNotice] = useState<string | null>(null);
   const [newVideoCategoryName, setNewVideoCategoryName] = useState("");
   const [newVideoPersonName, setNewVideoPersonName] = useState("");
   const [newVideoPersonNote, setNewVideoPersonNote] = useState("");
@@ -776,6 +784,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     [subtitleJobs]
   );
   const visibleSubtitleJobs = useMemo(() => subtitleJobs.slice(0, 8), [subtitleJobs]);
+  const subtitleImportSourceOptions = useMemo(
+    () => videoItems.filter((video) => video.id !== selectedVideo?.id),
+    [selectedVideo?.id, videoItems]
+  );
 
   async function refreshPeople() {
     const nextPersons = await listPersons();
@@ -1095,6 +1107,13 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     }
     setVideoPlayerUrl(selectedVideo.play_url || selectedVideo.stream_url);
   }, [selectedVideo?.id, selectedVideo?.play_url, selectedVideo?.stream_url]);
+
+  useEffect(() => {
+    setSubtitleImportSourceVideoId("");
+    setSubtitleImportStreams([]);
+    setSubtitleImportStreamIndex("");
+    setSubtitleImportNotice(null);
+  }, [selectedVideo?.id]);
 
 
   useEffect(() => {
@@ -2056,6 +2075,62 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     }
   }
 
+  async function handleLoadEmbeddedSubtitleStreams() {
+    if (!subtitleImportSourceVideoId) {
+      setSubtitleImportNotice("请选择一个有字幕的视频。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setSubtitleImportNotice(null);
+    setSubtitleImportStreams([]);
+    setSubtitleImportStreamIndex("");
+    try {
+      const streams = await listEmbeddedSubtitleStreams(Number(subtitleImportSourceVideoId));
+      setSubtitleImportStreams(streams);
+      setSubtitleImportStreamIndex(streams[0] ? String(streams[0].stream_index) : "");
+      setSubtitleImportNotice(streams.length > 0 ? `发现 ${streams.length} 条可提取字幕。` : "未发现可提取的软字幕。");
+    } catch (cause) {
+      setSubtitleImportNotice(cause instanceof Error ? cause.message : "读取来源视频字幕失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleImportEmbeddedSubtitle(replace = false) {
+    if (!selectedVideo || !subtitleImportSourceVideoId || !subtitleImportStreamIndex) {
+      setSubtitleImportNotice("请选择来源视频和字幕轨道。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setSubtitleImportNotice(null);
+    try {
+      await importSubtitleFromVideo(selectedVideo.id, {
+        source_video_id: Number(subtitleImportSourceVideoId),
+        stream_index: Number(subtitleImportStreamIndex),
+        replace
+      });
+      const detail = await getVideo(selectedVideo.id);
+      setSelectedVideo(detail);
+      setVideoItems((items) => items.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)));
+      setSubtitleImportNotice("字幕已导入，可以在播放器里开启 CC。");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "导入字幕失败。";
+      if (!replace && message.includes("已存在同语言字幕")) {
+        const confirmed = window.confirm(`${message} 是否覆盖当前字幕？`);
+        if (confirmed) {
+          setBusy(false);
+          await handleImportEmbeddedSubtitle(true);
+          return;
+        }
+      }
+      setSubtitleImportNotice(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleStartSubtitleService() {
     setSubtitleServiceBusy(true);
     setError(null);
@@ -2442,7 +2517,6 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
         <div>
           <p className="eyebrow">Local Face Archive</p>
           <h1>PictureShow</h1>
-          <p className="lead">将人物样本库、展示图库和展示图上传拆成独立页面，围绕本地识别与人工修正形成完整闭环。</p>
           <div className="session-strip">
             <button type="button" onClick={() => setWorkspacePanelOpen(true)}>
               {authSession.workspace.name}
@@ -2901,6 +2975,53 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                     >
                       生成中文字幕
                     </button>
+                    <div className="subtitle-import-box">
+                      <strong>从已有视频导入字幕</strong>
+                      <select
+                        value={subtitleImportSourceVideoId}
+                        onChange={(event) => {
+                          setSubtitleImportSourceVideoId(event.target.value);
+                          setSubtitleImportStreams([]);
+                          setSubtitleImportStreamIndex("");
+                          setSubtitleImportNotice(null);
+                        }}
+                      >
+                        <option value="">选择来源视频</option>
+                        {subtitleImportSourceOptions.map((video) => (
+                          <option key={video.id} value={video.id}>
+                            {video.title}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="micro-row wrap">
+                        <button
+                          className="ghost-button"
+                          disabled={busy || !subtitleImportSourceVideoId}
+                          onClick={() => void handleLoadEmbeddedSubtitleStreams()}
+                        >
+                          读取字幕轨道
+                        </button>
+                        <button
+                          disabled={busy || !subtitleImportStreamIndex}
+                          onClick={() => void handleImportEmbeddedSubtitle()}
+                        >
+                          导入悬浮字幕
+                        </button>
+                      </div>
+                      {subtitleImportStreams.length > 0 && (
+                        <select
+                          value={subtitleImportStreamIndex}
+                          onChange={(event) => setSubtitleImportStreamIndex(event.target.value)}
+                        >
+                          {subtitleImportStreams.map((stream) => (
+                            <option key={stream.stream_index} value={stream.stream_index}>
+                              #{stream.stream_index} {stream.title || stream.language || "未命名字幕"} {stream.codec_name ? `(${stream.codec_name})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {subtitleImportNotice && <small>{subtitleImportNotice}</small>}
+                    </div>
                   </div>
                 </div>
 
@@ -4233,20 +4354,40 @@ type AuthScreenProps = {
   error: string | null;
   onBootstrap: (payload: { username: string; password: string; display_name?: string | null; workspace_name?: string | null }) => Promise<void>;
   onLogin: (username: string, password: string) => Promise<void>;
+  onRegister: (payload: { username: string; password: string; display_name?: string | null }) => Promise<void>;
 };
 
-function AuthScreen({ bootstrapRequired, busy, error, onBootstrap, onLogin }: AuthScreenProps) {
+function AuthScreen({ bootstrapRequired, busy, error, onBootstrap, onLogin, onRegister }: AuthScreenProps) {
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [workspaceName, setWorkspaceName] = useState("我的内容空间");
   const [password, setPassword] = useState("");
+  const isRegisterMode = !bootstrapRequired && mode === "register";
+  const passwordMinLength = bootstrapRequired || isRegisterMode ? 8 : 1;
 
   return (
     <main className="auth-shell">
       <section className="auth-panel">
         <p className="eyebrow">PictureShow</p>
-        <h1>{bootstrapRequired ? "初始化管理员" : "登录"}</h1>
-        <p className="lead">{bootstrapRequired ? "首次使用需要创建管理员和默认内容空间。" : "登录后只会看到当前账号所属内容空间的数据。"}</p>
+        <h1>{bootstrapRequired ? "初始化管理员" : isRegisterMode ? "注册账号" : "登录"}</h1>
+        <p className="lead">
+          {bootstrapRequired
+            ? "首次使用需要创建管理员和默认内容空间。"
+            : isRegisterMode
+              ? "新账号会自动创建只能自己使用的私人内容空间。"
+              : "登录后只会看到当前账号所属内容空间的数据。"}
+        </p>
+        {!bootstrapRequired && (
+          <div className="auth-mode-tabs" role="tablist" aria-label="认证方式">
+            <button className={mode === "login" ? "active" : ""} type="button" onClick={() => setMode("login")}>
+              登录
+            </button>
+            <button className={mode === "register" ? "active" : ""} type="button" onClick={() => setMode("register")}>
+              注册
+            </button>
+          </div>
+        )}
         <form
           className="auth-form"
           onSubmit={(event) => {
@@ -4260,6 +4401,14 @@ function AuthScreen({ bootstrapRequired, busy, error, onBootstrap, onLogin }: Au
               });
               return;
             }
+            if (isRegisterMode) {
+              void onRegister({
+                username,
+                password,
+                display_name: displayName || null
+              });
+              return;
+            }
             void onLogin(username, password);
           }}
         >
@@ -4267,17 +4416,17 @@ function AuthScreen({ bootstrapRequired, busy, error, onBootstrap, onLogin }: Au
             账号
             <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required />
           </label>
+          {(bootstrapRequired || isRegisterMode) && (
+            <label>
+              显示名称
+              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" />
+            </label>
+          )}
           {bootstrapRequired && (
-            <>
-              <label>
-                显示名称
-                <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" />
-              </label>
-              <label>
-                内容空间
-                <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
-              </label>
-            </>
+            <label>
+              内容空间
+              <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
+            </label>
           )}
           <label>
             密码
@@ -4285,12 +4434,13 @@ function AuthScreen({ bootstrapRequired, busy, error, onBootstrap, onLogin }: Au
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              autoComplete={bootstrapRequired ? "new-password" : "current-password"}
+              autoComplete={bootstrapRequired || isRegisterMode ? "new-password" : "current-password"}
+              minLength={passwordMinLength}
               required
             />
           </label>
-          <button className="primary" type="submit" disabled={busy}>
-            {busy ? "处理中..." : bootstrapRequired ? "创建并进入" : "进入"}
+          <button className="primary" type="submit" disabled={busy || !username.trim() || password.length < passwordMinLength}>
+            {busy ? "处理中..." : bootstrapRequired ? "创建并进入" : isRegisterMode ? "注册并进入" : "进入"}
           </button>
         </form>
         {error && <div className="error-banner">{error}</div>}
@@ -4372,6 +4522,18 @@ export default function App() {
     }
   };
 
+  const handleRegister = async (payload: { username: string; password: string; display_name?: string | null }) => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      handleSession(await registerAccount(payload));
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "注册失败");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
   const handleLogout = () => {
     clearAuthToken();
     clearSelectedWorkspaceId();
@@ -4404,6 +4566,7 @@ export default function App() {
         error={authError}
         onBootstrap={handleBootstrap}
         onLogin={handleLogin}
+        onRegister={handleRegister}
       />
     );
   }

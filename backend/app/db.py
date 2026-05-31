@@ -1,5 +1,7 @@
 from collections.abc import Generator
 
+import logging
+
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -8,6 +10,7 @@ from app.core.config import get_settings
 
 settings = get_settings()
 engine = create_engine(settings.database_url, connect_args={"check_same_thread": False})
+logger = logging.getLogger(__name__)
 
 
 @event.listens_for(engine, "connect")
@@ -50,6 +53,77 @@ WORKSPACE_MEMBER_PERMISSION_COLUMNS = (
     "can_delete_videos",
     "can_edit_videos",
 )
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _tag_index_columns(connection, index_name: str) -> list[str]:
+    rows = connection.exec_driver_sql(f"PRAGMA index_info({_quote_identifier(index_name)})").mappings().all()
+    return [str(row["name"]) for row in rows]
+
+
+def _rebuild_tags_table_for_workspace_unique() -> None:
+    with engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        connection.exec_driver_sql("PRAGMA legacy_alter_table=ON")
+        connection.commit()
+        transaction = connection.begin()
+        try:
+            connection.execute(text("ALTER TABLE tags RENAME TO tags_old_global_unique"))
+            connection.execute(text("""
+                CREATE TABLE tags (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    workspace_id INTEGER,
+                    name VARCHAR(128) NOT NULL,
+                    is_system BOOLEAN DEFAULT 0 NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    CONSTRAINT uq_tags_workspace_name UNIQUE (workspace_id, name),
+                    FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
+                )
+            """))
+            connection.execute(text("""
+                INSERT INTO tags (id, workspace_id, name, is_system, created_at)
+                SELECT id, workspace_id, name, COALESCE(is_system, 0), created_at
+                FROM tags_old_global_unique
+            """))
+            connection.execute(text("DROP TABLE tags_old_global_unique"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_tags_workspace_id ON tags(workspace_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_tags_name ON tags(name)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_tags_is_system ON tags(is_system)"))
+            transaction.commit()
+        except Exception:
+            transaction.rollback()
+            raise
+        finally:
+            connection.exec_driver_sql("PRAGMA legacy_alter_table=OFF")
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
+
+
+def _ensure_tags_workspace_unique_constraint() -> None:
+    inspector = inspect(engine)
+    if "tags" not in inspector.get_table_names():
+        return
+
+    needs_rebuild = False
+    with engine.begin() as connection:
+        indexes = connection.exec_driver_sql("PRAGMA index_list(tags)").mappings().all()
+        for index in indexes:
+            index_name = str(index["name"])
+            is_unique = bool(index["unique"])
+            if not is_unique or _tag_index_columns(connection, index_name) != ["name"]:
+                continue
+            if index_name.startswith("sqlite_autoindex"):
+                needs_rebuild = True
+                continue
+            connection.execute(text(f"DROP INDEX {_quote_identifier(index_name)}"))
+        if not needs_rebuild:
+            connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_tags_workspace_name ON tags(workspace_id, name)"))
+
+    if needs_rebuild:
+        _rebuild_tags_table_for_workspace_unique()
 
 
 def _ensure_workspace_columns(inspector) -> None:
@@ -152,6 +226,7 @@ def ensure_legacy_columns() -> None:
         if "is_system" not in columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE tags ADD COLUMN is_system BOOLEAN DEFAULT 0 NOT NULL"))
+        _ensure_tags_workspace_unique_constraint()
     if "video_items" in inspector.get_table_names():
         columns = {column["name"] for column in inspector.get_columns("video_items")}
         statements: list[str] = []
@@ -189,16 +264,22 @@ def ensure_legacy_columns() -> None:
                 connection.execute(text("DROP INDEX ix_video_items_sha256"))
             if "uq_video_items_filename_size" in index_names:
                 connection.execute(text("DROP INDEX uq_video_items_filename_size"))
-            # Remove duplicate (filename, size_bytes) rows, keep newest
-            connection.execute(text("""
-                DELETE FROM video_items WHERE id NOT IN (
-                    SELECT MAX(id) FROM video_items GROUP BY workspace_id, filename, size_bytes
+            duplicates = connection.execute(text("""
+                SELECT workspace_id, filename, size_bytes, COUNT(*) AS duplicate_count
+                FROM video_items
+                GROUP BY workspace_id, filename, size_bytes
+                HAVING COUNT(*) > 1
+            """)).mappings().all()
+            if duplicates:
+                logger.warning(
+                    "Skip creating video workspace uniqueness index because duplicate rows exist count=%s",
+                    len(duplicates),
                 )
-            """))
-            connection.execute(text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_video_items_workspace_filename_size "
-                "ON video_items(workspace_id, filename, size_bytes)"
-            ))
+            else:
+                connection.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_video_items_workspace_filename_size "
+                    "ON video_items(workspace_id, filename, size_bytes)"
+                ))
     if "video_subtitle_tracks" in inspector.get_table_names():
         columns = {column["name"] for column in inspector.get_columns("video_subtitle_tracks")}
         statements: list[str] = []

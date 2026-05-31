@@ -15,6 +15,7 @@ import type {
   SubtitleJob,
   SubtitleServiceLogs,
   SubtitleServiceStatus,
+  EmbeddedSubtitleStream,
   VideoCategoryTag,
   VideoDetail,
   VideoItem,
@@ -147,6 +148,20 @@ export async function login(username: string, password: string): Promise<AuthSes
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ username, password })
+    })
+  );
+}
+
+export async function registerAccount(payload: {
+  username: string;
+  password: string;
+  display_name?: string | null;
+}): Promise<AuthSession> {
+  return parse<AuthSession>(
+    await fetch("/api/auth/register", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
     })
   );
 }
@@ -728,6 +743,23 @@ export async function cancelVideoSubtitles(videoId: number, trackId: number): Pr
   return parse<VideoSubtitleTrack>(
     await fetch(`/api/videos/${videoId}/subtitles/${trackId}/cancel`, {
       method: "POST"
+    })
+  );
+}
+
+export async function listEmbeddedSubtitleStreams(videoId: number): Promise<EmbeddedSubtitleStream[]> {
+  return parse<EmbeddedSubtitleStream[]>(await fetch(`/api/videos/${videoId}/embedded-subtitle-streams`));
+}
+
+export async function importSubtitleFromVideo(
+  videoId: number,
+  payload: { source_video_id: number; stream_index: number; replace?: boolean }
+): Promise<VideoSubtitleTrack> {
+  return parse<VideoSubtitleTrack>(
+    await fetch(`/api/videos/${videoId}/subtitles/import-from-video`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
     })
   );
 }
