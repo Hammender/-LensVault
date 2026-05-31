@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import {
+  BarChart3,
+  Clapperboard,
+  Edit3,
+  GalleryHorizontalEnd,
+  HomeIcon,
+  LogOut,
+  Settings,
+  UploadCloud,
+  UsersRound
+} from "lucide-react";
 
 import Home from "./Home";
 import Statistics from "./Statistics";
@@ -2508,582 +2519,9 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [lightboxPhoto, lightboxIndex, canGoPrev, canGoNext, hasPrevPage, hasNextPage, galleryOffset, busy, lightboxEditMode]);
 
-  return (
-    <div className="app-shell">
-      <div className="sunwash sunwash-a" />
-      <div className="sunwash sunwash-b" />
 
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Local Face Archive</p>
-          <h1>PictureShow</h1>
-          <div className="session-strip">
-            <button type="button" onClick={() => setWorkspacePanelOpen(true)}>
-              {authSession.workspace.name}
-            </button>
-            <span>{authSession.user.display_name || authSession.user.username}</span>
-            <span>{authSession.workspace.kind === "private" ? "私人空间" : authSession.workspace.role === "owner" ? "共享 owner" : "共享成员"}</span>
-            <button type="button" onClick={onLogout}>退出登录</button>
-          </div>
-        </div>
-        <nav className="nav-tabs">
-          {[
-            ["home", "首页"],
-            ["gallery", "页面 A · 展示图库"],
-            ["people", "页面 B · 人物样本库"],
-            ["upload", "页面 C · 展示图上传"],
-            ["videos", "页面 D · 视频库"],
-            ["statistics", "页面 E · 数据统计"]
-          ].map(([key, label]) => (
-            <button
-              key={key}
-              className={page === key ? "nav-tab active" : "nav-tab"}
-              onClick={() => {
-                setPageState(key as PageKey);
-                setRoute(key as PageKey);
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-      </header>
-
-      {workspacePanelOpen && (
-        <WorkspacePanel
-          session={authSession}
-          onSessionChange={onSessionChange}
-          onClose={() => setWorkspacePanelOpen(false)}
-        />
-      )}
-
-      {page === "statistics" && <Statistics />}
-
-      {page === "videos" && (
-        <main className="bili-videos-page">
-          <div className="bili-top-bar">
-            <div className="bili-search-box">
-              <input
-                className="search-input"
-                value={videoSearch}
-                onChange={(event) => setVideoSearch(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
-                  }
-                }}
-                placeholder="搜索视频名、简介或文件名"
-              />
-              <button disabled={busy} onClick={() => void refreshVideos(0)}>
-                搜索
-              </button>
-            </div>
-            <div className="micro-row wrap" style={{ gap: '6px' }}>
-              <button style={{ fontSize: '0.75rem', padding: '6px 10px' }} onClick={() => setIsCategoryManageModalOpen(true)}>管理分区</button>
-              <button style={{ fontSize: '0.75rem', padding: '6px 10px' }} onClick={() => setIsVideoPersonManageModalOpen(true)}>管理UP主</button>
-              <button className="primary" onClick={() => setIsVideoUploadModalOpen(true)}>上传视频</button>
-            </div>
-          </div>
-
-          <section className="subtitle-service-panel">
-            <div className="subtitle-service-head">
-              <div>
-                <p className="eyebrow">中文字幕</p>
-                <h2>本地翻译服务</h2>
-              </div>
-              <div className="subtitle-service-actions">
-                <span className={`subtitle-service-badge subtitle-service-badge-${subtitleServiceStatus?.status ?? "unknown"}`}>
-                  {subtitleServiceStatus ? subtitleServiceStatusLabel(subtitleServiceStatus.status) : "检测中"}
-                </span>
-                <button disabled={subtitleServiceBusy} onClick={() => void handleStartSubtitleService()}>
-                  启动服务
-                </button>
-                <button disabled={subtitleServiceBusy} onClick={() => void handleStopSubtitleService()}>
-                  关闭服务
-                </button>
-                <button disabled={subtitleServiceBusy} onClick={() => void handleToggleSubtitleLogs()}>
-                  {subtitleLogsOpen ? "收起日志" : "查看日志"}
-                </button>
-              </div>
-            </div>
-
-            <div className="subtitle-service-meta">
-              <span>端点：{subtitleServiceStatus?.endpoint ?? "未检测"}</span>
-              <span>PID：{subtitleServiceStatus?.pid ?? "无"}</span>
-              <span>模型：{subtitleServiceStatus?.model ?? "Hy-MT2"}</span>
-              <span>{subtitleServiceStatus?.managed ? "由 PictureShow 启动" : "外部或未启动"}</span>
-            </div>
-
-            <div className="subtitle-service-meta subtitle-service-asr-meta">
-              <span>ASR：{subtitleServiceStatus?.asr ? subtitleAsrStatusLabel(subtitleServiceStatus.asr.status) : "检测中"}</span>
-              <span>设备：{subtitleServiceStatus?.asr ? `${subtitleServiceStatus.asr.device}/${subtitleServiceStatus.asr.compute_type}` : "未检测"}</span>
-              <span>模型：faster-whisper</span>
-              {subtitleServiceStatus?.asr?.last_duration_seconds != null && (
-                <span>上次耗时：{subtitleServiceStatus.asr.last_duration_seconds.toFixed(1)} 秒</span>
-              )}
-              {subtitleServiceStatus?.asr?.last_segment_count != null && (
-                <span>上次片段：{subtitleServiceStatus.asr.last_segment_count}</span>
-              )}
-            </div>
-
-            {(subtitleServiceNotice || subtitleServiceStatus?.message) && (
-              <div
-                className={
-                  subtitleServiceNotice?.includes("失败") || subtitleServiceStatus?.status === "unhealthy"
-                    ? "subtitle-service-message subtitle-service-message-error"
-                    : "subtitle-service-message"
-                }
-              >
-                {subtitleServiceNotice || subtitleServiceStatus?.message}
-              </div>
-            )}
-
-            {subtitleServiceStatus?.asr?.message && (
-              <div
-                className={
-                  subtitleServiceStatus.asr.status === "error"
-                    ? "subtitle-service-message subtitle-service-message-error"
-                    : "subtitle-service-message"
-                }
-              >
-                语音识别：{subtitleServiceStatus.asr.message}
-                {subtitleServiceStatus.asr.last_error ? `：${subtitleServiceStatus.asr.last_error}` : ""}
-              </div>
-            )}
-
-            {visibleSubtitleJobs.length > 0 ? (
-              <div className="subtitle-job-list">
-                {visibleSubtitleJobs.map((job) => {
-                  const progress = Math.round(Math.min(Math.max(job.task?.progress ?? 0, 0), 1) * 100);
-                  const isActive = ["pending", "running"].includes(job.track.status);
-                  return (
-                    <div className={`subtitle-job-row subtitle-job-row-${job.track.status}`} key={`${job.video_id}-${job.track.id}`}>
-                      <div className="subtitle-job-main">
-                        <strong>{job.video_title}</strong>
-                        <span>{subtitleTrackStatusLabel(job.track.status)} · {job.task?.message ?? job.video_filename}</span>
-                        {job.track.error_message && <small>{job.track.error_message}</small>}
-                      </div>
-                      <div className="subtitle-job-progress">
-                        <progress value={progress} max={100}></progress>
-                        <span>{progress}%</span>
-                      </div>
-                      <button
-                        className="ghost-button compact"
-                        disabled={subtitleServiceBusy || !isActive}
-                        onClick={() => void handleCancelSubtitleJob(job)}
-                      >
-                        取消
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : !subtitleJobsLoaded ? (
-              <p className="subtitle-service-empty">正在读取字幕任务...</p>
-            ) : (
-              <p className="subtitle-service-empty">当前没有字幕生成任务。</p>
-            )}
-
-            {subtitleLogsOpen && (
-              <div className="subtitle-log-panel">
-                <div className="subtitle-log-path">{subtitleServiceLogs?.log_path ?? "未配置日志文件"}</div>
-                <pre>{subtitleServiceLogs?.content || "暂无日志"}</pre>
-              </div>
-            )}
-          </section>
-
-          <div className="bili-filters-bar">
-            <div className="bili-filter-row">
-              <span className="bili-filter-label">分区</span>
-              <div className="bili-chip-cloud">
-                <button
-                  className={selectedVideoCategoryIds.length === 0 ? "soft-chip active" : "soft-chip"}
-                  onClick={() => {
-                    setSelectedVideoCategoryIds([]);
-                    void refreshVideos(0, [], selectedVideoPersonIds, videoSearch);
-                  }}
-                >
-                  全部
-                </button>
-                {filteredVideoCategoryTags.map((tag) => (
-                  <button
-                    key={tag.id}
-                    className={selectedVideoCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
-                    onClick={() => handleToggleVideoFilterCategory(tag.id)}
-                  >
-                    {tag.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="bili-filter-row">
-              <span className="bili-filter-label">UP主</span>
-              <div className="bili-chip-cloud">
-                <button
-                  className={selectedVideoPersonIds.length === 0 ? "video-person-chip active" : "video-person-chip"}
-                  onClick={() => {
-                    setSelectedVideoPersonIds([]);
-                    void refreshVideos(0, selectedVideoCategoryIds, [], videoSearch);
-                  }}
-                >
-                  <b>全部</b>
-                </button>
-                {filteredVideoPeople.map((person) => (
-                  <button
-                    key={person.id}
-                    className={selectedVideoPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
-                    onClick={() => handleToggleVideoFilterPerson(person.id)}
-                  >
-                    {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
-                    <b>{person.name}</b>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="bili-video-grid">
-            {videoItems.map((video) => (
-              <article
-                key={video.id}
-                className="bili-video-card"
-                onClick={() => window.open("#video-play/" + video.id, "_blank")}
-              >
-                <div className="bili-video-cover">
-                  {video.cover_url ? (
-                    <img src={video.cover_url} alt={video.title} loading="lazy" />
-                  ) : (
-                    <span className="placeholder">{getVideoFormatLabel(video.filename)}</span>
-                  )}
-                  <span className={`bili-video-status status-${video.status}`}>{videoStatusLabel(video.status)}</span>
-                  <span className="bili-video-duration">
-                    {video.duration_seconds ? formatDurationSeconds(video.duration_seconds) : formatBytes(video.size_bytes)}
-                  </span>
-                </div>
-                <div className="bili-video-info">
-                  <h3 className="bili-video-title" title={video.title}>{video.title}</h3>
-                  <div className="bili-up-list">
-                    {video.people.map((person) => (
-                      <div className="bili-up-item" key={person.id} title={person.name}>
-                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
-                        <span>{person.name}</span>
-                      </div>
-                    ))}
-                    {video.people.length === 0 && <span className="muted" style={{fontSize: '0.8rem'}}>无UP主</span>}
-                  </div>
-                  <div className="bili-video-meta">
-                    <span>{formatDate(video.created_at)}</span>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          {videoTotal > 0 && (
-            <div className="pagination-row" style={{ marginTop: 'auto' }}>
-              <button disabled={videoOffset === 0 || busy} onClick={() => void refreshVideos(Math.max(0, videoOffset - videoPageSize))}>
-                上一页
-              </button>
-              <span>
-                {videoOffset + 1} - {Math.min(videoOffset + videoPageSize, videoTotal)} / 共 {videoTotal}
-              </span>
-              <button disabled={videoOffset + videoPageSize >= videoTotal || busy} onClick={() => void refreshVideos(videoOffset + videoPageSize)}>
-                下一页
-              </button>
-            </div>
-          )}
-
-          {isVideoUploadModalOpen && (
-            <div className="modal-backdrop">
-              <aside className="panel video-upload-panel bili-modal-content">
-                <div className="section-head">
-                  <div>
-                    <p className="eyebrow">上传视频</p>
-                    <h2>分片入库</h2>
-                  </div>
-                  <button className="close-modal" onClick={() => setIsVideoUploadModalOpen(false)}>关闭</button>
-                </div>
-
-                <label className="upload-box video-upload-box">
-                  <input type="file" accept={supportedVideoAccept} multiple onChange={(event) => handlePickVideoFile(event.target.files)} />
-                  <strong>{videoFiles.length === 1 ? videoFiles[0].name : videoFiles.length > 1 ? `已选 ${videoFiles.length} 个视频` : `选择视频（${supportedVideoFormatLabel}，可多选）`}</strong>
-                  <span>{videoFiles.length >= 1 ? videoFiles.map((f) => formatBytes(f.size)).join("、") : "支持长视频分片上传，上传后会自动转为网页可播放格式。"}</span>
-                </label>
-
-                <div className="stack-editor">
-                  <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="单个视频时可自定义标题" disabled={videoFiles.length > 1} />
-                  <textarea
-                    className="rich-text-editor compact"
-                    value={videoDescription}
-                    onChange={(event) => setVideoDescription(event.target.value)}
-                    placeholder="视频简介（批量上传时所有文件共用此简介）"
-                  />
-                </div>
-
-                <div className="editor-block">
-                  <label>上传时绑定类别</label>
-                  <div className="chip-cloud compact">
-                    {videoCategoryTags.map((tag) => (
-                      <button
-                        key={tag.id}
-                        className={videoUploadCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
-                        onClick={() => handleToggleVideoUploadCategory(tag.id)}
-                      >
-                        #{tag.name}
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    value={videoUploadNewCategories}
-                    onChange={(event) => setVideoUploadNewCategories(event.target.value)}
-                    placeholder="新类别标签，逗号分隔"
-                  />
-                </div>
-
-                <div className="editor-block">
-                  <label>上传时绑定人物</label>
-                  <div className="video-person-cloud compact">
-                    {videoPeople.map((person) => (
-                      <button
-                        key={person.id}
-                        className={videoUploadPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
-                        onClick={() => handleToggleVideoUploadPerson(person.id)}
-                      >
-                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
-                        <b>{person.name}</b>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <label className="toggle-row subtitle-upload-toggle">
-                  <input
-                    type="checkbox"
-                    checked={videoUploadGenerateSubtitles}
-                    onChange={(event) => setVideoUploadGenerateSubtitles(event.target.checked)}
-                  />
-                  <span>自动生成中文字幕</span>
-                </label>
-
-                {error && <div className="error-banner" style={{ margin: '8px 0', padding: '10px', fontSize: '0.85rem' }}>{error}</div>}
-
-                <div className="video-progress">
-                  <strong>{videoUploadProgress}%</strong>
-                  <div className="meter"><span style={{ width: `${videoUploadProgress}%` }} /></div>
-                  {videoUploadTotalCount > 0 && (
-                    <small>文件 {Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / {videoUploadTotalCount}</small>
-                  )}
-                  {videoUploadSession && <small>{videoUploadSession.uploaded_parts.length} / {videoUploadSession.total_parts} 分片</small>}
-                </div>
-
-                <div className="micro-row wrap">
-                  <button disabled={busy || videoFiles.length === 0 || (videoFiles.length === 1 && !videoTitle.trim())} onClick={() => void handleConfirmVideoUpload()}>
-                    {videoUploadTotalCount > 0 ? `上传中 (${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)}/${videoUploadTotalCount})` : "开始上传"}
-                  </button>
-                  <button className="ghost-button" disabled={busy} onClick={() => void handleCancelVideoUpload()}>
-                    清理续传会话
-                  </button>
-                </div>
-              </aside>
-            </div>
-          )}
-        </main>
-      )}
-
-      {page === "video-play" && (
-        <main className="video-play-page">
-          <section className="video-play-main">
-            {selectedVideo ? (
-              <div className="panel" style={{ padding: '0', overflow: 'hidden' }}>
-                  <BiliVideoPlayer
-                    src={videoPlayerUrl}
-                    poster={selectedVideo.cover_url ?? undefined}
-                    subtitles={selectedVideo.subtitle_tracks
-                      .filter((track) => track.status === "ready" && track.vtt_url)
-                      .map((track) => ({
-                        src: track.vtt_url as string,
-                        label: track.label,
-                        srclang: track.language
-                      }))}
-                  />
-              </div>
-            ) : (
-              <div className="panel" style={{ height: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <p>加载中...</p>
-              </div>
-            )}
-          </section>
-
-          <aside className="video-play-sidebar panel">
-            {selectedVideo && (
-              <div className="detail-copy">
-                <div className="video-play-info">
-                  <h1>{selectedVideo.title}</h1>
-                  <div className="micro-row wrap" style={{ gap: '6px', margin: '12px 0' }}>
-                    <button style={{ fontSize: '0.75rem', padding: '6px 10px' }} onClick={() => openVideoEditModal()}>编辑信息</button>
-                  </div>
-                  
-                  <div className="bili-up-list">
-                    {selectedVideo.people.map((person) => (
-                      <div className="bili-up-item" key={person.id}>
-                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
-                        <span>{person.name}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="micro-row wrap" style={{ marginTop: '8px' }}>
-                    {selectedVideo.category_tags.map((tag) => (
-                      <span key={tag.id} className="pill muted">#{tag.name}</span>
-                    ))}
-                  </div>
-
-                  <div className="video-meta-grid" style={{ marginTop: '16px', fontSize: '0.85rem', color: 'var(--muted)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    <span>{formatDate(selectedVideo.created_at)}</span>
-                    <span>{videoStatusLabel(selectedVideo.status)}</span>
-                    <span>{formatDurationSeconds(selectedVideo.duration_seconds)}</span>
-                    <span>{formatResolution(selectedVideo.width, selectedVideo.height)}</span>
-                  </div>
-
-                  <div className="description-box" style={{ marginTop: '16px', padding: '12px', background: 'var(--bg)', borderRadius: '4px', fontSize: '0.9rem', lineHeight: '1.6' }}>
-                    {selectedVideo.description || "无简介"}
-                  </div>
-
-                  <div className="subtitle-panel">
-                    <div className="section-head compact-head">
-                      <div>
-                        <p className="eyebrow">字幕</p>
-                        <h2>中文字幕</h2>
-                      </div>
-                    </div>
-                    {selectedVideo.subtitle_tracks.length > 0 ? (
-                      selectedVideo.subtitle_tracks.map((track) => (
-                        <div className={`subtitle-status subtitle-status-${track.status}`} key={track.id}>
-                          <strong>{track.label}</strong>
-                          <span>{subtitleTrackStatusLabel(track.status)}</span>
-                          {track.error_message && <small>{track.error_message}</small>}
-                        </div>
-                      ))
-                    ) : (
-                      <p className="subtitle-empty">当前视频还没有字幕。</p>
-                    )}
-                    <button
-                      className="ghost-button"
-                      disabled={busy || selectedVideo.subtitle_tracks.some((track) => ["pending", "running"].includes(track.status))}
-                      onClick={() => void handleGenerateSelectedVideoSubtitles()}
-                    >
-                      生成中文字幕
-                    </button>
-                    <div className="subtitle-import-box">
-                      <strong>从已有视频导入字幕</strong>
-                      <select
-                        value={subtitleImportSourceVideoId}
-                        onChange={(event) => {
-                          setSubtitleImportSourceVideoId(event.target.value);
-                          setSubtitleImportStreams([]);
-                          setSubtitleImportStreamIndex("");
-                          setSubtitleImportNotice(null);
-                        }}
-                      >
-                        <option value="">选择来源视频</option>
-                        {subtitleImportSourceOptions.map((video) => (
-                          <option key={video.id} value={video.id}>
-                            {video.title}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="micro-row wrap">
-                        <button
-                          className="ghost-button"
-                          disabled={busy || !subtitleImportSourceVideoId}
-                          onClick={() => void handleLoadEmbeddedSubtitleStreams()}
-                        >
-                          读取字幕轨道
-                        </button>
-                        <button
-                          disabled={busy || !subtitleImportStreamIndex}
-                          onClick={() => void handleImportEmbeddedSubtitle()}
-                        >
-                          导入悬浮字幕
-                        </button>
-                      </div>
-                      {subtitleImportStreams.length > 0 && (
-                        <select
-                          value={subtitleImportStreamIndex}
-                          onChange={(event) => setSubtitleImportStreamIndex(event.target.value)}
-                        >
-                          {subtitleImportStreams.map((stream) => (
-                            <option key={stream.stream_index} value={stream.stream_index}>
-                              #{stream.stream_index} {stream.title || stream.language || "未命名字幕"} {stream.codec_name ? `(${stream.codec_name})` : ""}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                      {subtitleImportNotice && <small>{subtitleImportNotice}</small>}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="section-head compact-head" style={{ marginTop: '32px' }}>
-                  <div>
-                    <p className="eyebrow">视频管理</p>
-                    <h2>封面与文件</h2>
-                  </div>
-                </div>
-
-                <div className="video-cover-manager">
-                  {selectedVideo.cover_url ? (
-                    <img src={selectedVideo.cover_url} alt="视频封面" />
-                  ) : (
-                    <div className="video-cover-empty">暂无封面</div>
-                  )}
-                  <label className="cover-upload-button">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      disabled={busy}
-                      onChange={(event) => {
-                        void handleReplaceVideoCover(event.target.files);
-                        event.currentTarget.value = "";
-                      }}
-                    />
-                    替换封面
-                  </label>
-                </div>
-                
-                <p><strong>文件:</strong> {selectedVideo.filename}</p>
-                <p><strong>原始格式:</strong> {formatCodecs(selectedVideo.original_video_codec, selectedVideo.original_audio_codec, selectedVideo.status)}</p>
-                <p><strong>播放格式:</strong> {formatCodecs(selectedVideo.video_codec, selectedVideo.audio_codec, selectedVideo.status)}</p>
-                <p><strong>体积:</strong> {formatBytes(selectedVideo.size_bytes)}</p>
-                <p>
-                  {selectedVideo.faststart_applied ? "· 已完成 faststart 优化" : "· 未优化"}
-                </p>
-                {selectedVideo.processing_error && <p style={{color: 'red'}}>优化错误：{selectedVideo.processing_error}</p>}
-                
-                <button 
-                  className="danger-button" 
-                  style={{ marginTop: '20px', width: '100%', background: '#ff3b30', color: '#fff', border: 'none', padding: '10px', borderRadius: '4px', cursor: 'pointer' }}
-                  disabled={busy} 
-                  onClick={() => {
-                    if (confirm("确定要删除此视频吗？")) {
-                      void handleDeleteCurrentVideo().then(() => {
-                        window.close(); // Optional: close tab on delete
-                      });
-                    }
-                  }}
-                >
-                  删除视频
-                </button>
-              </div>
-            )}
-          </aside>
-        </main>
-      )}
-
-      {page === "home" && <Home />}
-
-            {page === "gallery" && (
+  const GalleryPageComponent = () => {
+    return (
         <main className="page-grid gallery-page">
           <section className="panel filter-panel">
             <div className="section-head">
@@ -3643,9 +3081,11 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
             )}
           </aside>
         </main>
-      )}
+    );
+  };
 
-      {page === "people" && (
+  const PeoplePageComponent = () => {
+    return (
         <main className="page-grid people-page">
           <section className="panel people-sidebar">
             <div className="section-head">
@@ -3870,9 +3310,11 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
             )}
           </section>
         </main>
-      )}
+    );
+  };
 
-      {page === "upload" && (
+  const UploadPageComponent = () => {
+    return (
         <main className="page-grid upload-page">
           <section className="panel upload-main">
             <div className="section-head">
@@ -3997,12 +3439,607 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
               </article>
               <article>
                 <strong>普通标签</strong>
-                <span>支持选已有，也支持上传时现场新增，供页面 A 组合检索。</span>
+                <span>支持选已有，也支持上传时现场新增，供展示图库组合检索。</span>
               </article>
             </div>
           </aside>
         </main>
+    );
+  };
+
+  const VideosPageComponent = () => {
+    return (
+        <main className="bili-videos-page">
+          <div className="bili-top-bar">
+            <div className="bili-search-box">
+              <input
+                className="search-input"
+                value={videoSearch}
+                onChange={(event) => setVideoSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+                  }
+                }}
+                placeholder="搜索视频名、简介或文件名"
+              />
+              <button disabled={busy} onClick={() => void refreshVideos(0)}>
+                搜索
+              </button>
+            </div>
+            <div className="micro-row wrap compact-actions">
+              <button className="compact-button" onClick={() => setIsCategoryManageModalOpen(true)}>管理分区</button>
+              <button className="compact-button" onClick={() => setIsVideoPersonManageModalOpen(true)}>管理UP主</button>
+              <button className="primary" onClick={() => setIsVideoUploadModalOpen(true)}>上传视频</button>
+            </div>
+          </div>
+
+          <section className="subtitle-service-panel">
+            <div className="subtitle-service-head">
+              <div>
+                <p className="eyebrow">中文字幕</p>
+                <h2>本地翻译服务</h2>
+              </div>
+              <div className="subtitle-service-actions">
+                <span className={`subtitle-service-badge subtitle-service-badge-${subtitleServiceStatus?.status ?? "unknown"}`}>
+                  {subtitleServiceStatus ? subtitleServiceStatusLabel(subtitleServiceStatus.status) : "检测中"}
+                </span>
+                <button disabled={subtitleServiceBusy} onClick={() => void handleStartSubtitleService()}>
+                  启动服务
+                </button>
+                <button disabled={subtitleServiceBusy} onClick={() => void handleStopSubtitleService()}>
+                  关闭服务
+                </button>
+                <button disabled={subtitleServiceBusy} onClick={() => void handleToggleSubtitleLogs()}>
+                  {subtitleLogsOpen ? "收起日志" : "查看日志"}
+                </button>
+              </div>
+            </div>
+
+            <div className="subtitle-service-meta">
+              <span>端点：{subtitleServiceStatus?.endpoint ?? "未检测"}</span>
+              <span>PID：{subtitleServiceStatus?.pid ?? "无"}</span>
+              <span>模型：{subtitleServiceStatus?.model ?? "Hy-MT2"}</span>
+              <span>{subtitleServiceStatus?.managed ? "由 PictureShow 启动" : "外部或未启动"}</span>
+            </div>
+
+            <div className="subtitle-service-meta subtitle-service-asr-meta">
+              <span>ASR：{subtitleServiceStatus?.asr ? subtitleAsrStatusLabel(subtitleServiceStatus.asr.status) : "检测中"}</span>
+              <span>设备：{subtitleServiceStatus?.asr ? `${subtitleServiceStatus.asr.device}/${subtitleServiceStatus.asr.compute_type}` : "未检测"}</span>
+              <span>模型：faster-whisper</span>
+              {subtitleServiceStatus?.asr?.last_duration_seconds != null && (
+                <span>上次耗时：{subtitleServiceStatus.asr.last_duration_seconds.toFixed(1)} 秒</span>
+              )}
+              {subtitleServiceStatus?.asr?.last_segment_count != null && (
+                <span>上次片段：{subtitleServiceStatus.asr.last_segment_count}</span>
+              )}
+            </div>
+
+            {(subtitleServiceNotice || subtitleServiceStatus?.message) && (
+              <div
+                className={
+                  subtitleServiceNotice?.includes("失败") || subtitleServiceStatus?.status === "unhealthy"
+                    ? "subtitle-service-message subtitle-service-message-error"
+                    : "subtitle-service-message"
+                }
+              >
+                {subtitleServiceNotice || subtitleServiceStatus?.message}
+              </div>
+            )}
+
+            {subtitleServiceStatus?.asr?.message && (
+              <div
+                className={
+                  subtitleServiceStatus.asr.status === "error"
+                    ? "subtitle-service-message subtitle-service-message-error"
+                    : "subtitle-service-message"
+                }
+              >
+                语音识别：{subtitleServiceStatus.asr.message}
+                {subtitleServiceStatus.asr.last_error ? `：${subtitleServiceStatus.asr.last_error}` : ""}
+              </div>
+            )}
+
+            {visibleSubtitleJobs.length > 0 ? (
+              <div className="subtitle-job-list">
+                {visibleSubtitleJobs.map((job) => {
+                  const progress = Math.round(Math.min(Math.max(job.task?.progress ?? 0, 0), 1) * 100);
+                  const isActive = ["pending", "running"].includes(job.track.status);
+                  return (
+                    <div className={`subtitle-job-row subtitle-job-row-${job.track.status}`} key={`${job.video_id}-${job.track.id}`}>
+                      <div className="subtitle-job-main">
+                        <strong>{job.video_title}</strong>
+                        <span>{subtitleTrackStatusLabel(job.track.status)} · {job.task?.message ?? job.video_filename}</span>
+                        {job.track.error_message && <small>{job.track.error_message}</small>}
+                      </div>
+                      <div className="subtitle-job-progress">
+                        <progress value={progress} max={100}></progress>
+                        <span>{progress}%</span>
+                      </div>
+                      <button
+                        className="ghost-button compact"
+                        disabled={subtitleServiceBusy || !isActive}
+                        onClick={() => void handleCancelSubtitleJob(job)}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : !subtitleJobsLoaded ? (
+              <p className="subtitle-service-empty">正在读取字幕任务...</p>
+            ) : (
+              <p className="subtitle-service-empty">当前没有字幕生成任务。</p>
+            )}
+
+            {subtitleLogsOpen && (
+              <div className="subtitle-log-panel">
+                <div className="subtitle-log-path">{subtitleServiceLogs?.log_path ?? "未配置日志文件"}</div>
+                <pre>{subtitleServiceLogs?.content || "暂无日志"}</pre>
+              </div>
+            )}
+          </section>
+
+          <div className="bili-filters-bar">
+            <div className="bili-filter-row">
+              <span className="bili-filter-label">分区</span>
+              <div className="bili-chip-cloud">
+                <button
+                  className={selectedVideoCategoryIds.length === 0 ? "soft-chip active" : "soft-chip"}
+                  onClick={() => {
+                    setSelectedVideoCategoryIds([]);
+                    void refreshVideos(0, [], selectedVideoPersonIds, videoSearch);
+                  }}
+                >
+                  全部
+                </button>
+                {filteredVideoCategoryTags.map((tag) => (
+                  <button
+                    key={tag.id}
+                    className={selectedVideoCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                    onClick={() => handleToggleVideoFilterCategory(tag.id)}
+                  >
+                    {tag.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="bili-filter-row">
+              <span className="bili-filter-label">UP主</span>
+              <div className="bili-chip-cloud">
+                <button
+                  className={selectedVideoPersonIds.length === 0 ? "video-person-chip active" : "video-person-chip"}
+                  onClick={() => {
+                    setSelectedVideoPersonIds([]);
+                    void refreshVideos(0, selectedVideoCategoryIds, [], videoSearch);
+                  }}
+                >
+                  <b>全部</b>
+                </button>
+                {filteredVideoPeople.map((person) => (
+                  <button
+                    key={person.id}
+                    className={selectedVideoPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
+                    onClick={() => handleToggleVideoFilterPerson(person.id)}
+                  >
+                    {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
+                    <b>{person.name}</b>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="bili-video-grid">
+            {videoItems.map((video) => (
+              <article
+                key={video.id}
+                className="bili-video-card"
+                onClick={() => window.open("#video-play/" + video.id, "_blank")}
+              >
+                <div className="bili-video-cover">
+                  {video.cover_url ? (
+                    <img src={video.cover_url} alt={video.title} loading="lazy" />
+                  ) : (
+                    <span className="placeholder">{getVideoFormatLabel(video.filename)}</span>
+                  )}
+                  <span className={`bili-video-status status-${video.status}`}>{videoStatusLabel(video.status)}</span>
+                  <span className="bili-video-duration">
+                    {video.duration_seconds ? formatDurationSeconds(video.duration_seconds) : formatBytes(video.size_bytes)}
+                  </span>
+                </div>
+                <div className="bili-video-info">
+                  <h3 className="bili-video-title" title={video.title}>{video.title}</h3>
+                  <div className="bili-up-list">
+                    {video.people.map((person) => (
+                      <div className="bili-up-item" key={person.id} title={person.name}>
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
+                        <span>{person.name}</span>
+                      </div>
+                    ))}
+                    {video.people.length === 0 && <span className="muted small-muted">无UP主</span>}
+                  </div>
+                  <div className="bili-video-meta">
+                    <span>{formatDate(video.created_at)}</span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          {videoTotal > 0 && (
+            <div className="pagination-row pagination-row-bottom">
+              <button disabled={videoOffset === 0 || busy} onClick={() => void refreshVideos(Math.max(0, videoOffset - videoPageSize))}>
+                上一页
+              </button>
+              <span>
+                {videoOffset + 1} - {Math.min(videoOffset + videoPageSize, videoTotal)} / 共 {videoTotal}
+              </span>
+              <button disabled={videoOffset + videoPageSize >= videoTotal || busy} onClick={() => void refreshVideos(videoOffset + videoPageSize)}>
+                下一页
+              </button>
+            </div>
+          )}
+
+          {isVideoUploadModalOpen && (
+            <div className="modal-backdrop">
+              <aside className="panel video-upload-panel bili-modal-content">
+                <div className="section-head">
+                  <div>
+                    <p className="eyebrow">上传视频</p>
+                    <h2>分片入库</h2>
+                  </div>
+                  <button className="close-modal" onClick={() => setIsVideoUploadModalOpen(false)}>关闭</button>
+                </div>
+
+                <label className="upload-box video-upload-box">
+                  <input type="file" accept={supportedVideoAccept} multiple onChange={(event) => handlePickVideoFile(event.target.files)} />
+                  <strong>{videoFiles.length === 1 ? videoFiles[0].name : videoFiles.length > 1 ? `已选 ${videoFiles.length} 个视频` : `选择视频（${supportedVideoFormatLabel}，可多选）`}</strong>
+                  <span>{videoFiles.length >= 1 ? videoFiles.map((f) => formatBytes(f.size)).join("、") : "支持长视频分片上传，上传后会自动转为网页可播放格式。"}</span>
+                </label>
+
+                <div className="stack-editor">
+                  <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="单个视频时可自定义标题" disabled={videoFiles.length > 1} />
+                  <textarea
+                    className="rich-text-editor compact"
+                    value={videoDescription}
+                    onChange={(event) => setVideoDescription(event.target.value)}
+                    placeholder="视频简介（批量上传时所有文件共用此简介）"
+                  />
+                </div>
+
+                <div className="editor-block">
+                  <label>上传时绑定类别</label>
+                  <div className="chip-cloud compact">
+                    {videoCategoryTags.map((tag) => (
+                      <button
+                        key={tag.id}
+                        className={videoUploadCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                        onClick={() => handleToggleVideoUploadCategory(tag.id)}
+                      >
+                        #{tag.name}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    value={videoUploadNewCategories}
+                    onChange={(event) => setVideoUploadNewCategories(event.target.value)}
+                    placeholder="新类别标签，逗号分隔"
+                  />
+                </div>
+
+                <div className="editor-block">
+                  <label>上传时绑定人物</label>
+                  <div className="video-person-cloud compact">
+                    {videoPeople.map((person) => (
+                      <button
+                        key={person.id}
+                        className={videoUploadPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
+                        onClick={() => handleToggleVideoUploadPerson(person.id)}
+                      >
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
+                        <b>{person.name}</b>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="toggle-row subtitle-upload-toggle">
+                  <input
+                    type="checkbox"
+                    checked={videoUploadGenerateSubtitles}
+                    onChange={(event) => setVideoUploadGenerateSubtitles(event.target.checked)}
+                  />
+                  <span>自动生成中文字幕</span>
+                </label>
+
+                {error && <div className="error-banner modal-inline-error">{error}</div>}
+
+                <div className="video-progress">
+                  <strong>{videoUploadProgress}%</strong>
+                  <div className="meter"><span style={{ width: `${videoUploadProgress}%` }} /></div>
+                  {videoUploadTotalCount > 0 && (
+                    <small>文件 {Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / {videoUploadTotalCount}</small>
+                  )}
+                  {videoUploadSession && <small>{videoUploadSession.uploaded_parts.length} / {videoUploadSession.total_parts} 分片</small>}
+                </div>
+
+                <div className="micro-row wrap">
+                  <button disabled={busy || videoFiles.length === 0 || (videoFiles.length === 1 && !videoTitle.trim())} onClick={() => void handleConfirmVideoUpload()}>
+                    {videoUploadTotalCount > 0 ? `上传中 (${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)}/${videoUploadTotalCount})` : "开始上传"}
+                  </button>
+                  <button className="ghost-button" disabled={busy} onClick={() => void handleCancelVideoUpload()}>
+                    清理续传会话
+                  </button>
+                </div>
+              </aside>
+            </div>
+          )}
+        </main>
+    );
+  };
+
+  const navItems = [
+    { key: "home", label: "首页", Icon: HomeIcon },
+    { key: "gallery", label: "展示图库", Icon: GalleryHorizontalEnd },
+    { key: "people", label: "人物样本", Icon: UsersRound },
+    { key: "upload", label: "上传", Icon: UploadCloud },
+    { key: "videos", label: "视频库", Icon: Clapperboard },
+    { key: "statistics", label: "统计", Icon: BarChart3 }
+  ] as const;
+
+  return (
+    <div className="app-shell">
+      <div className="sunwash sunwash-a" />
+      <div className="sunwash sunwash-b" />
+
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Local Face Archive</p>
+          <h1>PictureShow</h1>
+          <div className="session-strip">
+            <button type="button" onClick={() => setWorkspacePanelOpen(true)}>
+              <Settings size={14} aria-hidden="true" />
+              {authSession.workspace.name}
+            </button>
+            <span>{authSession.user.display_name || authSession.user.username}</span>
+            <span>{authSession.workspace.kind === "private" ? "私人空间" : authSession.workspace.role === "owner" ? "共享 owner" : "共享成员"}</span>
+            <button type="button" onClick={onLogout}>
+              <LogOut size={14} aria-hidden="true" />
+              退出登录
+            </button>
+          </div>
+        </div>
+        <nav className="nav-tabs">
+          {navItems.map(({ key, label, Icon }) => (
+            <button
+              key={key}
+              className={page === key ? "nav-tab active" : "nav-tab"}
+              onClick={() => {
+                setPageState(key as PageKey);
+                setRoute(key as PageKey);
+              }}
+            >
+              <Icon size={16} aria-hidden="true" />
+              {label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      {workspacePanelOpen && (
+        <WorkspacePanel
+          session={authSession}
+          onSessionChange={onSessionChange}
+          onClose={() => setWorkspacePanelOpen(false)}
+        />
       )}
+
+      {page === "statistics" && <Statistics />}
+
+      {page === "videos" && <VideosPageComponent />}
+
+      {page === "video-play" && (
+        <main className="video-play-page">
+          <section className="video-play-main">
+            {selectedVideo ? (
+              <div className="panel video-player-panel">
+                  <BiliVideoPlayer
+                    src={videoPlayerUrl}
+                    poster={selectedVideo.cover_url ?? undefined}
+                    subtitles={selectedVideo.subtitle_tracks
+                      .filter((track) => track.status === "ready" && track.vtt_url)
+                      .map((track) => ({
+                        src: track.vtt_url as string,
+                        label: track.label,
+                        srclang: track.language
+                      }))}
+                  />
+              </div>
+            ) : (
+              <div className="panel video-loading-panel">
+                <p>加载中...</p>
+              </div>
+            )}
+          </section>
+
+          <aside className="video-play-sidebar panel">
+            {selectedVideo && (
+              <div className="detail-copy">
+                <div className="video-play-info">
+                  <h1>{selectedVideo.title}</h1>
+                  <div className="micro-row wrap compact-actions video-detail-actions">
+                    <button className="compact-button" onClick={() => openVideoEditModal()}>
+                      <Edit3 size={14} aria-hidden="true" />
+                      编辑信息
+                    </button>
+                  </div>
+                  
+                  <div className="bili-up-list">
+                    {selectedVideo.people.map((person) => (
+                      <div className="bili-up-item" key={person.id}>
+                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <div className="fallback-avatar">{person.name.slice(0, 1)}</div>}
+                        <span>{person.name}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="micro-row wrap video-tag-row">
+                    {selectedVideo.category_tags.map((tag) => (
+                      <span key={tag.id} className="pill muted">#{tag.name}</span>
+                    ))}
+                  </div>
+
+                  <div className="video-meta-grid">
+                    <span>{formatDate(selectedVideo.created_at)}</span>
+                    <span>{videoStatusLabel(selectedVideo.status)}</span>
+                    <span>{formatDurationSeconds(selectedVideo.duration_seconds)}</span>
+                    <span>{formatResolution(selectedVideo.width, selectedVideo.height)}</span>
+                  </div>
+
+                  <div className="description-box">
+                    {selectedVideo.description || "无简介"}
+                  </div>
+
+                  <div className="subtitle-panel">
+                    <div className="section-head compact-head">
+                      <div>
+                        <p className="eyebrow">字幕</p>
+                        <h2>中文字幕</h2>
+                      </div>
+                    </div>
+                    {selectedVideo.subtitle_tracks.length > 0 ? (
+                      selectedVideo.subtitle_tracks.map((track) => (
+                        <div className={`subtitle-status subtitle-status-${track.status}`} key={track.id}>
+                          <strong>{track.label}</strong>
+                          <span>{subtitleTrackStatusLabel(track.status)}</span>
+                          {track.error_message && <small>{track.error_message}</small>}
+                        </div>
+                      ))
+                    ) : (
+                      <p className="subtitle-empty">当前视频还没有字幕。</p>
+                    )}
+                    <button
+                      className="ghost-button"
+                      disabled={busy || selectedVideo.subtitle_tracks.some((track) => ["pending", "running"].includes(track.status))}
+                      onClick={() => void handleGenerateSelectedVideoSubtitles()}
+                    >
+                      生成中文字幕
+                    </button>
+                    <div className="subtitle-import-box">
+                      <strong>从已有视频导入字幕</strong>
+                      <select
+                        value={subtitleImportSourceVideoId}
+                        onChange={(event) => {
+                          setSubtitleImportSourceVideoId(event.target.value);
+                          setSubtitleImportStreams([]);
+                          setSubtitleImportStreamIndex("");
+                          setSubtitleImportNotice(null);
+                        }}
+                      >
+                        <option value="">选择来源视频</option>
+                        {subtitleImportSourceOptions.map((video) => (
+                          <option key={video.id} value={video.id}>
+                            {video.title}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="micro-row wrap">
+                        <button
+                          className="ghost-button"
+                          disabled={busy || !subtitleImportSourceVideoId}
+                          onClick={() => void handleLoadEmbeddedSubtitleStreams()}
+                        >
+                          读取字幕轨道
+                        </button>
+                        <button
+                          disabled={busy || !subtitleImportStreamIndex}
+                          onClick={() => void handleImportEmbeddedSubtitle()}
+                        >
+                          导入悬浮字幕
+                        </button>
+                      </div>
+                      {subtitleImportStreams.length > 0 && (
+                        <select
+                          value={subtitleImportStreamIndex}
+                          onChange={(event) => setSubtitleImportStreamIndex(event.target.value)}
+                        >
+                          {subtitleImportStreams.map((stream) => (
+                            <option key={stream.stream_index} value={stream.stream_index}>
+                              #{stream.stream_index} {stream.title || stream.language || "未命名字幕"} {stream.codec_name ? `(${stream.codec_name})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {subtitleImportNotice && <small>{subtitleImportNotice}</small>}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="section-head compact-head video-management-head">
+                  <div>
+                    <p className="eyebrow">视频管理</p>
+                    <h2>封面与文件</h2>
+                  </div>
+                </div>
+
+                <div className="video-cover-manager">
+                  {selectedVideo.cover_url ? (
+                    <img src={selectedVideo.cover_url} alt="视频封面" />
+                  ) : (
+                    <div className="video-cover-empty">暂无封面</div>
+                  )}
+                  <label className="cover-upload-button">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={busy}
+                      onChange={(event) => {
+                        void handleReplaceVideoCover(event.target.files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    替换封面
+                  </label>
+                </div>
+                
+                <p><strong>文件:</strong> {selectedVideo.filename}</p>
+                <p><strong>原始格式:</strong> {formatCodecs(selectedVideo.original_video_codec, selectedVideo.original_audio_codec, selectedVideo.status)}</p>
+                <p><strong>播放格式:</strong> {formatCodecs(selectedVideo.video_codec, selectedVideo.audio_codec, selectedVideo.status)}</p>
+                <p><strong>体积:</strong> {formatBytes(selectedVideo.size_bytes)}</p>
+                <p>
+                  {selectedVideo.faststart_applied ? "· 已完成 faststart 优化" : "· 未优化"}
+                </p>
+                {selectedVideo.processing_error && <p className="inline-error">优化错误：{selectedVideo.processing_error}</p>}
+                
+                <button 
+                  className="danger-button full-width-action" 
+                  disabled={busy} 
+                  onClick={() => {
+                    if (confirm("确定要删除此视频吗？")) {
+                      void handleDeleteCurrentVideo().then(() => {
+                        window.close(); // Optional: close tab on delete
+                      });
+                    }
+                  }}
+                >
+                  删除视频
+                </button>
+              </div>
+            )}
+          </aside>
+        </main>
+      )}
+
+      {page === "home" && <Home />}
+
+      {page === "gallery" && <GalleryPageComponent />}
+
+      {page === "people" && <PeoplePageComponent />}
+
+      {page === "upload" && <UploadPageComponent />}
 
       {isVideoEditModalOpen && selectedVideo && (
         <div className="modal-backdrop" onClick={() => setIsVideoEditModalOpen(false)}>
@@ -4078,7 +4115,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
               </div>
               <button className="close-modal" onClick={() => setIsCategoryManageModalOpen(false)}>关闭</button>
             </div>
-            <div className="inline-editor" style={{ marginTop: 0, paddingTop: 0 }}>
+            <div className="inline-editor flush-editor">
               <input value={newManageCategoryName} onChange={(event) => setNewManageCategoryName(event.target.value)} placeholder="新分区名称" />
               <button disabled={busy || !newManageCategoryName.trim()} onClick={() => void handleCreateManageCategory()}>创建</button>
             </div>
@@ -4086,7 +4123,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
               {videoCategoryTags.map((tag) => (
                 <div key={tag.id} className="manage-item">
                   {editingCategoryId === tag.id ? (
-                    <div className="inline-editor" style={{ marginTop: 0, paddingTop: 0, flex: 1 }}>
+                    <div className="inline-editor flush-editor flex-editor">
                       <input value={editingCategoryName} onChange={(event) => setEditingCategoryName(event.target.value)} placeholder="分区名称" />
                       <button disabled={busy || !editingCategoryName.trim()} onClick={() => void handleUpdateManageCategory(tag.id)}>保存</button>
                       <button className="ghost-button" onClick={() => { setEditingCategoryId(null); setEditingCategoryName(""); }}>取消</button>
@@ -4094,9 +4131,9 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                   ) : (
                     <>
                       <span>#{tag.name}</span>
-                      <div className="micro-row wrap" style={{ gap: '4px' }}>
-                        <button style={{ fontSize: '0.7rem', padding: '4px 8px' }} onClick={() => { setEditingCategoryId(tag.id); setEditingCategoryName(tag.name); }}>编辑</button>
-                        <button style={{ fontSize: '0.7rem', padding: '4px 8px', color: '#ff3b30' }} onClick={() => void handleDeleteManageCategory(tag.id)}>删除</button>
+                      <div className="micro-row wrap mini-actions">
+                        <button className="mini-button" onClick={() => { setEditingCategoryId(tag.id); setEditingCategoryName(tag.name); }}>编辑</button>
+                        <button className="mini-button danger-text" onClick={() => void handleDeleteManageCategory(tag.id)}>删除</button>
                       </div>
                     </>
                   )}
@@ -4118,10 +4155,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
               </div>
               <button className="close-modal" onClick={() => setIsVideoPersonManageModalOpen(false)}>关闭</button>
             </div>
-            <div className="stack-editor" style={{ marginBottom: '16px' }}>
+            <div className="stack-editor modal-stack">
               <input value={newManagePersonName} onChange={(event) => setNewManagePersonName(event.target.value)} placeholder="UP主名称" />
               <input value={newManagePersonNote} onChange={(event) => setNewManagePersonNote(event.target.value)} placeholder="备注（可选）" />
-              <div className="inline-editor" style={{ marginTop: 0, paddingTop: 0 }}>
+              <div className="inline-editor flush-editor">
                 <input type="file" accept="image/*" onChange={(event) => setNewManagePersonAvatar(event.target.files?.[0] ?? null)} />
                 <button disabled={busy || !newManagePersonName.trim()} onClick={() => void handleCreateManagePerson()}>创建</button>
               </div>
@@ -4130,10 +4167,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
               {videoPeople.map((person) => (
                 <div key={person.id} className="manage-item">
                   {editingPersonId === person.id ? (
-                    <div className="stack-editor" style={{ flex: 1 }}>
+                    <div className="stack-editor flex-editor">
                       <input value={editingPersonName} onChange={(event) => setEditingPersonName(event.target.value)} placeholder="UP主名称" />
                       <input value={editingPersonNote} onChange={(event) => setEditingPersonNote(event.target.value)} placeholder="备注（可选）" />
-                      <div className="inline-editor" style={{ marginTop: 0, paddingTop: 0 }}>
+                      <div className="inline-editor flush-editor">
                         <input type="file" accept="image/*" onChange={(event) => setEditingPersonAvatar(event.target.files?.[0] ?? null)} />
                         <button disabled={busy || !editingPersonName.trim()} onClick={() => void handleUpdateManagePerson(person.id)}>保存</button>
                         <button className="ghost-button" onClick={() => { setEditingPersonId(null); setEditingPersonName(""); setEditingPersonNote(""); setEditingPersonAvatar(null); }}>取消</button>
@@ -4148,9 +4185,9 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                           {person.note && <small>{person.note}</small>}
                         </div>
                       </div>
-                      <div className="micro-row wrap" style={{ gap: '4px' }}>
-                        <button style={{ fontSize: '0.7rem', padding: '4px 8px' }} onClick={() => { setEditingPersonId(person.id); setEditingPersonName(person.name); setEditingPersonNote(person.note || ""); setEditingPersonAvatar(null); }}>编辑</button>
-                        <button style={{ fontSize: '0.7rem', padding: '4px 8px', color: '#ff3b30' }} onClick={() => void handleDeleteManagePerson(person.id)}>删除</button>
+                      <div className="micro-row wrap mini-actions">
+                        <button className="mini-button" onClick={() => { setEditingPersonId(person.id); setEditingPersonName(person.name); setEditingPersonNote(person.note || ""); setEditingPersonAvatar(null); }}>编辑</button>
+                        <button className="mini-button danger-text" onClick={() => void handleDeleteManagePerson(person.id)}>删除</button>
                       </div>
                     </>
                   )}

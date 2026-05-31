@@ -1,5 +1,84 @@
 import { useEffect, useState } from "react";
+import {
+  BarChart3,
+  Clapperboard,
+  FileText,
+  HardDrive,
+  Images,
+  ImagePlus,
+  ScanFace,
+  Tags,
+  UploadCloud,
+  UsersRound
+} from "lucide-react";
+
 import { listPersons, listTags, listGalleryPhotos, listVideos } from "./api";
+
+const quickAccess = [
+  {
+    page: "gallery",
+    title: "展示图库",
+    description: "按人物和标签筛选浏览图片，适合快速挑选、整理与批量导出。",
+    Icon: Images
+  },
+  {
+    page: "people",
+    title: "人物样本库",
+    description: "管理人物样本，沉淀更稳定的识别基础。",
+    Icon: UsersRound
+  },
+  {
+    page: "upload",
+    title: "展示图上传",
+    description: "批量导入图片，自动识别人脸并补齐标签。",
+    Icon: UploadCloud
+  },
+  {
+    page: "videos",
+    title: "视频库",
+    description: "管理视频资源，维护分区、UP 主和在线播放。",
+    Icon: Clapperboard
+  },
+  {
+    page: "statistics",
+    title: "数据统计",
+    description: "查看素材规模、人物样本和标签分布。",
+    Icon: BarChart3
+  }
+] as const;
+
+const features = [
+  {
+    title: "人脸识别",
+    description: "自动检测照片中的人脸，并与样本库匹配，支持未知人物自动创建。",
+    Icon: ScanFace
+  },
+  {
+    title: "智能标签",
+    description: "支持人物标签和普通标签，灵活组合筛选，精准定位图片。",
+    Icon: Tags
+  },
+  {
+    title: "批量导入",
+    description: "支持批量上传和 ZIP 导入导出，方便数据迁移和备份。",
+    Icon: ImagePlus
+  },
+  {
+    title: "视频管理",
+    description: "支持视频上传、分类管理和在线播放，与图片统一管理。",
+    Icon: Clapperboard
+  },
+  {
+    title: "图文识别",
+    description: "支持图文图片 OCR 识别，自动提取文字内容。",
+    Icon: FileText
+  },
+  {
+    title: "本地部署",
+    description: "数据完全本地化存储，保护隐私，无需担心云端泄露。",
+    Icon: HardDrive
+  }
+] as const;
 
 export default function Home() {
   const [stats, setStats] = useState({
@@ -47,20 +126,20 @@ export default function Home() {
 
   return (
     <main className="home-page">
-      {/* Hero Section */}
       <section className="home-hero">
         <div className="hero-content">
           <p className="eyebrow">Local Face Archive</p>
           <h1>PictureShow</h1>
           <p className="hero-description">
-            基于人脸识别的人物图库管理系统，支持自动识别、智能分类、视频管理与数据统计。
-            将散乱的照片整理成可检索、可管理的数字资产。
+            面向人物写真、活动图与视频片段的本地媒体库。把散落素材整理成可识别、可筛选、可回看的展示资产。
           </p>
           <div className="hero-actions">
             <button onClick={() => navigateTo("gallery")} className="hero-button primary">
+              <Images size={18} />
               浏览图库
             </button>
             <button onClick={() => navigateTo("upload")} className="hero-button secondary">
+              <UploadCloud size={18} />
               上传图片
             </button>
           </div>
@@ -85,76 +164,38 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Quick Access */}
       <section className="home-section">
         <h2>快速入口</h2>
         <div className="quick-access-grid">
-          <button onClick={() => navigateTo("gallery")} className="quick-card">
-            <div className="quick-icon">🖼️</div>
-            <h3>展示图库</h3>
-            <p>按人物和标签筛选浏览所有图片，支持批量操作和导出。</p>
-          </button>
-          <button onClick={() => navigateTo("people")} className="quick-card">
-            <div className="quick-icon">👥</div>
-            <h3>人物样本库</h3>
-            <p>管理人物样本，上传正脸照片训练识别模型。</p>
-          </button>
-          <button onClick={() => navigateTo("upload")} className="quick-card">
-            <div className="quick-icon">📤</div>
-            <h3>展示图上传</h3>
-            <p>批量上传图片，自动人脸识别并打标签。</p>
-          </button>
-          <button onClick={() => navigateTo("videos")} className="quick-card">
-            <div className="quick-icon">🎬</div>
-            <h3>视频库</h3>
-            <p>管理视频资源，支持分类标签和在线播放。</p>
-          </button>
-          <button onClick={() => navigateTo("statistics")} className="quick-card">
-            <div className="quick-icon">📊</div>
-            <h3>数据统计</h3>
-            <p>查看系统使用统计和人物标签分布。</p>
-          </button>
+          {quickAccess.map(({ page, title, description, Icon }) => (
+            <button key={page} onClick={() => navigateTo(page)} className="quick-card">
+              <span className="quick-icon">
+                <Icon className="quick-icon-svg" aria-hidden="true" />
+              </span>
+              <h3>{title}</h3>
+              <p>{description}</p>
+            </button>
+          ))}
         </div>
       </section>
 
-      {/* Features */}
       <section className="home-section">
         <h2>功能特点</h2>
         <div className="features-grid">
-          <div className="feature-item">
-            <span className="feature-icon">🔍</span>
-            <h4>人脸识别</h4>
-            <p>自动检测照片中的人脸，并与样本库匹配，支持未知人物自动创建。</p>
-          </div>
-          <div className="feature-item">
-            <span className="feature-icon">🏷️</span>
-            <h4>智能标签</h4>
-            <p>支持人物标签和普通标签，灵活组合筛选，精准定位图片。</p>
-          </div>
-          <div className="feature-item">
-            <span className="feature-icon">📤</span>
-            <h4>批量导入</h4>
-            <p>支持批量上传和 ZIP 导入导出，方便数据迁移和备份。</p>
-          </div>
-          <div className="feature-item">
-            <span className="feature-icon">🎬</span>
-            <h4>视频管理</h4>
-            <p>支持视频上传、分类管理和在线播放，与图片统一管理。</p>
-          </div>
-          <div className="feature-item">
-            <span className="feature-icon">📝</span>
-            <h4>图文识别</h4>
-            <p>支持图文图片 OCR 识别，自动提取文字内容。</p>
-          </div>
-          <div className="feature-item">
-            <span className="feature-icon">💾</span>
-            <h4>本地部署</h4>
-            <p>数据完全本地化存储，保护隐私，无需担心云端泄露。</p>
-          </div>
+          {features.map(({ title, description, Icon }) => (
+            <div className="feature-item" key={title}>
+              <span className="feature-icon">
+                <Icon className="feature-icon-svg" aria-hidden="true" />
+              </span>
+              <div>
+                <h4>{title}</h4>
+                <p>{description}</p>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 
-      {/* Tips */}
       <section className="home-section tips-section">
         <h2>使用提示</h2>
         <div className="tips-list">

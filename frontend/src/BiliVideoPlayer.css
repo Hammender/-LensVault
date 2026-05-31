@@ -6,7 +6,8 @@
   background: #000;
   overflow: hidden;
   user-select: none;
-  border: 2px solid var(--panel-border);
+  border: 1px solid rgba(53, 37, 29, 0.28);
+  border-radius: var(--radius-xl);
 }
 
 .bili-player-container.fullscreen {
@@ -150,6 +151,7 @@
   transition: opacity 0.2s, transform 0.1s;
   box-shadow: none !important;
   min-width: unset !important;
+  border-radius: 999px !important;
 }
 
 .bili-icon-btn:hover {
@@ -205,12 +207,18 @@
 
 .bili-rate-btn {
   min-width: 42px !important;
-  border-radius: 3px !important;
+  border-radius: 999px !important;
 }
 
 .bili-subtitle-btn {
   min-width: 42px !important;
-  border-radius: 3px !important;
+  border-radius: 999px !important;
+}
+
+.bili-rate-value {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 
 .bili-subtitle-btn span {
