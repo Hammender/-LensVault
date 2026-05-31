@@ -5,9 +5,7 @@ from datetime import datetime
 import json
 from io import BytesIO
 import logging
-from pathlib import Path
 from urllib.parse import quote
-from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db import Base, SessionLocal, engine, ensure_legacy_columns, get_db
+from app.db import Base, SessionLocal, engine, get_db
 from app.models import (
     FaceRecord,
     GalleryPhoto,
@@ -122,7 +120,6 @@ logger = logging.getLogger(__name__)
 logging.getLogger("app").setLevel(logging.INFO)
 
 settings = get_settings()
-ensure_legacy_columns()
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -236,121 +233,6 @@ def _auth_session(db: Session, user: User, selected_workspace_id: int | None = N
         workspace=selected,
         workspaces=workspaces,
     )
-
-
-def _legacy_tenant_models() -> tuple[type, ...]:
-    return (
-        Person,
-        SamplePhoto,
-        GalleryPhoto,
-        FaceRecord,
-        Tag,
-        VideoItem,
-        VideoCategoryTag,
-        VideoPerson,
-        VideoUploadSession,
-        Task,
-        UploadHistory,
-    )
-
-
-def _assign_legacy_data_to_workspace(db: Session, workspace_id: int) -> None:
-    for model in _legacy_tenant_models():
-        db.query(model).filter(model.workspace_id.is_(None)).update({"workspace_id": workspace_id}, synchronize_session=False)
-    db.commit()
-
-
-def _legacy_workspace(db: Session) -> Workspace | None:
-    return db.get(Workspace, 1)
-
-
-def _assign_null_workspace_data_to_legacy_workspace(db: Session) -> None:
-    workspace = _legacy_workspace(db)
-    if workspace is None:
-        null_counts = {
-            model.__tablename__: db.query(model).filter(model.workspace_id.is_(None)).count()
-            for model in _legacy_tenant_models()
-        }
-        pending = {name: count for name, count in null_counts.items() if count}
-        if pending:
-            logger.error("Legacy workspace id=1 is missing; cannot backfill workspace_id for legacy rows counts=%s", pending)
-        return
-
-    updated: dict[str, int] = {}
-    for model in _legacy_tenant_models():
-        count = db.query(model).filter(model.workspace_id.is_(None)).update({"workspace_id": workspace.id}, synchronize_session=False)
-        if count:
-            updated[model.__tablename__] = count
-    if updated:
-        db.commit()
-        logger.warning("Assigned legacy tenant rows to workspace_id=%s counts=%s", workspace.id, updated)
-    else:
-        db.rollback()
-
-
-def _legacy_object_target_key(workspace_id: int, prefix: str, object_key: str) -> str:
-    suffix = Path(object_key).suffix.lower()
-    return f"workspaces/{workspace_id}/{prefix}/{uuid4().hex}{suffix}"
-
-
-def _migrate_legacy_object_key(db: Session, item, attribute: str, prefix: str) -> bool:
-    object_key = getattr(item, attribute)
-    workspace_id = getattr(item, "workspace_id", None)
-    if not object_key or workspace_id is None or object_key.startswith("workspaces/"):
-        return False
-    target_key = _legacy_object_target_key(workspace_id, prefix, object_key)
-    try:
-        storage.copy_object(object_key, target_key)
-        storage.stat_object(target_key)
-    except Exception:
-        logger.exception(
-            "Failed to copy legacy object table=%s id=%s attribute=%s source=%s target=%s",
-            item.__tablename__,
-            getattr(item, "id", None),
-            attribute,
-            object_key,
-            target_key,
-        )
-        return False
-    setattr(item, attribute, target_key)
-    db.add(item)
-    logger.info(
-        "Migrated legacy object table=%s id=%s attribute=%s source=%s target=%s",
-        item.__tablename__,
-        getattr(item, "id", None),
-        attribute,
-        object_key,
-        target_key,
-    )
-    return True
-
-
-def _migrate_legacy_minio_objects(db: Session) -> None:
-    migrated: dict[str, int] = {}
-    specs = (
-        (SamplePhoto, "object_key", "samples"),
-        (GalleryPhoto, "object_key", "gallery"),
-        (VideoItem, "object_key", "videos/library"),
-        (VideoItem, "cover_object_key", "videos/covers"),
-        (VideoPerson, "avatar_object_key", "videos/people"),
-    )
-    for model, attribute, prefix in specs:
-        rows = db.scalars(
-            select(model).where(
-                model.workspace_id.is_not(None),
-                getattr(model, attribute).is_not(None),
-                getattr(model, attribute).not_like("workspaces/%"),
-            )
-        ).all()
-        for item in rows:
-            if _migrate_legacy_object_key(db, item, attribute, prefix):
-                key = f"{model.__tablename__}.{attribute}"
-                migrated[key] = migrated.get(key, 0) + 1
-                db.commit()
-            else:
-                db.rollback()
-    if migrated:
-        logger.warning("Migrated legacy MinIO objects to workspace-scoped keys counts=%s", migrated)
 
 
 def require_context(
@@ -507,8 +389,6 @@ def on_startup() -> None:
     )
     db = SessionLocal()
     try:
-        _assign_null_workspace_data_to_legacy_workspace(db)
-        _migrate_legacy_minio_objects(db)
         for workspace in db.scalars(select(Workspace)).all():
             picture_service.ensure_system_tags(db, workspace.id)
         recovered = fail_incomplete_tasks(db, "gallery_import")
@@ -1153,7 +1033,6 @@ def bootstrap_admin(payload: BootstrapCreate, db: Session = Depends(get_db)) -> 
     db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
     db.commit()
     db.refresh(user)
-    _assign_legacy_data_to_workspace(db, workspace.id)
     picture_service.ensure_system_tags(db, workspace.id)
     db.refresh(user)
     return _auth_session(db, user)

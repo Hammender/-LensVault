@@ -31,7 +31,7 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
-  const [volume, setVolume] = useState(1);
+  const [volume, setVolume] = useState(0.2);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
@@ -309,6 +309,7 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
         onClick={togglePlay}
         onTimeUpdate={handleVideoTimeUpdate}
         onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
+        onLoadedMetadata={() => { if (videoRef.current) videoRef.current.volume = 0.2; }}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onEnded={() => setIsPlaying(false)}

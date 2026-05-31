@@ -338,7 +338,7 @@ input:focus, select:focus, textarea:focus {
 }
 
 .gallery-page {
-  grid-template-columns: 280px minmax(0, 1fr) 380px;
+  grid-template-columns: 320px minmax(0, 1fr) 420px;
   align-items: start;
 }
 .people-page { grid-template-columns: 320px minmax(0, 1fr); }
@@ -817,7 +817,14 @@ input:focus, select:focus, textarea:focus {
 
 .stack-editor { display: grid; gap: 12px; }
 
-.detail-panel { padding: 32px 40px; background: var(--bg); }
+.detail-panel { 
+  padding: 32px 40px; 
+  background: var(--bg); 
+  position: sticky;
+  top: 24px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
 
 .detail-image-wrap {
   display: block;
@@ -848,12 +855,23 @@ input:focus, select:focus, textarea:focus {
 .detail-copy p { margin: 4px 0; font-family: var(--font-sans); }
 
 .face-list article {
-  display: grid;
-  gap: 8px;
-  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
   border: 2px solid var(--panel-border);
   background: var(--bg-strong);
   box-shadow: 2px 2px 0 var(--panel-border);
+  width: 100%;
+}
+
+.face-list article strong {
+  margin-right: auto;
+}
+
+.face-list article span {
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 
 .person-card {

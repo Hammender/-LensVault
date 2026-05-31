@@ -5,7 +5,7 @@ from io import BytesIO
 from typing import BinaryIO
 
 from minio import Minio
-from minio.commonconfig import ComposeSource, CopySource
+from minio.commonconfig import ComposeSource
 from minio.error import S3Error
 
 from app.core.config import Settings, get_settings
@@ -60,9 +60,6 @@ class MinioStorage:
             object_key,
             [ComposeSource(self.bucket, source_key) for source_key in source_keys],
         )
-
-    def copy_object(self, source_key: str, target_key: str) -> None:
-        self.client.copy_object(self.bucket, target_key, CopySource(self.bucket, source_key))
 
     def get_bytes(self, object_key: str) -> bytes:
         response = self.client.get_object(self.bucket, object_key)
