@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     minio_secret_key: str = "pictureshow-secret"
     minio_bucket: str = "photos"
     minio_secure: bool = False
+    minio_public_endpoint: str | None = None
+    minio_public_secure: bool | None = None
 
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"

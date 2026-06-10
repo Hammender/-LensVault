@@ -4035,7 +4035,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
       {page === "home" && <Home />}
 
-      {page === "gallery" && <GalleryPageComponent />}
+      {page === "gallery" && GalleryPageComponent()}
 
       {page === "people" && <PeoplePageComponent />}
 

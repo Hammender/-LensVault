@@ -21,6 +21,17 @@ class MinioStorage:
             secure=self.settings.minio_secure,
         )
         self.bucket = self.settings.minio_bucket
+        self.public_client = self._build_public_client()
+
+    def _build_public_client(self) -> Minio:
+        if not self.settings.minio_public_endpoint:
+            return self.client
+        return Minio(
+            self.settings.minio_public_endpoint,
+            access_key=self.settings.minio_access_key,
+            secret_key=self.settings.minio_secret_key,
+            secure=self.settings.minio_secure if self.settings.minio_public_secure is None else self.settings.minio_public_secure,
+        )
 
     def ensure_bucket(self) -> None:
         try:
@@ -47,7 +58,7 @@ class MinioStorage:
 
     def presigned_get_url(self, object_key: str, expires_seconds: int) -> str:
         expires = timedelta(seconds=max(expires_seconds, 1))
-        return self.client.presigned_get_object(self.bucket, object_key, expires=expires)
+        return self.public_client.presigned_get_object(self.bucket, object_key, expires=expires)
 
     def get_stream(self, object_key: str, offset: int = 0, length: int | None = None):
         if length is None:

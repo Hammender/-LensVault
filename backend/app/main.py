@@ -5,11 +5,11 @@ from datetime import datetime
 import json
 from io import BytesIO
 import logging
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from PIL import Image
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -477,8 +477,12 @@ def _video_category_to_read(tag: VideoCategoryTag) -> VideoCategoryTagRead:
     return VideoCategoryTagRead.model_validate(tag)
 
 
-def _video_play_url(video: VideoItem) -> str:
+def _video_stream_url(video: VideoItem) -> str:
     return f"/api/videos/{video.id}/stream"
+
+
+def _video_play_url(video: VideoItem) -> str:
+    return f"/api/videos/{video.id}/play"
 
 
 def _video_cover_url(video: VideoItem) -> str | None:
@@ -529,7 +533,7 @@ def _video_to_list_item(video: VideoItem) -> VideoItemListItem:
         status=video.status,
         category_tags=[_video_category_to_read(tag) for tag in categories],
         people=[_video_person_to_read(person) for person in people],
-        stream_url=f"/api/videos/{video.id}/stream",
+        stream_url=_video_stream_url(video),
         play_url=_video_play_url(video),
         cover_url=_video_cover_url(video),
         faststart_applied=video.faststart_applied,
@@ -1901,7 +1905,7 @@ def list_gallery_photos(
     query = (
         select(GalleryPhoto)
         .where(GalleryPhoto.workspace_id == current.workspace_id)
-        .order_by(GalleryPhoto.taken_at.desc().nullslast(), GalleryPhoto.created_at.desc())
+        .order_by(GalleryPhoto.created_at.desc())
     )
     count_query = select(func.count(GalleryPhoto.id)).where(GalleryPhoto.workspace_id == current.workspace_id)
     query = _apply_gallery_filters(query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
@@ -2756,14 +2760,7 @@ def remove_video_person(
     return _video_to_detail(video)
 
 
-@app.get("/api/videos/{video_id}/stream")
-def stream_video(
-    video_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    current: CurrentContext = Depends(require_context),
-) -> StreamingResponse:
-    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+def _stream_video_response(video: VideoItem, request: Request) -> StreamingResponse:
     stat = storage.stat_object(video.object_key)
     size = stat.size
     range_tuple = _parse_range_header(request.headers.get("range"), size)
@@ -2791,6 +2788,77 @@ def stream_video(
         media_type=video.content_type or "video/mp4",
         headers=headers,
     )
+
+
+@app.get("/api/videos/{video_id}/play")
+def play_video(
+    video_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+):
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    if settings.video_use_presigned_play_url:
+        try:
+            play_url = storage.presigned_get_url(video.object_key, settings.video_presigned_url_expires_seconds)
+            response = RedirectResponse(play_url, status_code=307)
+            response.headers["X-PictureShow-Video-Mode"] = "minio-presigned"
+            response.headers["X-PictureShow-Minio-Endpoint"] = settings.minio_public_endpoint or settings.minio_endpoint
+            return response
+        except Exception:
+            logger.exception("Failed to redirect video play url video_id=%s", video.id)
+    response = _stream_video_response(video, request)
+    response.headers["X-PictureShow-Video-Mode"] = "backend-stream-fallback"
+    return response
+
+
+@app.get("/api/videos/{video_id}/stream")
+def stream_video(
+    video_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> StreamingResponse:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    response = _stream_video_response(video, request)
+    response.headers["X-PictureShow-Video-Mode"] = "backend-stream"
+    return response
+
+
+@app.get("/api/videos/{video_id}/playback-diagnostics")
+def get_video_playback_diagnostics(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, object]:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    result: dict[str, object] = {
+        "video_id": video.id,
+        "status": video.status,
+        "content_type": video.content_type,
+        "size_bytes": video.size_bytes,
+        "play_url": _video_play_url(video),
+        "stream_url": _video_stream_url(video),
+        "presigned_enabled": settings.video_use_presigned_play_url,
+        "minio_endpoint": settings.minio_endpoint,
+        "minio_public_endpoint": settings.minio_public_endpoint or settings.minio_endpoint,
+        "minio_public_secure": settings.minio_secure if settings.minio_public_secure is None else settings.minio_public_secure,
+        "expected_mode": "minio-presigned" if settings.video_use_presigned_play_url else "backend-stream",
+    }
+    if settings.video_use_presigned_play_url:
+        try:
+            presigned_url = storage.presigned_get_url(video.object_key, settings.video_presigned_url_expires_seconds)
+            parsed = urlparse(presigned_url)
+            result["presigned_url_scheme"] = parsed.scheme
+            result["presigned_url_host"] = parsed.netloc
+            result["presigned_url_path_prefix"] = parsed.path.rsplit("/", 1)[0]
+            result["presigned_url_ok"] = True
+        except Exception as exc:
+            logger.exception("Failed to build video playback diagnostic presigned url video_id=%s", video.id)
+            result["presigned_url_ok"] = False
+            result["presigned_url_error"] = str(exc)[:500]
+            result["expected_mode"] = "backend-stream-fallback"
+    return result
 
 
 @app.get("/api/statistics/tags", response_model=list[TagStatistics])
