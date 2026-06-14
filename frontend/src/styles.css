@@ -2462,6 +2462,69 @@ button.primary,
   background: #050505;
 }
 
+.video-player-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.video-player-mode-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--panel-border);
+  background: var(--surface);
+}
+
+.video-player-mode-tabs button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.video-player-mode-tabs button.active {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.video-player-mode-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.video-player-diagnostic-hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.native-video-player {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  object-fit: contain;
+}
+
+@media (max-width: 760px) {
+  .video-player-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .video-player-diagnostic-hint {
+    white-space: normal;
+  }
+}
+
 .video-loading-panel {
   min-height: 400px;
   display: grid;
@@ -2474,6 +2537,31 @@ button.primary,
 
 .video-tag-row {
   margin-top: 8px;
+}
+
+.video-playback-tools {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.video-playback-diagnostics {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 16px;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.video-playback-diagnostics p {
+  margin: 0;
+}
+
+.video-playback-diagnostics strong {
+  color: var(--fg);
 }
 
 .video-meta-grid {

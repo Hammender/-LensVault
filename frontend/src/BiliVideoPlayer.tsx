@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useCallback, MouseEvent as ReactMouseEvent } from "react";
+import React, { useRef, useState, useEffect, useCallback, PointerEvent as ReactPointerEvent } from "react";
 import { Maximize, Minimize, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import "./BiliVideoPlayer.css";
 
@@ -51,8 +51,24 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
   const longPressActiveRef = useRef(false);
   
   const [isDraggingProgress, setIsDraggingProgress] = useState(false);
+  const isDraggingProgressRef = useRef(false);
+  const seekStartedAtRef = useRef<number | null>(null);
+  const seekTargetRef = useRef<number | null>(null);
+  const pendingSeekTimeRef = useRef<number | null>(null);
+  const debugVideoEvents = typeof window !== "undefined" && window.localStorage.getItem("pictureShowVideoDebug") === "1";
 
   const RATE_OPTIONS = [2.0, 1.5, 1.25, 1.0, 0.5];
+
+  const logVideoEvent = (eventName: string, video: HTMLVideoElement) => {
+    if (!debugVideoEvents) return;
+    console.info(`[video-playback:custom] ${eventName}`, {
+      currentTime: Number(video.currentTime.toFixed(3)),
+      duration: Number.isFinite(video.duration) ? Number(video.duration.toFixed(3)) : null,
+      readyState: video.readyState,
+      networkState: video.networkState,
+      src
+    });
+  };
 
   useEffect(() => {
     setSubtitlesEnabled(subtitles.length > 0);
@@ -245,20 +261,83 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
     };
   }, [resetControlsTimeout, isMuted]);
 
-  const handleProgressClick = (e: ReactMouseEvent<HTMLDivElement>) => {
-    if (!videoRef.current || !duration) return;
+  const getProgressTime = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!duration) return null;
     const rect = e.currentTarget.getBoundingClientRect();
-    const pos = (e.clientX - rect.left) / rect.width;
-    videoRef.current.currentTime = pos * duration;
+    const pos = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+    return pos * duration;
+  };
+
+  const updateProgressPreview = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const nextTime = getProgressTime(e);
+    if (nextTime === null) return;
+    pendingSeekTimeRef.current = nextTime;
+    setCurrentTime(nextTime);
+    setShowControls(true);
+  };
+
+  const handleProgressPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!videoRef.current || !duration) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    isDraggingProgressRef.current = true;
+    setIsDraggingProgress(true);
+    updateProgressPreview(e);
+  };
+
+  const handleProgressPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isDraggingProgressRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    updateProgressPreview(e);
+  };
+
+  const commitProgressSeek = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isDraggingProgressRef.current || !videoRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    updateProgressPreview(e);
+    const nextTime = pendingSeekTimeRef.current;
+    if (nextTime !== null) {
+      videoRef.current.currentTime = nextTime;
+    }
+    pendingSeekTimeRef.current = null;
+    isDraggingProgressRef.current = false;
+    setIsDraggingProgress(false);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  const cancelProgressSeek = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isDraggingProgressRef.current) return;
+    e.stopPropagation();
+    pendingSeekTimeRef.current = null;
+    isDraggingProgressRef.current = false;
+    setIsDraggingProgress(false);
   };
 
   const handleVideoTimeUpdate = () => {
     if (!videoRef.current) return;
+    const video = videoRef.current;
     if (!isDraggingProgress) {
-      setCurrentTime(videoRef.current.currentTime);
+      setCurrentTime(video.currentTime);
     }
-    if (videoRef.current.buffered.length > 0) {
-      setBuffered(videoRef.current.buffered.end(videoRef.current.buffered.length - 1));
+    if (video.buffered.length > 0) {
+      let bufferedEnd = 0;
+      for (let index = 0; index < video.buffered.length; index += 1) {
+        const start = video.buffered.start(index);
+        const end = video.buffered.end(index);
+        if (video.currentTime >= start && video.currentTime <= end) {
+          bufferedEnd = end;
+          break;
+        }
+        if (end <= video.currentTime) {
+          bufferedEnd = Math.max(bufferedEnd, end);
+        }
+      }
+      setBuffered(bufferedEnd);
     }
   };
 
@@ -307,10 +386,38 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
         src={src}
         poster={poster}
         className="bili-video-el"
+        preload="auto"
         onClick={togglePlay}
+        onLoadStart={(event) => logVideoEvent("loadstart", event.currentTarget)}
         onTimeUpdate={handleVideoTimeUpdate}
         onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
-        onLoadedMetadata={() => { if (videoRef.current) videoRef.current.volume = 0.2; }}
+        onLoadedMetadata={(event) => {
+          event.currentTarget.volume = 0.2;
+          logVideoEvent("loadedmetadata", event.currentTarget);
+        }}
+        onWaiting={(event) => logVideoEvent("waiting", event.currentTarget)}
+        onCanPlay={(event) => logVideoEvent("canplay", event.currentTarget)}
+        onSeeking={(event) => {
+          seekStartedAtRef.current = performance.now();
+          seekTargetRef.current = event.currentTarget.currentTime;
+          logVideoEvent("seeking", event.currentTarget);
+        }}
+        onSeeked={(event) => {
+          const startedAt = seekStartedAtRef.current;
+          const target = seekTargetRef.current;
+          if (debugVideoEvents) {
+            console.info("[video-playback:custom] seeked", {
+              target: target === null ? null : Number(target.toFixed(3)),
+              currentTime: Number(event.currentTarget.currentTime.toFixed(3)),
+              elapsedMs: startedAt === null ? null : Math.round(performance.now() - startedAt),
+              readyState: event.currentTarget.readyState,
+              networkState: event.currentTarget.networkState,
+              src
+            });
+          }
+          seekStartedAtRef.current = null;
+          seekTargetRef.current = null;
+        }}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onEnded={() => setIsPlaying(false)}
@@ -341,7 +448,13 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
       )}
 
       <div className={`bili-controls-overlay ${showControls ? 'show' : ''}`}>
-        <div className="bili-progress-area" onClick={handleProgressClick}>
+        <div
+          className={`bili-progress-area${isDraggingProgress ? " dragging" : ""}`}
+          onPointerDown={handleProgressPointerDown}
+          onPointerMove={handleProgressPointerMove}
+          onPointerUp={commitProgressSeek}
+          onPointerCancel={cancelProgressSeek}
+        >
           <div className="bili-progress-bar-bg" />
           <div className="bili-progress-bar-buf" style={{ width: `${duration ? (buffered / duration) * 100 : 0}%` }} />
           <div className="bili-progress-bar-cur" style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }} />

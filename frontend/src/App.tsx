@@ -49,6 +49,7 @@ import {
   getSubtitleServiceLogs,
   getSubtitleServiceStatus,
   getVideo,
+  getVideoPlaybackDiagnostics,
   getVideoUploadSession,
   getGalleryExportUrl,
   getGalleryPhoto,
@@ -75,6 +76,7 @@ import {
   registerAccount,
   renamePerson,
   replaceVideoCover,
+  optimizeVideoPlayback,
   reRecognizeGalleryPhoto,
   reRecognizeUnknownGalleryPhotos,
   updateGalleryPhotoRichText,
@@ -116,6 +118,7 @@ import type {
   VideoDetail,
   EmbeddedSubtitleStream,
   VideoItem,
+  VideoPlaybackDiagnostics,
   VideoPerson,
   VideoUploadSession,
   WorkspaceInvitation,
@@ -123,6 +126,7 @@ import type {
 } from "./types";
 
 type PageKey = "home" | "gallery" | "people" | "upload" | "videos" | "statistics" | "video-play";
+type VideoPlayerMode = "custom" | "native" | "plain";
 
 type PendingSampleUpload = {
   file: File;
@@ -269,6 +273,76 @@ function videoStatusLabel(status: string): string {
     processing_failed: "优化失败"
   };
   return labels[status] ?? status;
+}
+
+function NativeVideoPlayer({
+  src,
+  poster,
+  subtitles,
+  diagnosticLabel = "native"
+}: {
+  src: string;
+  poster?: string;
+  subtitles: Array<{ src: string; label: string; srclang: string }>;
+  diagnosticLabel?: string;
+}) {
+  const seekStartedAtRef = useRef<number | null>(null);
+  const seekTargetRef = useRef<number | null>(null);
+
+  const logVideoEvent = (eventName: string, video: HTMLVideoElement) => {
+    console.info(`[video-playback:${diagnosticLabel}] ${eventName}`, {
+      currentTime: Number(video.currentTime.toFixed(3)),
+      duration: Number.isFinite(video.duration) ? Number(video.duration.toFixed(3)) : null,
+      readyState: video.readyState,
+      networkState: video.networkState,
+      src
+    });
+  };
+
+  return (
+    <video
+      className="native-video-player"
+      src={src}
+      poster={poster}
+      controls
+      preload="auto"
+      playsInline
+      onLoadStart={(event) => logVideoEvent("loadstart", event.currentTarget)}
+      onLoadedMetadata={(event) => logVideoEvent("loadedmetadata", event.currentTarget)}
+      onWaiting={(event) => logVideoEvent("waiting", event.currentTarget)}
+      onCanPlay={(event) => logVideoEvent("canplay", event.currentTarget)}
+      onSeeking={(event) => {
+        seekStartedAtRef.current = performance.now();
+        seekTargetRef.current = event.currentTarget.currentTime;
+        logVideoEvent("seeking", event.currentTarget);
+      }}
+      onSeeked={(event) => {
+        const startedAt = seekStartedAtRef.current;
+        const target = seekTargetRef.current;
+        console.info(`[video-playback:${diagnosticLabel}] seeked`, {
+          target: target === null ? null : Number(target.toFixed(3)),
+          currentTime: Number(event.currentTarget.currentTime.toFixed(3)),
+          elapsedMs: startedAt === null ? null : Math.round(performance.now() - startedAt),
+          readyState: event.currentTarget.readyState,
+          networkState: event.currentTarget.networkState,
+          src
+        });
+        seekStartedAtRef.current = null;
+        seekTargetRef.current = null;
+      }}
+    >
+      {subtitles.map((track, index) => (
+        <track
+          key={`${track.src}-${track.srclang}`}
+          src={track.src}
+          kind="subtitles"
+          srcLang={track.srclang}
+          label={track.label}
+          default={index === 0}
+        />
+      ))}
+    </video>
+  );
 }
 
 function subtitleTrackStatusLabel(status: string): string {
@@ -635,6 +709,9 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const selectedVideoCodecRepairVideoId = useRef<number | null>(null);
   const selectedVideoCodecRepairPolls = useRef(0);
   const [videoPlayerUrl, setVideoPlayerUrl] = useState("");
+  const [videoPlayerMode, setVideoPlayerMode] = useState<VideoPlayerMode>("custom");
+  const [videoPlaybackDiagnostics, setVideoPlaybackDiagnostics] = useState<VideoPlaybackDiagnostics | null>(null);
+  const [videoPlaybackDiagnosticsLoading, setVideoPlaybackDiagnosticsLoading] = useState(false);
   const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const [videoTitle, setVideoTitle] = useState("");
   const [videoDescription, setVideoDescription] = useState("");
@@ -1124,6 +1201,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     setSubtitleImportStreams([]);
     setSubtitleImportStreamIndex("");
     setSubtitleImportNotice(null);
+    setVideoPlaybackDiagnostics(null);
   }, [selectedVideo?.id]);
 
 
@@ -1752,6 +1830,42 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       setVideoItems((items) => items.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "替换视频封面失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleLoadVideoPlaybackDiagnostics() {
+    if (!selectedVideo) {
+      return;
+    }
+    setVideoPlaybackDiagnosticsLoading(true);
+    setError(null);
+    try {
+      setVideoPlaybackDiagnostics(await getVideoPlaybackDiagnostics(selectedVideo.id));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "读取播放诊断失败。");
+    } finally {
+      setVideoPlaybackDiagnosticsLoading(false);
+    }
+  }
+
+  async function handleOptimizeSelectedVideoPlayback() {
+    if (!selectedVideo) {
+      return;
+    }
+    if (!window.confirm("会覆盖当前 MinIO 中的视频对象，并重新编码为更适合拖动进度条的 MP4。继续吗？")) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await optimizeVideoPlayback(selectedVideo.id);
+      setSelectedVideo(detail);
+      setVideoItems((items) => items.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)));
+      setVideoPlaybackDiagnostics(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "启动播放优化失败。");
     } finally {
       setBusy(false);
     }
@@ -3846,17 +3960,61 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
           <section className="video-play-main">
             {selectedVideo ? (
               <div className="panel video-player-panel">
+                <div className="video-player-toolbar">
+                  <div className="video-player-mode-tabs" aria-label="播放器模式">
+                    <button
+                      className={videoPlayerMode === "custom" ? "active" : ""}
+                      onClick={() => setVideoPlayerMode("custom")}
+                      type="button"
+                    >
+                      自定义播放器
+                    </button>
+                    <button
+                      className={videoPlayerMode === "native" ? "active" : ""}
+                      onClick={() => setVideoPlayerMode("native")}
+                      type="button"
+                    >
+                      原生播放器
+                    </button>
+                    <button
+                      className={videoPlayerMode === "plain" ? "active" : ""}
+                      onClick={() => setVideoPlayerMode("plain")}
+                      type="button"
+                    >
+                      极简原生
+                    </button>
+                  </div>
+                  <span className="video-player-diagnostic-hint">切换后拖动进度条，对比控制台 seek 耗时</span>
+                </div>
+                {(() => {
+                  const subtitleTracks = selectedVideo.subtitle_tracks
+                    .filter((track) => track.status === "ready" && track.vtt_url)
+                    .map((track) => ({
+                      src: track.vtt_url as string,
+                      label: track.label,
+                      srclang: track.language
+                    }));
+                  return videoPlayerMode === "native" ? (
+                    <NativeVideoPlayer
+                      src={videoPlayerUrl}
+                      poster={selectedVideo.cover_url ?? undefined}
+                      subtitles={subtitleTracks}
+                    />
+                  ) : videoPlayerMode === "plain" ? (
+                    <NativeVideoPlayer
+                      src={videoPlayerUrl}
+                      poster={selectedVideo.cover_url ?? undefined}
+                      subtitles={[]}
+                      diagnosticLabel="plain"
+                    />
+                  ) : (
                   <BiliVideoPlayer
                     src={videoPlayerUrl}
                     poster={selectedVideo.cover_url ?? undefined}
-                    subtitles={selectedVideo.subtitle_tracks
-                      .filter((track) => track.status === "ready" && track.vtt_url)
-                      .map((track) => ({
-                        src: track.vtt_url as string,
-                        label: track.label,
-                        srclang: track.language
-                      }))}
+                    subtitles={subtitleTracks}
                   />
+                  );
+                })()}
               </div>
             ) : (
               <div className="panel video-loading-panel">
@@ -4013,6 +4171,39 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                   {selectedVideo.faststart_applied ? "· 已完成 faststart 优化" : "· 未优化"}
                 </p>
                 {selectedVideo.processing_error && <p className="inline-error">优化错误：{selectedVideo.processing_error}</p>}
+
+                <div className="video-playback-tools">
+                  <button
+                    className="ghost-button"
+                    disabled={videoPlaybackDiagnosticsLoading || selectedVideo.status === "processing"}
+                    onClick={() => void handleLoadVideoPlaybackDiagnostics()}
+                  >
+                    {videoPlaybackDiagnosticsLoading ? "诊断中..." : "读取播放诊断"}
+                  </button>
+                  <button
+                    className="compact-button"
+                    disabled={busy || selectedVideo.status === "processing"}
+                    onClick={() => void handleOptimizeSelectedVideoPlayback()}
+                  >
+                    优化拖动流畅度
+                  </button>
+                </div>
+                {videoPlaybackDiagnostics && (
+                  <div className="video-playback-diagnostics">
+                    <p><strong>播放链路:</strong> {videoPlaybackDiagnostics.expected_mode}</p>
+                    <p><strong>MinIO:</strong> {videoPlaybackDiagnostics.presigned_url_host || videoPlaybackDiagnostics.minio_public_endpoint}</p>
+                    <p><strong>对象:</strong> {formatBytes(videoPlaybackDiagnostics.object?.object_size_bytes ?? videoPlaybackDiagnostics.size_bytes)}</p>
+                    <p><strong>码率:</strong> {videoPlaybackDiagnostics.object?.bitrate ? `${Math.round(videoPlaybackDiagnostics.object.bitrate / 1000)} kbps` : "未知"}</p>
+                    <p><strong>Faststart:</strong> {videoPlaybackDiagnostics.object?.faststart === null || videoPlaybackDiagnostics.object?.faststart === undefined ? "未知" : videoPlaybackDiagnostics.object.faststart ? "是" : "否"}</p>
+                    <p>
+                      <strong>估算关键帧间隔:</strong>{" "}
+                      {videoPlaybackDiagnostics.object?.estimated_keyframe_interval_seconds
+                        ? `${videoPlaybackDiagnostics.object.estimated_keyframe_interval_seconds.toFixed(2)} 秒`
+                        : "未知"}
+                    </p>
+                    {videoPlaybackDiagnostics.object_probe_error && <p className="inline-error">{videoPlaybackDiagnostics.object_probe_error}</p>}
+                  </div>
+                )}
                 
                 <button 
                   className="danger-button full-width-action" 

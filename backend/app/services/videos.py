@@ -281,10 +281,13 @@ class VideoService:
                     db.commit()
                     return
 
-                if self._is_browser_friendly(original_info) or not self.settings.video_transcode_non_browser_friendly:
+                should_transcode_for_seek = self._should_optimize_for_seek(input_path, original_info)
+                if should_transcode_for_seek:
+                    self._run_browser_transcode(input_path, output_path, optimize_for_seek=True, source_info=original_info)
+                elif self._is_browser_friendly(original_info) or not self.settings.video_transcode_non_browser_friendly:
                     self._run_faststart(input_path, output_path)
                 else:
-                    self._run_browser_transcode(input_path, output_path)
+                    self._run_browser_transcode(input_path, output_path, optimize_for_seek=True, source_info=original_info)
                 playback_info = self._probe_video(output_path)
                 size_bytes = output_path.stat().st_size
                 sha256 = self._hash_file(output_path)
@@ -323,6 +326,80 @@ class VideoService:
 
     def optimize_video_faststart(self, video_id: int) -> None:
         self.process_video_for_playback(video_id)
+
+    def optimize_video_for_seek(self, video_id: int) -> None:
+        db = SessionLocal()
+        try:
+            video = db.get(VideoItem, video_id)
+            if video is None:
+                return
+            video.status = "processing"
+            video.processing_error = None
+            db.commit()
+            object_key = video.object_key
+
+            with tempfile.TemporaryDirectory(prefix="pictureshow-video-seek-") as temp_dir:
+                input_path = Path(temp_dir) / f"input{Path(video.filename).suffix.lower() or '.mp4'}"
+                output_path = Path(temp_dir) / "playback.mp4"
+                self._download_object_to_file(object_key, input_path)
+                original_info = self._probe_video(input_path)
+                self._run_browser_transcode(input_path, output_path, optimize_for_seek=True, source_info=original_info)
+                playback_info = self._probe_video(output_path)
+                size_bytes = output_path.stat().st_size
+                sha256 = self._hash_file(output_path)
+                with output_path.open("rb") as stream:
+                    self.storage.put_stream(object_key, stream, size_bytes, "video/mp4")
+
+            video = db.get(VideoItem, video_id)
+            if video is None:
+                return
+            video.status = "ready"
+            video.faststart_applied = True
+            video.sha256 = sha256
+            video.content_type = "video/mp4"
+            video.size_bytes = size_bytes
+            video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds or video.duration_seconds
+            video.width = playback_info.width or original_info.width or video.width
+            video.height = playback_info.height or original_info.height or video.height
+            video.original_video_codec = original_info.video_codec or video.original_video_codec
+            video.original_audio_codec = original_info.audio_codec or video.original_audio_codec
+            video.video_codec = playback_info.video_codec or original_info.video_codec or video.video_codec
+            video.audio_codec = playback_info.audio_codec or original_info.audio_codec or video.audio_codec
+            video.processed_at = datetime.utcnow()
+            video.processing_error = None
+            db.commit()
+        except Exception as exc:
+            logger.exception("Video seek optimization failed video_id=%s", video_id)
+            db.rollback()
+            video = db.get(VideoItem, video_id)
+            if video is not None:
+                video.status = "processing_failed"
+                video.faststart_applied = False
+                video.processed_at = datetime.utcnow()
+                video.processing_error = str(exc)[:2000]
+                db.commit()
+        finally:
+            db.close()
+
+    def inspect_playback_object(self, video: VideoItem) -> dict[str, object]:
+        stat = self.storage.stat_object(video.object_key)
+        with tempfile.TemporaryDirectory(prefix="pictureshow-video-diagnostic-") as temp_dir:
+            input_path = Path(temp_dir) / f"input{Path(video.filename).suffix.lower() or '.mp4'}"
+            self._download_object_to_file(video.object_key, input_path)
+            info = self._probe_video(input_path)
+            return {
+                "object_key": video.object_key,
+                "object_size_bytes": stat.size,
+                "object_content_type": getattr(stat, "content_type", None),
+                "duration_seconds": info.duration_seconds,
+                "width": info.width,
+                "height": info.height,
+                "video_codec": info.video_codec,
+                "audio_codec": info.audio_codec,
+                "bitrate": self._probe_format_bitrate(input_path),
+                "faststart": self._has_faststart_moov(input_path),
+                "estimated_keyframe_interval_seconds": self._estimate_keyframe_interval(input_path),
+            }
 
     def needs_metadata_repair(self, video: VideoItem) -> bool:
         if video.status == "ready" and (not video.original_video_codec or not video.video_codec):
@@ -541,7 +618,26 @@ class VideoService:
         if not output_path.exists() or output_path.stat().st_size <= 0:
             raise RuntimeError("ffmpeg faststart did not create output video")
 
-    def _run_browser_transcode(self, input_path: Path, output_path: Path) -> None:
+    def _should_optimize_for_seek(self, input_path: Path, info: "VideoProbeInfo") -> bool:
+        if not self.settings.video_auto_seek_optimize_on_upload:
+            return False
+        if not self._is_browser_friendly(info):
+            return True
+        estimated_interval = self._estimate_keyframe_interval(input_path)
+        if estimated_interval is None:
+            return True
+        return estimated_interval > max(self.settings.video_seek_optimize_threshold_seconds, 0.5)
+
+    def _run_browser_transcode(
+        self,
+        input_path: Path,
+        output_path: Path,
+        optimize_for_seek: bool = True,
+        source_info: "VideoProbeInfo | None" = None,
+    ) -> None:
+        keyframe_interval = max(self.settings.video_seek_keyframe_interval_seconds, 0.5)
+        source_fps = source_info.fps if source_info else None
+        gop_size = max(int(round(keyframe_interval * (source_fps or 24))), 1)
         command = [
             self.settings.ffmpeg_path,
             "-y",
@@ -554,11 +650,27 @@ class VideoService:
             "-c:v",
             "libx264",
             "-preset",
-            "veryfast",
+            self.settings.video_seek_transcode_preset,
             "-crf",
-            "20",
+            str(self.settings.video_seek_transcode_crf),
             "-pix_fmt",
             "yuv420p",
+        ]
+        if optimize_for_seek:
+            command.extend(
+                [
+                    "-g",
+                    str(gop_size),
+                    "-keyint_min",
+                    str(gop_size),
+                    "-sc_threshold",
+                    "0",
+                    "-force_key_frames",
+                    f"expr:gte(t,n_forced*{keyframe_interval:g})",
+                ]
+            )
+        command.extend(
+            [
             "-c:a",
             "aac",
             "-b:a",
@@ -566,7 +678,8 @@ class VideoService:
             "-movflags",
             "+faststart",
             str(output_path),
-        ]
+            ]
+        )
         result = subprocess.run(
             command,
             capture_output=True,
@@ -579,6 +692,69 @@ class VideoService:
             raise RuntimeError(message[-2000:])
         if not output_path.exists() or output_path.stat().st_size <= 0:
             raise RuntimeError("ffmpeg transcode did not create output video")
+
+    def _probe_format_bitrate(self, path: Path) -> int | None:
+        command = [
+            self.settings.ffprobe_path,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=bit_rate",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+        if result.returncode != 0:
+            return None
+        return self._parse_int((result.stdout or "").strip())
+
+    def _estimate_keyframe_interval(self, path: Path) -> float | None:
+        command = [
+            self.settings.ffprobe_path,
+            "-v",
+            "error",
+            "-read_intervals",
+            "0%+120",
+            "-select_streams",
+            "v:0",
+            "-skip_frame",
+            "nokey",
+            "-show_entries",
+            "frame=best_effort_timestamp_time,pkt_pts_time",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+        if result.returncode != 0:
+            return None
+        times: list[float] = []
+        for line in (result.stdout or "").splitlines():
+            parts = [part.strip() for part in line.split(",") if part.strip()]
+            value = next((self._parse_float(part) for part in parts if self._parse_float(part) is not None), None)
+            if value is not None:
+                times.append(value)
+        if len(times) < 2:
+            return None
+        intervals = [next_time - current_time for current_time, next_time in zip(times, times[1:]) if next_time > current_time]
+        if not intervals:
+            return None
+        return round(sum(intervals) / len(intervals), 3)
+
+    def _has_faststart_moov(self, path: Path) -> bool | None:
+        try:
+            with path.open("rb") as handle:
+                sample = handle.read(4 * 1024 * 1024)
+        except OSError:
+            return None
+        moov_index = sample.find(b"moov")
+        mdat_index = sample.find(b"mdat")
+        if moov_index < 0:
+            return False
+        if mdat_index < 0:
+            return True
+        return moov_index < mdat_index
 
     def _extract_cover(self, input_path: Path, output_path: Path, duration_seconds: float | None) -> None:
         capture_at = self.settings.video_cover_capture_seconds
@@ -641,6 +817,7 @@ class VideoService:
         duration = self._parse_float(video_stream.get("duration")) or self._parse_float(payload.get("format", {}).get("duration"))
         video_codec = self._stream_codec(video_stream)
         audio_codec = self._stream_codec(audio_stream)
+        fps = self._parse_frame_rate(video_stream.get("avg_frame_rate")) or self._parse_frame_rate(video_stream.get("r_frame_rate"))
         if not video_codec or (streams and not audio_codec):
             fallback_video_codec, fallback_audio_codec = self._probe_codecs_from_ffmpeg_banner(path)
             video_codec = video_codec or fallback_video_codec
@@ -651,6 +828,7 @@ class VideoService:
             height=self._parse_int(video_stream.get("height")),
             video_codec=video_codec,
             audio_codec=audio_codec,
+            fps=fps,
         )
 
     def _is_browser_friendly(self, info: "VideoProbeInfo") -> bool:
@@ -703,6 +881,21 @@ class VideoService:
         except (TypeError, ValueError):
             return None
 
+    def _parse_frame_rate(self, value: object) -> float | None:
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw or raw in {"0/0", "N/A"}:
+            return None
+        if "/" in raw:
+            numerator, denominator = raw.split("/", 1)
+            top = self._parse_float(numerator)
+            bottom = self._parse_float(denominator)
+            if top is None or bottom in (None, 0):
+                return None
+            return top / bottom
+        return self._parse_float(raw)
+
     def _parse_int(self, value: object) -> int | None:
         try:
             if value is None:
@@ -747,9 +940,11 @@ class VideoProbeInfo:
         height: int | None,
         video_codec: str | None,
         audio_codec: str | None,
+        fps: float | None = None,
     ) -> None:
         self.duration_seconds = duration_seconds
         self.width = width
         self.height = height
         self.video_codec = video_codec
         self.audio_codec = audio_codec
+        self.fps = fps

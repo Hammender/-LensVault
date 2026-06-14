@@ -2479,6 +2479,24 @@ def get_video(
     return _video_to_detail(video)
 
 
+@app.post("/api/videos/{video_id}/optimize-playback", response_model=VideoItemDetail)
+def optimize_video_playback(
+    video_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> VideoItemDetail:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    if video.status == "processing":
+        raise HTTPException(status_code=409, detail="视频正在处理中，请稍后再试")
+    video.status = "processing"
+    video.processing_error = None
+    db.commit()
+    db.refresh(video)
+    background_tasks.add_task(video_service.optimize_video_for_seek, video.id)
+    return _video_to_detail(video)
+
+
 @app.get("/api/videos/{video_id}/subtitles", response_model=list[VideoSubtitleTrackRead])
 def list_video_subtitles(
     video_id: int,
@@ -2858,6 +2876,14 @@ def get_video_playback_diagnostics(
             result["presigned_url_ok"] = False
             result["presigned_url_error"] = str(exc)[:500]
             result["expected_mode"] = "backend-stream-fallback"
+    try:
+        result["object"] = video_service.inspect_playback_object(video)
+    except Exception as exc:
+        logger.exception("Failed to inspect video playback object video_id=%s", video.id)
+        result["object_probe_ok"] = False
+        result["object_probe_error"] = str(exc)[:500]
+    else:
+        result["object_probe_ok"] = True
     return result
 
 

@@ -59,6 +59,7 @@
   cursor: pointer;
   display: flex;
   align-items: center;
+  touch-action: none;
 }
 
 .bili-progress-bar-bg {
@@ -106,7 +107,8 @@
   z-index: 10;
 }
 
-.bili-progress-area:hover .bili-progress-bar-cur::after {
+.bili-progress-area:hover .bili-progress-bar-cur::after,
+.bili-progress-area.dragging .bili-progress-bar-cur::after {
   width: 20px;
   height: 20px;
   right: -10px;
@@ -115,11 +117,15 @@
 
 .bili-progress-area:hover .bili-progress-bar-bg,
 .bili-progress-area:hover .bili-progress-bar-buf,
-.bili-progress-area:hover .bili-progress-bar-cur {
+.bili-progress-area:hover .bili-progress-bar-cur,
+.bili-progress-area.dragging .bili-progress-bar-bg,
+.bili-progress-area.dragging .bili-progress-bar-buf,
+.bili-progress-area.dragging .bili-progress-bar-cur {
   height: 6px;
 }
 
-.bili-progress-area:hover .bili-progress-bar-cur::after {
+.bili-progress-area:hover .bili-progress-bar-cur::after,
+.bili-progress-area.dragging .bili-progress-bar-cur::after {
   width: 16px;
   height: 16px;
   right: -8px;

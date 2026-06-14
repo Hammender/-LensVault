@@ -290,6 +290,40 @@ export type VideoDetail = VideoItem & {
   sha256: string | null;
 };
 
+export type VideoPlaybackDiagnostics = {
+  video_id: number;
+  status: string;
+  content_type: string | null;
+  size_bytes: number;
+  play_url: string;
+  stream_url: string;
+  presigned_enabled: boolean;
+  minio_endpoint: string;
+  minio_public_endpoint: string;
+  minio_public_secure: boolean;
+  expected_mode: string;
+  presigned_url_scheme?: string;
+  presigned_url_host?: string;
+  presigned_url_path_prefix?: string;
+  presigned_url_ok?: boolean;
+  presigned_url_error?: string;
+  object_probe_ok?: boolean;
+  object_probe_error?: string;
+  object?: {
+    object_key: string;
+    object_size_bytes: number;
+    object_content_type: string | null;
+    duration_seconds: number | null;
+    width: number | null;
+    height: number | null;
+    video_codec: string | null;
+    audio_codec: string | null;
+    bitrate: number | null;
+    faststart: boolean | null;
+    estimated_keyframe_interval_seconds: number | null;
+  };
+};
+
 export type PaginatedVideos = {
   items: VideoItem[];
   total: number;

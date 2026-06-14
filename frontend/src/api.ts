@@ -19,6 +19,7 @@ import type {
   VideoCategoryTag,
   VideoDetail,
   VideoItem,
+  VideoPlaybackDiagnostics,
   VideoPerson,
   VideoSubtitleTrack,
   VideoUploadSession,
@@ -665,6 +666,18 @@ export async function listVideos(
 
 export async function getVideo(videoId: number): Promise<VideoDetail> {
   return parse<VideoDetail>(await fetch(`/api/videos/${videoId}`));
+}
+
+export async function getVideoPlaybackDiagnostics(videoId: number): Promise<VideoPlaybackDiagnostics> {
+  return parse<VideoPlaybackDiagnostics>(await fetch(`/api/videos/${videoId}/playback-diagnostics`));
+}
+
+export async function optimizeVideoPlayback(videoId: number): Promise<VideoDetail> {
+  return parse<VideoDetail>(
+    await fetch(`/api/videos/${videoId}/optimize-playback`, {
+      method: "POST"
+    })
+  );
 }
 
 export async function deleteVideo(videoId: number): Promise<void> {

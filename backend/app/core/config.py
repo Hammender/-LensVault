@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     video_cover_capture_seconds: float = 1.0
     video_presigned_url_expires_seconds: int = 21600
     video_use_presigned_play_url: bool = True
+    video_auto_seek_optimize_on_upload: bool = True
+    video_seek_keyframe_interval_seconds: float = 1.0
+    video_seek_optimize_threshold_seconds: float = 2.5
+    video_seek_transcode_crf: int = 21
+    video_seek_transcode_preset: str = "veryfast"
     subtitle_asr_model_path: Path = Path("E:/AI-MODELS/ASR/faster-whisper-medium")
     subtitle_asr_device: str = "cpu"
     subtitle_asr_compute_type: str = "int8"
