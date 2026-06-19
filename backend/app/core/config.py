@@ -31,13 +31,17 @@ class Settings(BaseSettings):
     video_presigned_url_expires_seconds: int = 21600
     video_use_presigned_play_url: bool = True
     video_auto_seek_optimize_on_upload: bool = True
+    video_seek_optimize_codec_policy: str = "preserve"
     video_seek_keyframe_interval_seconds: float = 1.0
     video_seek_optimize_threshold_seconds: float = 2.5
+    video_transcode_accelerator: str = "nvenc"
+    video_transcode_fallback_to_cpu: bool = True
     video_seek_transcode_crf: int = 21
     video_seek_transcode_preset: str = "veryfast"
     subtitle_asr_model_path: Path = Path("E:/AI-MODELS/ASR/faster-whisper-medium")
     subtitle_asr_device: str = "cpu"
     subtitle_asr_compute_type: str = "int8"
+    subtitle_asr_unload_after_transcribe: bool = False
     subtitle_translation_provider: str = "local_hymt2"
     subtitle_translation_base_url: str = "http://127.0.0.1:8081/v1"
     subtitle_translation_model: str = "Hy-MT2-1.8B-Q4_K_M"

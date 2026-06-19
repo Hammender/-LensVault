@@ -11,7 +11,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPE
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from PIL import Image
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -53,8 +53,6 @@ from app.schemas import (
     GalleryPhotoPersonTagCreate,
     GalleryPhotoTagCreate,
     GalleryTagRead,
-    EmbeddedSubtitleStreamRead,
-    ImportSubtitleFromVideoRequest,
     LoginRequest,
     PaginatedGalleryPhotos,
     PersonBatchDeleteRequest,
@@ -118,9 +116,31 @@ if not logging.getLogger().handlers:
     )
 logger = logging.getLogger(__name__)
 logging.getLogger("app").setLevel(logging.INFO)
+logging.getLogger("uvicorn.access").disabled = True
+logging.getLogger("uvicorn.access").propagate = False
 
 settings = get_settings()
 Base.metadata.create_all(bind=engine)
+
+
+def _ensure_video_seek_columns() -> None:
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("video_items")}
+    statements: list[str] = []
+    if "seek_optimized" not in columns:
+        statements.append("ALTER TABLE video_items ADD COLUMN seek_optimized BOOLEAN NOT NULL DEFAULT 0")
+    if "seek_optimized_at" not in columns:
+        statements.append("ALTER TABLE video_items ADD COLUMN seek_optimized_at DATETIME")
+    if "seek_keyframe_interval_seconds" not in columns:
+        statements.append("ALTER TABLE video_items ADD COLUMN seek_keyframe_interval_seconds FLOAT")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+_ensure_video_seek_columns()
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
     CORSMiddleware,
@@ -375,13 +395,13 @@ def _require_shared_workspace_owner(current: CurrentContext) -> None:
 
 @app.on_event("startup")
 def on_startup() -> None:
-    logger.info("Application startup begin")
+    logger.info("应用启动：开始检查存储、向量库、人脸识别和 OCR 依赖")
     storage.ensure_bucket()
     vector_store.ensure_collections()
     face_service.warmup()
     ocr_status = ocr_service.engine_status()
     logger.info(
-        "OCR engines status rapidocr_ready=%s tesseract_ready=%s rapidocr_error=%s tesseract_error=%s",
+        "OCR 引擎状态：rapidocr_ready=%s tesseract_ready=%s rapidocr_error=%s tesseract_error=%s",
         ocr_status["rapidocr_ready"],
         ocr_status["tesseract_ready"],
         ocr_status["rapidocr_error"] or "-",
@@ -397,11 +417,11 @@ def on_startup() -> None:
         recovered += fail_incomplete_tasks(db, "person_import")
         recovered += fail_incomplete_tasks(db, "video_subtitle_generation")
         if recovered > 0:
-            logger.warning("Recovered interrupted gallery tasks count=%d", recovered)
+            logger.warning("应用启动：已恢复未完成任务 count=%d", recovered)
     finally:
         db.close()
     logger.info(
-        "Startup dependencies ready minio_bucket=%s milvus_known=%s milvus_unknown=%s",
+        "应用启动完成：minio_bucket=%s milvus_known=%s milvus_unknown=%s",
         settings.minio_bucket,
         settings.milvus_known_collection,
         settings.milvus_unknown_collection,
@@ -537,6 +557,9 @@ def _video_to_list_item(video: VideoItem) -> VideoItemListItem:
         play_url=_video_play_url(video),
         cover_url=_video_cover_url(video),
         faststart_applied=video.faststart_applied,
+        seek_optimized=video.seek_optimized,
+        seek_optimized_at=video.seek_optimized_at,
+        seek_keyframe_interval_seconds=video.seek_keyframe_interval_seconds,
         processed_at=video.processed_at,
         processing_error=video.processing_error,
         subtitle_tracks=[_subtitle_to_read(track) for track in subtitle_tracks],
@@ -2400,6 +2423,7 @@ def complete_video_upload(
     try:
         video = video_service.complete_upload(db, session, payload)
         background_tasks.add_task(video_service.optimize_video_faststart, video.id)
+        logger.info("视频后台优化已入队：video_id=%s filename=%s trigger=upload", video.id, video.filename)
         if payload.generate_zh_subtitles:
             task = create_task(db, "video_subtitle_generation", "已排队生成中文字幕", current.workspace_id)
             subtitle_service.prepare_track(db, video.id, task.id)
@@ -2494,6 +2518,7 @@ def optimize_video_playback(
     db.commit()
     db.refresh(video)
     background_tasks.add_task(video_service.optimize_video_for_seek, video.id)
+    logger.info("视频拖动优化已入队：video_id=%s filename=%s trigger=manual", video.id, video.filename)
     return _video_to_detail(video)
 
 
@@ -2510,50 +2535,6 @@ def list_video_subtitles(
         .order_by(VideoSubtitleTrack.created_at.asc())
     ).all()
     return [_subtitle_to_read(track) for track in tracks]
-
-
-@app.get("/api/videos/{video_id}/embedded-subtitle-streams", response_model=list[EmbeddedSubtitleStreamRead])
-def list_embedded_subtitle_streams(
-    video_id: int,
-    db: Session = Depends(get_db),
-    current: CurrentContext = Depends(require_context),
-) -> list[EmbeddedSubtitleStreamRead]:
-    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
-    try:
-        return [EmbeddedSubtitleStreamRead(**stream) for stream in subtitle_service.list_embedded_subtitle_streams(video)]
-    except Exception as exc:
-        logger.exception("Failed to list embedded subtitle streams video_id=%s", video_id)
-        raise HTTPException(status_code=400, detail=str(exc) or "读取视频字幕轨道失败") from exc
-
-
-@app.post("/api/videos/{video_id}/subtitles/import-from-video", response_model=VideoSubtitleTrackRead)
-def import_video_subtitle_from_video(
-    video_id: int,
-    payload: ImportSubtitleFromVideoRequest,
-    db: Session = Depends(get_db),
-    current: CurrentContext = Depends(require_context),
-) -> VideoSubtitleTrackRead:
-    target = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
-    source = _get_workspace_object(db, VideoItem, payload.source_video_id, current.workspace_id, "Video")
-    try:
-        track = subtitle_service.import_embedded_subtitle(
-            db,
-            target,
-            source,
-            payload.stream_index,
-            replace=payload.replace,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception(
-            "Failed to import embedded subtitle target_video_id=%s source_video_id=%s stream_index=%s",
-            video_id,
-            payload.source_video_id,
-            payload.stream_index,
-        )
-        raise HTTPException(status_code=400, detail=str(exc) or "导入字幕失败") from exc
-    return _subtitle_to_read(track)
 
 
 @app.post("/api/videos/{video_id}/subtitles/generate", response_model=VideoSubtitleTrackRead)

@@ -99,6 +99,15 @@ class VideoService:
         db.add(session)
         db.commit()
         db.refresh(session)
+        logger.info(
+            "视频上传会话已创建：session_id=%s workspace_id=%s filename=%s size=%s part_size=%s total_parts=%s",
+            session.id,
+            session.workspace_id,
+            session.filename,
+            session.size_bytes,
+            session.part_size,
+            session.total_parts,
+        )
         return session
 
     def put_upload_part(
@@ -177,6 +186,14 @@ class VideoService:
 
         final_key = self._build_video_object_key(session.workspace_id, session.filename)
         try:
+            logger.info(
+                "视频上传开始合并：session_id=%s workspace_id=%s filename=%s parts=%s object_key=%s",
+                session.id,
+                session.workspace_id,
+                session.filename,
+                len(parts),
+                final_key,
+            )
             if len(parts) == 1:
                 self.storage.put_bytes(final_key, self.storage.get_bytes(parts[0].object_key), session.content_type)
             else:
@@ -218,21 +235,53 @@ class VideoService:
             db.commit()
             self.storage.remove_objects(temp_keys)
             db.refresh(video)
+            logger.info(
+                "视频上传完成：video_id=%s workspace_id=%s filename=%s object_key=%s codec=%s/%s duration=%s size=%s",
+                video.id,
+                video.workspace_id,
+                video.filename,
+                video.object_key,
+                video.video_codec or "-",
+                video.audio_codec or "-",
+                video.duration_seconds,
+                video.size_bytes,
+            )
             return video
         except Exception:
+            logger.exception(
+                "视频上传合并失败：session_id=%s workspace_id=%s filename=%s object_key=%s",
+                session.id,
+                session.workspace_id,
+                session.filename,
+                final_key,
+            )
             db.rollback()
             raise
 
     def process_video_for_playback(self, video_id: int) -> None:
         db = SessionLocal()
+        previous_seek_optimized = False
+        previous_seek_optimized_at = None
+        previous_seek_keyframe_interval_seconds = None
         try:
             video = db.get(VideoItem, video_id)
             if video is None:
+                logger.warning("视频播放优化跳过：video_id=%s 不存在", video_id)
                 return
+            previous_seek_optimized = video.seek_optimized
+            previous_seek_optimized_at = video.seek_optimized_at
+            previous_seek_keyframe_interval_seconds = video.seek_keyframe_interval_seconds
             video.status = "processing"
             video.processing_error = None
             db.commit()
             object_key = video.object_key
+            logger.info(
+                "视频播放优化开始：video_id=%s filename=%s object_key=%s size=%s",
+                video.id,
+                video.filename,
+                object_key,
+                video.size_bytes,
+            )
 
             with tempfile.TemporaryDirectory(prefix="pictureshow-video-") as temp_dir:
                 suffix = Path(video.filename).suffix.lower() or ".mp4"
@@ -241,6 +290,18 @@ class VideoService:
                 cover_path = Path(temp_dir) / "cover.jpg"
                 self._download_object_to_file(object_key, input_path)
                 original_info = self._probe_video(input_path)
+                original_keyframe_interval = self._estimate_keyframe_interval(input_path)
+                logger.info(
+                    "视频信息探测完成：video_id=%s codec=%s/%s duration=%s resolution=%sx%s fps=%s keyframe_interval=%s",
+                    video_id,
+                    original_info.video_codec or "-",
+                    original_info.audio_codec or "-",
+                    original_info.duration_seconds,
+                    original_info.width or "-",
+                    original_info.height or "-",
+                    original_info.fps,
+                    original_keyframe_interval,
+                )
                 video = db.get(VideoItem, video_id)
                 if video is None:
                     return
@@ -267,6 +328,7 @@ class VideoService:
                     video.cover_object_key = cover_key
                     video.cover_content_type = "image/jpeg"
                     db.commit()
+                    logger.info("视频封面已生成：video_id=%s cover_key=%s", video_id, cover_key)
                     if old_cover_key and old_cover_key != cover_key:
                         self.storage.remove_object(old_cover_key)
 
@@ -279,76 +341,42 @@ class VideoService:
                     video.processed_at = datetime.utcnow()
                     video.processing_error = None
                     db.commit()
+                    logger.info("视频播放优化跳过：video_id=%s faststart 已关闭，状态设为 ready", video_id)
                     return
 
+                codec_policy = self._normalized_seek_codec_policy()
                 should_transcode_for_seek = self._should_optimize_for_seek(input_path, original_info)
+                seek_keyframe_interval_seconds: float | None = None
                 if should_transcode_for_seek:
+                    logger.info("视频播放优化策略：video_id=%s 执行关键帧间隔优化", video_id)
                     self._run_browser_transcode(input_path, output_path, optimize_for_seek=True, source_info=original_info)
-                elif self._is_browser_friendly(original_info) or not self.settings.video_transcode_non_browser_friendly:
+                    seek_keyframe_interval_seconds = self._verified_seek_keyframe_interval(output_path)
+                elif (
+                    codec_policy == "copy"
+                    or self._is_browser_friendly(original_info)
+                    or not self.settings.video_transcode_non_browser_friendly
+                ):
+                    logger.info("视频播放优化策略：video_id=%s 仅执行 faststart", video_id)
                     self._run_faststart(input_path, output_path)
                 else:
+                    logger.info("视频播放优化策略：video_id=%s 转为浏览器友好编码并优化关键帧", video_id)
                     self._run_browser_transcode(input_path, output_path, optimize_for_seek=True, source_info=original_info)
+                    seek_keyframe_interval_seconds = self._verified_seek_keyframe_interval(output_path)
                 playback_info = self._probe_video(output_path)
                 size_bytes = output_path.stat().st_size
                 sha256 = self._hash_file(output_path)
+                logger.info(
+                    "视频播放优化产物完成：video_id=%s output_codec=%s/%s keyframe_interval=%s size=%s",
+                    video_id,
+                    playback_info.video_codec or "-",
+                    playback_info.audio_codec or "-",
+                    seek_keyframe_interval_seconds,
+                    size_bytes,
+                )
+                logger.info("视频播放优化开始替换 MinIO 对象：video_id=%s object_key=%s", video_id, object_key)
                 with output_path.open("rb") as stream:
                     self.storage.put_stream(object_key, stream, size_bytes, "video/mp4")
-
-            video = db.get(VideoItem, video_id)
-            if video is None:
-                return
-            video.status = "ready"
-            video.faststart_applied = True
-            video.sha256 = sha256
-            video.content_type = "video/mp4"
-            video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds or video.duration_seconds
-            video.width = playback_info.width or original_info.width or video.width
-            video.height = playback_info.height or original_info.height or video.height
-            video.original_video_codec = original_info.video_codec or video.original_video_codec
-            video.original_audio_codec = original_info.audio_codec or video.original_audio_codec
-            video.video_codec = playback_info.video_codec or original_info.video_codec or video.video_codec
-            video.audio_codec = playback_info.audio_codec or original_info.audio_codec or video.audio_codec
-            video.processed_at = datetime.utcnow()
-            video.processing_error = None
-            db.commit()
-        except Exception as exc:
-            logger.exception("Video processing failed video_id=%s", video_id)
-            db.rollback()
-            video = db.get(VideoItem, video_id)
-            if video is not None:
-                video.status = "processing_failed"
-                video.faststart_applied = False
-                video.processed_at = datetime.utcnow()
-                video.processing_error = str(exc)[:2000]
-                db.commit()
-        finally:
-            db.close()
-
-    def optimize_video_faststart(self, video_id: int) -> None:
-        self.process_video_for_playback(video_id)
-
-    def optimize_video_for_seek(self, video_id: int) -> None:
-        db = SessionLocal()
-        try:
-            video = db.get(VideoItem, video_id)
-            if video is None:
-                return
-            video.status = "processing"
-            video.processing_error = None
-            db.commit()
-            object_key = video.object_key
-
-            with tempfile.TemporaryDirectory(prefix="pictureshow-video-seek-") as temp_dir:
-                input_path = Path(temp_dir) / f"input{Path(video.filename).suffix.lower() or '.mp4'}"
-                output_path = Path(temp_dir) / "playback.mp4"
-                self._download_object_to_file(object_key, input_path)
-                original_info = self._probe_video(input_path)
-                self._run_browser_transcode(input_path, output_path, optimize_for_seek=True, source_info=original_info)
-                playback_info = self._probe_video(output_path)
-                size_bytes = output_path.stat().st_size
-                sha256 = self._hash_file(output_path)
-                with output_path.open("rb") as stream:
-                    self.storage.put_stream(object_key, stream, size_bytes, "video/mp4")
+                logger.info("视频播放优化已替换 MinIO 对象：video_id=%s object_key=%s", video_id, object_key)
 
             video = db.get(VideoItem, video_id)
             if video is None:
@@ -365,16 +393,138 @@ class VideoService:
             video.original_audio_codec = original_info.audio_codec or video.original_audio_codec
             video.video_codec = playback_info.video_codec or original_info.video_codec or video.video_codec
             video.audio_codec = playback_info.audio_codec or original_info.audio_codec or video.audio_codec
+            self._apply_seek_optimization_result(video, seek_keyframe_interval_seconds)
             video.processed_at = datetime.utcnow()
             video.processing_error = None
             db.commit()
+            logger.info(
+                "视频播放优化成功：video_id=%s faststart=%s seek_optimized=%s keyframe_interval=%s codec=%s/%s size=%s",
+                video.id,
+                video.faststart_applied,
+                video.seek_optimized,
+                video.seek_keyframe_interval_seconds,
+                video.video_codec or "-",
+                video.audio_codec or "-",
+                video.size_bytes,
+            )
         except Exception as exc:
-            logger.exception("Video seek optimization failed video_id=%s", video_id)
+            logger.exception("视频播放优化失败：video_id=%s", video_id)
             db.rollback()
             video = db.get(VideoItem, video_id)
             if video is not None:
                 video.status = "processing_failed"
                 video.faststart_applied = False
+                video.seek_optimized = previous_seek_optimized
+                video.seek_optimized_at = previous_seek_optimized_at
+                video.seek_keyframe_interval_seconds = previous_seek_keyframe_interval_seconds
+                video.processed_at = datetime.utcnow()
+                video.processing_error = str(exc)[:2000]
+                db.commit()
+        finally:
+            db.close()
+
+    def optimize_video_faststart(self, video_id: int) -> None:
+        self.process_video_for_playback(video_id)
+
+    def optimize_video_for_seek(self, video_id: int) -> None:
+        db = SessionLocal()
+        previous_seek_optimized = False
+        previous_seek_optimized_at = None
+        previous_seek_keyframe_interval_seconds = None
+        try:
+            video = db.get(VideoItem, video_id)
+            if video is None:
+                logger.warning("视频拖动优化跳过：video_id=%s 不存在", video_id)
+                return
+            previous_seek_optimized = video.seek_optimized
+            previous_seek_optimized_at = video.seek_optimized_at
+            previous_seek_keyframe_interval_seconds = video.seek_keyframe_interval_seconds
+            video.status = "processing"
+            video.processing_error = None
+            db.commit()
+            object_key = video.object_key
+            logger.info(
+                "视频拖动优化开始：video_id=%s filename=%s object_key=%s previous_seek_optimized=%s previous_keyframe_interval=%s",
+                video.id,
+                video.filename,
+                object_key,
+                previous_seek_optimized,
+                previous_seek_keyframe_interval_seconds,
+            )
+
+            with tempfile.TemporaryDirectory(prefix="pictureshow-video-seek-") as temp_dir:
+                input_path = Path(temp_dir) / f"input{Path(video.filename).suffix.lower() or '.mp4'}"
+                output_path = Path(temp_dir) / "playback.mp4"
+                self._download_object_to_file(object_key, input_path)
+                original_info = self._probe_video(input_path)
+                original_keyframe_interval = self._estimate_keyframe_interval(input_path)
+                logger.info(
+                    "视频拖动优化探测完成：video_id=%s codec=%s/%s duration=%s resolution=%sx%s fps=%s keyframe_interval=%s",
+                    video_id,
+                    original_info.video_codec or "-",
+                    original_info.audio_codec or "-",
+                    original_info.duration_seconds,
+                    original_info.width or "-",
+                    original_info.height or "-",
+                    original_info.fps,
+                    original_keyframe_interval,
+                )
+                self._run_browser_transcode(input_path, output_path, optimize_for_seek=True, source_info=original_info)
+                seek_keyframe_interval_seconds = self._verified_seek_keyframe_interval(output_path)
+                playback_info = self._probe_video(output_path)
+                size_bytes = output_path.stat().st_size
+                sha256 = self._hash_file(output_path)
+                logger.info(
+                    "视频拖动优化产物完成：video_id=%s output_codec=%s/%s keyframe_interval=%s size=%s",
+                    video_id,
+                    playback_info.video_codec or "-",
+                    playback_info.audio_codec or "-",
+                    seek_keyframe_interval_seconds,
+                    size_bytes,
+                )
+                logger.info("视频拖动优化开始替换 MinIO 对象：video_id=%s object_key=%s", video_id, object_key)
+                with output_path.open("rb") as stream:
+                    self.storage.put_stream(object_key, stream, size_bytes, "video/mp4")
+                logger.info("视频拖动优化已替换 MinIO 对象：video_id=%s object_key=%s", video_id, object_key)
+
+            video = db.get(VideoItem, video_id)
+            if video is None:
+                return
+            video.status = "ready"
+            video.faststart_applied = True
+            video.sha256 = sha256
+            video.content_type = "video/mp4"
+            video.size_bytes = size_bytes
+            video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds or video.duration_seconds
+            video.width = playback_info.width or original_info.width or video.width
+            video.height = playback_info.height or original_info.height or video.height
+            video.original_video_codec = original_info.video_codec or video.original_video_codec
+            video.original_audio_codec = original_info.audio_codec or video.original_audio_codec
+            video.video_codec = playback_info.video_codec or original_info.video_codec or video.video_codec
+            video.audio_codec = playback_info.audio_codec or original_info.audio_codec or video.audio_codec
+            self._apply_seek_optimization_result(video, seek_keyframe_interval_seconds)
+            video.processed_at = datetime.utcnow()
+            video.processing_error = None
+            db.commit()
+            logger.info(
+                "视频拖动优化成功：video_id=%s seek_optimized=%s keyframe_interval=%s codec=%s/%s size=%s",
+                video.id,
+                video.seek_optimized,
+                video.seek_keyframe_interval_seconds,
+                video.video_codec or "-",
+                video.audio_codec or "-",
+                video.size_bytes,
+            )
+        except Exception as exc:
+            logger.exception("视频拖动优化失败：video_id=%s", video_id)
+            db.rollback()
+            video = db.get(VideoItem, video_id)
+            if video is not None:
+                video.status = "processing_failed"
+                video.faststart_applied = False
+                video.seek_optimized = previous_seek_optimized
+                video.seek_optimized_at = previous_seek_optimized_at
+                video.seek_keyframe_interval_seconds = previous_seek_keyframe_interval_seconds
                 video.processed_at = datetime.utcnow()
                 video.processing_error = str(exc)[:2000]
                 db.commit()
@@ -416,8 +566,10 @@ class VideoService:
             video = db.get(VideoItem, video_id)
             if video is None or not self.needs_metadata_repair(video):
                 return
+            logger.info("视频元数据修复开始：video_id=%s object_key=%s", video.id, video.object_key)
             probe_info = self._probe_object(video.object_key, video.filename)
             if probe_info is None:
+                logger.warning("视频元数据修复跳过：video_id=%s 探测失败", video_id)
                 return
             video.duration_seconds = video.duration_seconds or probe_info.duration_seconds
             video.width = video.width or probe_info.width
@@ -433,8 +585,18 @@ class VideoService:
                 video.processed_at = datetime.utcnow()
                 video.processing_error = None
             db.commit()
+            logger.info(
+                "视频元数据修复完成：video_id=%s codec=%s/%s duration=%s resolution=%sx%s status=%s",
+                video.id,
+                video.video_codec or "-",
+                video.audio_codec or "-",
+                video.duration_seconds,
+                video.width or "-",
+                video.height or "-",
+                video.status,
+            )
         except Exception:
-            logger.exception("Video metadata repair failed video_id=%s", video_id)
+            logger.exception("视频元数据修复失败：video_id=%s", video_id)
         finally:
             db.close()
             with self.metadata_repair_lock:
@@ -447,6 +609,22 @@ class VideoService:
                 "UNIQUE constraint failed: video_items.filename, video_items.size_bytes" in error
                 or "UNIQUE constraint failed: video_items.workspace_id, video_items.filename, video_items.size_bytes" in error
             )
+        )
+
+    def _apply_seek_optimization_result(self, video: VideoItem, keyframe_interval_seconds: float | None) -> None:
+        if keyframe_interval_seconds is None:
+            video.seek_optimized = False
+            video.seek_optimized_at = None
+            video.seek_keyframe_interval_seconds = None
+            logger.warning("视频拖动优化标记未写入：video_id=%s 关键帧间隔验证失败", video.id)
+            return
+        video.seek_optimized = True
+        video.seek_optimized_at = datetime.utcnow()
+        video.seek_keyframe_interval_seconds = keyframe_interval_seconds
+        logger.info(
+            "视频拖动优化标记已写入：video_id=%s keyframe_interval=%s",
+            video.id,
+            keyframe_interval_seconds,
         )
 
     def _mark_video_ready_without_processing(self, video_id: int) -> None:
@@ -462,6 +640,9 @@ class VideoService:
             db.close()
 
     def cancel_upload(self, db: Session, session: VideoUploadSession) -> None:
+        session_id = session.id
+        workspace_id = session.workspace_id
+        filename = session.filename
         parts = db.scalars(select(VideoUploadPart).where(VideoUploadPart.session_id == session.id)).all()
         temp_keys = [part.object_key for part in parts]
         for part in parts:
@@ -469,6 +650,13 @@ class VideoService:
         db.delete(session)
         db.commit()
         self.storage.remove_objects(temp_keys)
+        logger.info(
+            "视频上传会话已取消：session_id=%s workspace_id=%s filename=%s temp_parts=%s",
+            session_id,
+            workspace_id,
+            filename,
+            len(temp_keys),
+        )
 
     def delete_video(self, db: Session, video: VideoItem) -> None:
         object_key = video.object_key
@@ -583,7 +771,7 @@ class VideoService:
                 self._download_object_to_file(object_key, input_path)
                 return self._probe_video(input_path)
         except Exception:
-            logger.exception("Video metadata probe failed object_key=%s", object_key)
+            logger.exception("视频元数据探测失败：object_key=%s filename=%s", object_key, filename)
             return None
 
     def _hash_file(self, path: Path) -> str:
@@ -621,8 +809,8 @@ class VideoService:
     def _should_optimize_for_seek(self, input_path: Path, info: "VideoProbeInfo") -> bool:
         if not self.settings.video_auto_seek_optimize_on_upload:
             return False
-        if not self._is_browser_friendly(info):
-            return True
+        if self._normalized_seek_codec_policy() == "copy":
+            return False
         estimated_interval = self._estimate_keyframe_interval(input_path)
         if estimated_interval is None:
             return True
@@ -638,6 +826,56 @@ class VideoService:
         keyframe_interval = max(self.settings.video_seek_keyframe_interval_seconds, 0.5)
         source_fps = source_info.fps if source_info else None
         gop_size = max(int(round(keyframe_interval * (source_fps or 24))), 1)
+        plan = self._build_transcode_plan(source_info)
+        logger.info(
+            "开始优化视频拖动流畅度：使用%s，编码器=%s，源编码=%s，目标编码=%s，关键帧间隔=%ss",
+            plan.device_label,
+            plan.encoder,
+            source_info.video_codec if source_info else None,
+            plan.target_codec,
+            keyframe_interval,
+        )
+        command = self._build_transcode_command(input_path, output_path, plan, optimize_for_seek, keyframe_interval, gop_size)
+        try:
+            self._run_transcode_command(command, output_path)
+            return
+        except Exception:
+            if not plan.is_hardware or not self.settings.video_transcode_fallback_to_cpu:
+                raise
+            logger.warning(
+                "视频拖动优化使用%s失败，准备回退 CPU 编码器：encoder=%s",
+                plan.device_label,
+                plan.encoder,
+                exc_info=True,
+            )
+            fallback_plan = self._build_transcode_plan(source_info, force_cpu=True)
+            logger.info(
+                "开始优化视频拖动流畅度：使用%s，编码器=%s，源编码=%s，目标编码=%s，关键帧间隔=%ss",
+                fallback_plan.device_label,
+                fallback_plan.encoder,
+                source_info.video_codec if source_info else None,
+                fallback_plan.target_codec,
+                keyframe_interval,
+            )
+            fallback_command = self._build_transcode_command(
+                input_path,
+                output_path,
+                fallback_plan,
+                optimize_for_seek,
+                keyframe_interval,
+                gop_size,
+            )
+            self._run_transcode_command(fallback_command, output_path)
+
+    def _build_transcode_command(
+        self,
+        input_path: Path,
+        output_path: Path,
+        plan: "VideoTranscodePlan",
+        optimize_for_seek: bool,
+        keyframe_interval: float,
+        gop_size: int,
+    ) -> list[str]:
         command = [
             self.settings.ffmpeg_path,
             "-y",
@@ -648,14 +886,9 @@ class VideoService:
             "-map",
             "0:a:0?",
             "-c:v",
-            "libx264",
-            "-preset",
-            self.settings.video_seek_transcode_preset,
-            "-crf",
-            str(self.settings.video_seek_transcode_crf),
-            "-pix_fmt",
-            "yuv420p",
+            plan.encoder,
         ]
+        command.extend(plan.encoder_args)
         if optimize_for_seek:
             command.extend(
                 [
@@ -663,12 +896,14 @@ class VideoService:
                     str(gop_size),
                     "-keyint_min",
                     str(gop_size),
-                    "-sc_threshold",
-                    "0",
                     "-force_key_frames",
                     f"expr:gte(t,n_forced*{keyframe_interval:g})",
                 ]
             )
+            if plan.is_hardware:
+                command.extend(["-no-scenecut", "1"])
+            else:
+                command.extend(["-sc_threshold", "0"])
         command.extend(
             [
             "-c:a",
@@ -680,6 +915,9 @@ class VideoService:
             str(output_path),
             ]
         )
+        return command
+
+    def _run_transcode_command(self, command: list[str], output_path: Path) -> None:
         result = subprocess.run(
             command,
             capture_output=True,
@@ -692,6 +930,104 @@ class VideoService:
             raise RuntimeError(message[-2000:])
         if not output_path.exists() or output_path.stat().st_size <= 0:
             raise RuntimeError("ffmpeg transcode did not create output video")
+
+    def _build_transcode_plan(self, source_info: "VideoProbeInfo | None", force_cpu: bool = False) -> "VideoTranscodePlan":
+        target_codec = self._target_video_codec(source_info)
+        use_nvenc = not force_cpu and self._normalized_transcode_accelerator() == "nvenc"
+        source_pix_fmt = (source_info.pixel_format if source_info else None) or ""
+        preserve_10_bit = target_codec == "hevc" and "10" in source_pix_fmt
+        if target_codec == "hevc":
+            if use_nvenc:
+                return VideoTranscodePlan(
+                    encoder="hevc_nvenc",
+                    target_codec="hevc",
+                    device_label="GPU/NVENC",
+                    is_hardware=True,
+                    encoder_args=[
+                        "-preset",
+                        "p5",
+                        "-tune",
+                        "hq",
+                        "-rc",
+                        "vbr",
+                        "-cq",
+                        str(self.settings.video_seek_transcode_crf),
+                        "-b:v",
+                        "0",
+                        "-forced-idr",
+                        "1",
+                        "-pix_fmt",
+                        "p010le" if preserve_10_bit else "yuv420p",
+                    ],
+                )
+            return VideoTranscodePlan(
+                encoder="libx265",
+                target_codec="hevc",
+                device_label="CPU",
+                is_hardware=False,
+                encoder_args=[
+                    "-preset",
+                    self.settings.video_seek_transcode_preset,
+                    "-crf",
+                    str(self.settings.video_seek_transcode_crf),
+                    "-pix_fmt",
+                    "yuv420p10le" if preserve_10_bit else "yuv420p",
+                ],
+            )
+        if use_nvenc:
+            return VideoTranscodePlan(
+                encoder="h264_nvenc",
+                target_codec="h264",
+                device_label="GPU/NVENC",
+                is_hardware=True,
+                encoder_args=[
+                    "-preset",
+                    "p5",
+                    "-tune",
+                    "hq",
+                    "-rc",
+                    "vbr",
+                    "-cq",
+                    str(self.settings.video_seek_transcode_crf),
+                    "-b:v",
+                    "0",
+                    "-forced-idr",
+                    "1",
+                    "-pix_fmt",
+                    "yuv420p",
+                ],
+            )
+        return VideoTranscodePlan(
+            encoder="libx264",
+            target_codec="h264",
+            device_label="CPU",
+            is_hardware=False,
+            encoder_args=[
+                "-preset",
+                self.settings.video_seek_transcode_preset,
+                "-crf",
+                str(self.settings.video_seek_transcode_crf),
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        )
+
+    def _target_video_codec(self, source_info: "VideoProbeInfo | None") -> str:
+        policy = self._normalized_seek_codec_policy()
+        source_codec = source_info.video_codec if source_info else None
+        if policy == "h264":
+            return "h264"
+        if policy == "preserve" and source_codec in {"h264", "avc1", "hevc", "h265"}:
+            return "hevc" if source_codec in {"hevc", "h265"} else "h264"
+        return "h264"
+
+    def _normalized_seek_codec_policy(self) -> str:
+        policy = str(self.settings.video_seek_optimize_codec_policy or "preserve").strip().lower()
+        return policy if policy in {"preserve", "h264", "copy"} else "preserve"
+
+    def _normalized_transcode_accelerator(self) -> str:
+        accelerator = str(self.settings.video_transcode_accelerator or "none").strip().lower()
+        return accelerator if accelerator in {"nvenc", "none", "cpu"} else "none"
 
     def _probe_format_bitrate(self, path: Path) -> int | None:
         command = [
@@ -741,6 +1077,25 @@ class VideoService:
         if not intervals:
             return None
         return round(sum(intervals) / len(intervals), 3)
+
+    def _verified_seek_keyframe_interval(self, path: Path) -> float | None:
+        interval = self._estimate_keyframe_interval(path)
+        if interval is None:
+            logger.warning("视频拖动优化验证失败：无法估算输出关键帧间隔 path=%s", path)
+            return None
+        target = max(self.settings.video_seek_keyframe_interval_seconds, 0.5)
+        tolerance = max(target * 0.35, 0.35)
+        if interval <= target + tolerance:
+            logger.info("视频拖动优化验证通过：keyframe_interval=%s target=%s tolerance=%s", interval, target, tolerance)
+            return interval
+        logger.warning(
+            "视频拖动优化验证失败：输出关键帧间隔仍然过大 interval=%s target=%s tolerance=%s path=%s",
+            interval,
+            target,
+            tolerance,
+            path,
+        )
+        return None
 
     def _has_faststart_moov(self, path: Path) -> bool | None:
         try:
@@ -818,6 +1173,7 @@ class VideoService:
         video_codec = self._stream_codec(video_stream)
         audio_codec = self._stream_codec(audio_stream)
         fps = self._parse_frame_rate(video_stream.get("avg_frame_rate")) or self._parse_frame_rate(video_stream.get("r_frame_rate"))
+        pixel_format = self._normalize_pixel_format(video_stream.get("pix_fmt"))
         if not video_codec or (streams and not audio_codec):
             fallback_video_codec, fallback_audio_codec = self._probe_codecs_from_ffmpeg_banner(path)
             video_codec = video_codec or fallback_video_codec
@@ -829,6 +1185,7 @@ class VideoService:
             video_codec=video_codec,
             audio_codec=audio_codec,
             fps=fps,
+            pixel_format=pixel_format,
         )
 
     def _is_browser_friendly(self, info: "VideoProbeInfo") -> bool:
@@ -850,6 +1207,14 @@ class VideoService:
 
     def _stream_codec(self, stream: dict[str, object]) -> str | None:
         return self._normalize_codec(stream.get("codec_name")) or self._normalize_codec(stream.get("codec_tag_string"))
+
+    def _normalize_pixel_format(self, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        if normalized in {"unknown", "none", "n/a"}:
+            return None
+        return normalized or None
 
     def _probe_codecs_from_ffmpeg_banner(self, path: Path) -> tuple[str | None, str | None]:
         command = [
@@ -941,6 +1306,7 @@ class VideoProbeInfo:
         video_codec: str | None,
         audio_codec: str | None,
         fps: float | None = None,
+        pixel_format: str | None = None,
     ) -> None:
         self.duration_seconds = duration_seconds
         self.width = width
@@ -948,3 +1314,20 @@ class VideoProbeInfo:
         self.video_codec = video_codec
         self.audio_codec = audio_codec
         self.fps = fps
+        self.pixel_format = pixel_format
+
+
+class VideoTranscodePlan:
+    def __init__(
+        self,
+        encoder: str,
+        target_codec: str,
+        device_label: str,
+        is_hardware: bool,
+        encoder_args: list[str],
+    ) -> None:
+        self.encoder = encoder
+        self.target_codec = target_codec
+        self.device_label = device_label
+        self.is_hardware = is_hardware
+        self.encoder_args = encoder_args

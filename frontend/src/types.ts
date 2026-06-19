@@ -208,13 +208,6 @@ export type VideoSubtitleTrack = {
   vtt_url: string | null;
 };
 
-export type EmbeddedSubtitleStream = {
-  stream_index: number;
-  codec_name: string | null;
-  language: string | null;
-  title: string | null;
-};
-
 export type SubtitleAsrStatus = {
   status: string;
   loaded: boolean;
@@ -272,6 +265,9 @@ export type VideoItem = {
   play_url: string;
   cover_url: string | null;
   faststart_applied: boolean;
+  seek_optimized: boolean;
+  seek_optimized_at: string | null;
+  seek_keyframe_interval_seconds: number | null;
   duration_seconds: number | null;
   width: number | null;
   height: number | null;

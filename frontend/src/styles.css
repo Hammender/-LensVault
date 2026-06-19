@@ -1204,24 +1204,6 @@ input:focus, select:focus, textarea:focus {
   border-color: #ff3b30;
 }
 
-.subtitle-import-box {
-  display: grid;
-  gap: 8px;
-  border: 1px solid var(--panel-border);
-  background: var(--bg);
-  padding: 10px;
-}
-
-.subtitle-import-box select {
-  width: 100%;
-}
-
-.subtitle-import-box small {
-  color: var(--muted);
-  font-size: 0.85rem;
-  line-height: 1.4;
-}
-
 .pending-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -2460,69 +2442,6 @@ button.primary,
   padding: 0;
   overflow: hidden;
   background: #050505;
-}
-
-.video-player-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--panel-border);
-}
-
-.video-player-mode-tabs {
-  display: inline-flex;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid var(--panel-border);
-  background: var(--surface);
-}
-
-.video-player-mode-tabs button {
-  min-height: 30px;
-  padding: 0 10px;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.video-player-mode-tabs button.active {
-  background: var(--fg);
-  color: var(--bg);
-}
-
-.video-player-mode-tabs button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.video-player-diagnostic-hint {
-  color: var(--muted);
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-
-.native-video-player {
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: #000;
-  object-fit: contain;
-}
-
-@media (max-width: 760px) {
-  .video-player-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .video-player-diagnostic-hint {
-    white-space: normal;
-  }
 }
 
 .video-loading-panel {

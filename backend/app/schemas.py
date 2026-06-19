@@ -450,19 +450,6 @@ class VideoSubtitleTrackUpdate(BaseModel):
     content_vtt: str
 
 
-class EmbeddedSubtitleStreamRead(BaseModel):
-    stream_index: int
-    codec_name: str | None = None
-    language: str | None = None
-    title: str | None = None
-
-
-class ImportSubtitleFromVideoRequest(BaseModel):
-    source_video_id: int
-    stream_index: int
-    replace: bool = False
-
-
 class VideoItemListItem(BaseModel):
     id: int
     title: str
@@ -484,6 +471,9 @@ class VideoItemListItem(BaseModel):
     play_url: str
     cover_url: str | None
     faststart_applied: bool
+    seek_optimized: bool
+    seek_optimized_at: datetime | None
+    seek_keyframe_interval_seconds: float | None
     processed_at: datetime | None
     processing_error: str | None
     created_at: datetime

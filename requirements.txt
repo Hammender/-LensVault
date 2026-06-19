@@ -8,6 +8,8 @@ Pillow==11.1.0
 numpy==2.2.1
 insightface==0.7.3
 onnxruntime==1.20.1
+faster-whisper==1.2.1
+ctranslate2==4.7.2
 # RapidOCR currently does not provide wheels for Python 3.13.
 # Keep it enabled for older runtimes; Python 3.13 will use pytesseract fallback.
 rapidocr_onnxruntime==1.2.3; python_version < "3.13"

@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import logging
 import os
+import gc
 import subprocess
 import tempfile
 import threading
@@ -67,73 +68,6 @@ class SubtitleService:
         track.error_message = None
         track.task_id = task_id
         track.generated_at = None
-        db.commit()
-        db.refresh(track)
-        return track
-
-    def list_embedded_subtitle_streams(self, video: VideoItem) -> list[dict[str, Any]]:
-        with tempfile.TemporaryDirectory(prefix="pictureshow-subtitle-probe-") as temp_dir:
-            video_path = Path(temp_dir) / self._safe_temp_name(video.filename)
-            self._download_video(video.object_key, video_path)
-            payload = self._probe_media(video_path)
-        streams: list[dict[str, Any]] = []
-        for stream in payload.get("streams", []):
-            if str(stream.get("codec_type", "")).lower() != "subtitle":
-                continue
-            tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
-            streams.append(
-                {
-                    "stream_index": int(stream.get("index")),
-                    "codec_name": stream.get("codec_name"),
-                    "language": tags.get("language"),
-                    "title": tags.get("title"),
-                }
-            )
-        return streams
-
-    def import_embedded_subtitle(
-        self,
-        db: Session,
-        target_video: VideoItem,
-        source_video: VideoItem,
-        stream_index: int,
-        replace: bool = False,
-    ) -> VideoSubtitleTrack:
-        if target_video.subtitle_tracks:
-            pending = [track for track in target_video.subtitle_tracks if track.status in {"pending", "running"}]
-            if pending:
-                raise ValueError("当前视频有正在生成的字幕，请完成或取消后再导入")
-
-        with tempfile.TemporaryDirectory(prefix="pictureshow-subtitle-import-") as temp_dir:
-            source_path = Path(temp_dir) / self._safe_temp_name(source_video.filename)
-            output_path = Path(temp_dir) / "subtitle.vtt"
-            self._download_video(source_video.object_key, source_path)
-            streams = self._subtitle_streams_from_path(source_path)
-            stream = next((item for item in streams if item["stream_index"] == stream_index), None)
-            if stream is None:
-                raise ValueError("来源视频中没有找到指定的软字幕轨道")
-            self._extract_subtitle_stream(source_path, stream_index, output_path)
-            vtt = self.validate_webvtt(output_path.read_text(encoding="utf-8-sig"))
-
-        language = self._normalize_subtitle_language(stream.get("language"))
-        existing = db.scalar(
-            select(VideoSubtitleTrack).where(
-                VideoSubtitleTrack.video_id == target_video.id,
-                VideoSubtitleTrack.language == language,
-            )
-        )
-        if existing is not None and not replace:
-            raise ValueError("当前视频已存在同语言字幕，请确认覆盖后再导入")
-        track = existing or VideoSubtitleTrack(video_id=target_video.id, language=language)
-        track.label = self._subtitle_label(stream)
-        track.source_language = language
-        track.provider = "embedded_subtitle_import"
-        track.status = "ready"
-        track.content_vtt = vtt
-        track.error_message = None
-        track.task_id = None
-        track.generated_at = datetime.utcnow()
-        db.add(track)
         db.commit()
         db.refresh(track)
         return track
@@ -283,6 +217,7 @@ class SubtitleService:
 
                 if task_id:
                     update_task(db, task_id, message="正在翻译字幕", progress=0.65)
+                self._unload_asr_model_if_configured()
                 translated = self._translate_segments(segments, source_language, db=db, task_id=task_id)
                 self._raise_if_cancelled(task_id, db)
                 vtt = self.render_webvtt(segments, translated)
@@ -355,71 +290,6 @@ class SubtitleService:
         finally:
             response.close()
             response.release_conn()
-
-    def _probe_media(self, path: Path) -> dict[str, Any]:
-        result = subprocess.run(
-            [
-                self.settings.ffprobe_path,
-                "-v",
-                "error",
-                "-probesize",
-                "100M",
-                "-analyzeduration",
-                "100M",
-                "-print_format",
-                "json",
-                "-show_streams",
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-        if result.returncode != 0:
-            message = (result.stderr or result.stdout or "ffprobe failed").strip()
-            raise RuntimeError(message[-2000:])
-        return json.loads(result.stdout or "{}")
-
-    def _subtitle_streams_from_path(self, path: Path) -> list[dict[str, Any]]:
-        streams: list[dict[str, Any]] = []
-        for stream in self._probe_media(path).get("streams", []):
-            if str(stream.get("codec_type", "")).lower() != "subtitle":
-                continue
-            tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
-            streams.append(
-                {
-                    "stream_index": int(stream.get("index")),
-                    "codec_name": stream.get("codec_name"),
-                    "language": tags.get("language"),
-                    "title": tags.get("title"),
-                }
-            )
-        return streams
-
-    def _extract_subtitle_stream(self, video_path: Path, stream_index: int, output_path: Path) -> None:
-        result = subprocess.run(
-            [
-                self.settings.ffmpeg_path,
-                "-y",
-                "-i",
-                str(video_path),
-                "-map",
-                f"0:{stream_index}",
-                "-c:s",
-                "webvtt",
-                "-f",
-                "webvtt",
-                str(output_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=self.settings.video_transcode_timeout_seconds,
-            check=False,
-        )
-        if result.returncode != 0 or not output_path.exists():
-            message = (result.stderr or result.stdout or "字幕提取失败").strip()
-            raise RuntimeError(message[-2000:])
 
     def _extract_audio(self, video_path: Path, audio_path: Path) -> None:
         result = subprocess.run(
@@ -563,6 +433,21 @@ class SubtitleService:
     def _set_asr_status(self, **changes: Any) -> None:
         with self._asr_status_lock:
             self._asr_status.update(changes)
+
+    def _unload_asr_model_if_configured(self) -> None:
+        if not self.settings.subtitle_asr_unload_after_transcribe:
+            return
+        with self._asr_lock:
+            if self._asr_model is None:
+                return
+            self._asr_model = None
+            gc.collect()
+        self._set_asr_status(
+            status="not_loaded",
+            current_video_id=None,
+            current_task_id=None,
+            message="ASR 模型已释放，等待下次生成时重新加载",
+        )
 
     def _translate_segments(
         self,
@@ -960,37 +845,6 @@ class SubtitleService:
         if start == -1 or end == -1 or end <= start:
             raise RuntimeError("翻译服务返回内容不是 JSON 数组")
         return content[start : end + 1]
-
-    @staticmethod
-    def _normalize_subtitle_language(language: Any) -> str:
-        value = str(language or "und").strip()
-        if not value:
-            return "und"
-        lowered = value.lower()
-        aliases = {
-            "chi": "zh-CN",
-            "zho": "zh-CN",
-            "zh": "zh-CN",
-            "chs": "zh-CN",
-            "cmn": "zh-CN",
-            "eng": "en",
-            "jpn": "ja",
-            "jp": "ja",
-            "kor": "ko",
-        }
-        return aliases.get(lowered, lowered)
-
-    @staticmethod
-    def _subtitle_label(stream: dict[str, Any]) -> str:
-        title = str(stream.get("title") or "").strip()
-        language = SubtitleService._normalize_subtitle_language(stream.get("language"))
-        if title:
-            return title[:128]
-        if language == "zh-CN":
-            return "导入中文字幕"
-        if language != "und":
-            return f"导入字幕 ({language})"
-        return "导入字幕"
 
     @staticmethod
     def render_webvtt(segments: list[dict[str, Any]], translated: dict[int, str]) -> str:
