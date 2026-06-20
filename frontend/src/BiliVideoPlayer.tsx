@@ -31,8 +31,10 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
   const progressBufferedRef = useRef<HTMLDivElement>(null);
   
   const [isPlaying, setIsPlaying] = useState(false);
+  const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
-  const [timeLabel, setTimeLabel] = useState(`${formatTime(0)} / ${formatTime(0)}`);
+  const [timeCurrentStr, setTimeCurrentStr] = useState(formatTime(0));
+  const [timeTotalStr, setTimeTotalStr] = useState(formatTime(0));
   const [volume, setVolume] = useState(0.2);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -90,7 +92,8 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
     }
     const now = performance.now();
     if (forceTimeText || now - lastTimeDisplayUpdateRef.current >= 250) {
-      setTimeLabel(`${formatTime(currentTimeRef.current)} / ${formatTime(safeDuration)}`);
+      setTimeCurrentStr(formatTime(currentTimeRef.current));
+      setTimeTotalStr(formatTime(safeDuration));
       lastTimeDisplayUpdateRef.current = now;
     }
   }, []);
@@ -122,7 +125,9 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
     bufferedTimeRef.current = 0;
     durationRef.current = 0;
     setDuration(0);
-    setTimeLabel(`${formatTime(0)} / ${formatTime(0)}`);
+    setTimeCurrentStr(formatTime(0));
+    setTimeTotalStr(formatTime(0));
+    setHasStartedPlaying(false);
     updateProgressDom(0, 0, true);
   }, [src, updateProgressDom]);
 
@@ -484,7 +489,10 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
           seekTargetRef.current = null;
           updateProgressDom(event.currentTarget.currentTime, bufferedTimeRef.current, true);
         }}
-        onPlay={() => setIsPlaying(true)}
+        onPlay={() => {
+          setIsPlaying(true);
+          setHasStartedPlaying(true);
+        }}
         onPause={() => setIsPlaying(false)}
         onEnded={() => setIsPlaying(false)}
         playsInline
@@ -500,6 +508,14 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
           />
         ))}
       </video>
+
+      {!hasStartedPlaying && (
+        <div className="bili-play-overlay" onClick={togglePlay}>
+          <div className="bili-play-overlay-icon">
+            <Play fill="currentColor" />
+          </div>
+        </div>
+      )}
 
       {indicatorText && (
         <div className="bili-indicator">
@@ -530,12 +546,16 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
           <div className="bili-controls-left">
             <button className="bili-icon-btn" onClick={togglePlay}>
               {isPlaying ? (
-                <Pause size={24} aria-hidden="true" />
+                <Pause size={24} fill="currentColor" aria-hidden="true" />
               ) : (
-                <Play size={24} aria-hidden="true" />
+                <Play size={24} fill="currentColor" aria-hidden="true" />
               )}
             </button>
-            <div className="bili-time-display">{timeLabel}</div>
+            <div className="bili-time-display">
+              <span className="bili-time-current">{timeCurrentStr}</span>
+              <span>/</span>
+              <span>{timeTotalStr}</span>
+            </div>
           </div>
           
           <div className="bili-controls-right">

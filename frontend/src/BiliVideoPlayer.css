@@ -1,13 +1,57 @@
 .bili-player-container {
   position: relative;
   width: 100%;
-  max-height: inherit;
+  height: 100%; /* Take full height of parent */
   aspect-ratio: 16 / 9;
   background: #000;
   overflow: hidden;
   user-select: none;
-  border: 1px solid rgba(53, 37, 29, 0.28);
+  /* Removed old brutalist borders, relying on parent's modern styling if embedded, or defining modern here */
   border-radius: var(--radius-xl);
+  box-shadow: 0 20px 40px -10px rgba(0,0,0,0.5); /* Stronger shadow for the player itself to pop */
+}
+
+/* Add a beautiful overlay play button for the unstarted state */
+.bili-play-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3); /* Subtle dimming */
+  transition: background-color 0.3s ease;
+  cursor: pointer;
+  z-index: 5;
+}
+
+.bili-play-overlay:hover {
+  background: rgba(0, 0, 0, 0.2); /* Brighten on hover */
+}
+
+.bili-play-overlay-icon {
+  width: 80px;
+  height: 80px;
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), background-color 0.3s ease;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.bili-play-overlay:hover .bili-play-overlay-icon {
+  transform: scale(1.1);
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.bili-play-overlay-icon svg {
+  width: 40px;
+  height: 40px;
+  margin-left: 6px; /* visually center play triangle */
 }
 
 .bili-player-container.fullscreen {
@@ -33,29 +77,36 @@
   display: block;
 }
 
+.bili-play-overlay + .bili-video-el {
+  /* if there's a poster, it helps smooth the transition */
+  transition: filter 0.3s ease;
+}
+
 .bili-controls-overlay {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 40px 16px 12px;
-  background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%);
+  padding: 60px 24px 16px; /* Taller padding for a smoother gradient and better spacing */
+  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.4) 50%, rgba(0,0,0,0) 100%); /* Smoother, richer gradient */
   opacity: 0;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px; /* More space between progress bar and controls */
   pointer-events: none;
+  transform: translateY(8px); /* Slide up effect */
 }
 
 .bili-controls-overlay.show {
   opacity: 1;
   pointer-events: auto;
+  transform: translateY(0);
 }
 
 .bili-progress-area {
   position: relative;
-  height: 16px;
+  height: 20px; /* Larger hit area */
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -66,53 +117,50 @@
   position: absolute;
   left: 0;
   right: 0;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.2);
+  height: 3px; /* Thinner default */
+  background: rgba(255, 255, 255, 0.25);
   border-radius: 2px;
-  transition: height 0.15s ease;
+  transition: height 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .bili-progress-bar-buf {
   position: absolute;
   left: 0;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.4);
+  height: 3px;
+  background: rgba(255, 255, 255, 0.45);
   border-radius: 2px;
-  transition: height 0.15s ease;
+  transition: height 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .bili-progress-bar-cur {
   position: absolute;
   left: 0;
-  height: 4px;
+  height: 3px;
   background: var(--primary);
   border-radius: 2px;
-  transition: height 0.15s ease;
+  transition: height 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* Redesigned scrubber dot */
 .bili-progress-bar-cur::after {
   content: "";
   position: absolute;
-  right: -8px;
+  right: -6px;
   top: 50%;
-  transform: translateY(-50%);
-  width: 16px;
-  height: 16px;
+  transform: translateY(-50%) scale(0); /* Hidden by default */
+  width: 12px;
+  height: 12px;
   background: #ffffff;
-  border: 3px solid var(--primary);
   border-radius: 50%;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.6);
-  transition: width 0.15s ease, height 0.15s ease, right 0.15s ease, border-width 0.15s ease;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); /* Bouncy reveal */
   pointer-events: none;
   z-index: 10;
 }
 
 .bili-progress-area:hover .bili-progress-bar-cur::after,
 .bili-progress-area.dragging .bili-progress-bar-cur::after {
-  width: 20px;
-  height: 20px;
-  right: -10px;
-  border-width: 4px;
+  transform: translateY(-50%) scale(1.2); /* Reveal and slightly enlarge */
 }
 
 .bili-progress-area:hover .bili-progress-bar-bg,
@@ -121,14 +169,7 @@
 .bili-progress-area.dragging .bili-progress-bar-bg,
 .bili-progress-area.dragging .bili-progress-bar-buf,
 .bili-progress-area.dragging .bili-progress-bar-cur {
-  height: 6px;
-}
-
-.bili-progress-area:hover .bili-progress-bar-cur::after,
-.bili-progress-area.dragging .bili-progress-bar-cur::after {
-  width: 16px;
-  height: 16px;
-  right: -8px;
+  height: 5px; /* Thicken slightly on hover */
 }
 
 .bili-controls-bottom {
@@ -153,25 +194,31 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.8;
-  transition: opacity 0.2s, transform 0.1s;
+  opacity: 0.85;
+  transition: background-color 0.2s, opacity 0.2s; /* Removed transform scale */
   box-shadow: none !important;
   min-width: unset !important;
-  border-radius: 999px !important;
+  border-radius: 50% !important; /* Perfect circles */
+  width: 40px;
+  height: 40px;
 }
 
 .bili-icon-btn:hover {
   opacity: 1;
-  transform: scale(1.1);
-  box-shadow: none !important;
-  background: transparent !important;
+  background-color: rgba(255, 255, 255, 0.15) !important; /* Glassy hover background */
 }
 
 .bili-time-display {
-  color: #eee;
+  color: rgba(255, 255, 255, 0.7); /* Slightly dimmed default text */
   font-family: var(--font-mono);
   font-size: 0.85rem;
   font-weight: 500;
+  display: flex;
+  gap: 4px;
+}
+
+.bili-time-current {
+  color: #fff; /* Current time stands out */
 }
 
 .bili-indicator {
@@ -179,30 +226,40 @@
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.5);
   color: #fff;
   padding: 12px 24px;
-  border-radius: 4px;
-  font-size: 1.2rem;
-  font-weight: bold;
+  border-radius: 999px; /* Pill shape */
+  font-size: 1.1rem;
+  font-weight: 600;
   pointer-events: none;
-  backdrop-filter: blur(4px);
-  animation: fadeOut 1.5s forwards;
+  backdrop-filter: blur(12px); /* Stronger glass effect */
+  -webkit-backdrop-filter: blur(12px);
+  animation: fadeOut 1.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+@keyframes fadeOut {
+  0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  70% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.05); } /* Slight pop out */
 }
 
 .bili-fast-forward-hint {
   position: absolute;
-  top: 24px;
+  top: 32px; /* Moved slightly down from top */
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.5);
   color: #fff;
-  padding: 8px 16px;
-  border-radius: 20px;
-  font-size: 1rem;
-  font-weight: bold;
+  padding: 8px 18px;
+  border-radius: 999px; /* Pill shape */
+  font-size: 0.95rem;
+  font-weight: 600;
   pointer-events: none;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
 }
 
 .bili-rate-wrapper {
@@ -228,17 +285,24 @@
 }
 
 .bili-subtitle-btn span {
-  border: 1px solid currentColor;
-  border-radius: 2px;
-  padding: 1px 4px;
-  font-size: 12px;
+  border: 1.5px solid currentColor; /* Slightly thicker border for clarity */
+  border-radius: 4px; /* Softer border */
+  padding: 1px 5px;
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0;
+  letter-spacing: 0.5px; /* Better readability */
+  transition: all 0.2s;
 }
 
 .bili-subtitle-btn.active {
-  color: #ffd166;
+  color: var(--primary); /* Use theme primary color */
   opacity: 1;
+}
+
+.bili-subtitle-btn.active span {
+  background-color: var(--primary); /* Filled style when active */
+  color: #fff;
+  border-color: var(--primary);
 }
 
 .bili-video-el::cue {
@@ -250,40 +314,50 @@
 
 .bili-rate-menu {
   position: absolute;
-  bottom: 100%;
+  bottom: calc(100% + 12px); /* Spaced out slightly from button */
   right: 0;
-  margin-bottom: 8px;
-  background: rgba(0, 0, 0, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
-  padding: 4px;
+  background: rgba(28, 28, 28, 0.85); /* Slightly lighter for glass effect */
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px; /* Modern roundness */
+  padding: 8px 4px;
   display: flex;
   flex-direction: column;
   gap: 2px;
   z-index: 100;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  transform-origin: bottom right;
+  animation: menuPop 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+@keyframes menuPop {
+  0% { opacity: 0; transform: scale(0.9) translateY(10px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 .bili-rate-option {
   background: transparent !important;
   border: none !important;
-  color: rgba(255, 255, 255, 0.7);
-  padding: 6px 18px;
+  color: rgba(255, 255, 255, 0.75);
+  padding: 8px 24px;
   cursor: pointer;
   font-size: 13px;
+  font-weight: 500;
   text-align: center;
   white-space: nowrap;
-  border-radius: 3px;
-  transition: background 0.15s, color 0.15s;
+  border-radius: 8px; /* Rounder items inside */
+  transition: background-color 0.15s, color 0.15s;
   box-shadow: none !important;
 }
 
 .bili-rate-option:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background-color: rgba(255, 255, 255, 0.1) !important;
   color: #fff;
 }
 
 .bili-rate-option.active {
-  color: #fff;
+  color: var(--primary); /* Highlight with primary color instead of white */
   font-weight: 700;
-  background: rgba(255, 255, 255, 0.15);
+  background-color: rgba(255, 255, 255, 0.05) !important;
 }

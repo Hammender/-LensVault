@@ -3,12 +3,18 @@ import { flushSync } from "react-dom";
 import {
   BarChart3,
   Clapperboard,
+  Download,
   Edit3,
+  FileUp,
   GalleryHorizontalEnd,
   HomeIcon,
   LogOut,
+  RotateCcw,
+  Search,
   Settings,
+  Trash2,
   UploadCloud,
+  UserPlus,
   UsersRound
 } from "lucide-react";
 
@@ -3076,29 +3082,45 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                 <p className="eyebrow">人物库</p>
                 <h2>创建与选择人物</h2>
               </div>
-              <div className="micro-row section-actions">
+              <div className="people-count-badge">
                 <span>{persons.length} 人</span>
+              </div>
+            </div>
+
+            <div className="people-commandbar">
+              <div className="micro-row section-actions people-command-row">
                 <button disabled={busy} onClick={() => togglePeopleBatchDeleteMode()}>
+                  <Trash2 size={15} aria-hidden="true" />
                   {peopleBatchDeleteMode ? "取消批量" : "批量删除"}
                 </button>
                 <button
                   disabled={busy || !peopleBatchDeleteMode || selectedPersonDeleteIds.length === 0}
                   onClick={() => void handleDeleteSelectedPersons()}
                 >
+                  <Trash2 size={15} aria-hidden="true" />
                   删除选中（{selectedPersonDeleteIds.length}）
                 </button>
+              </div>
+              <div className="micro-row section-actions people-command-row">
                 <button disabled={busy || orphanUnknownCount === 0} onClick={() => void handleDeleteAllUnknownPersons()}>
+                  <Trash2 size={15} aria-hidden="true" />
                   清空无关联未知人物（{orphanUnknownCount}）
                 </button>
                 <button disabled={busy || unknownPersonCount === 0} onClick={() => void handleReRecognizeAllUnknownPhotos()}>
+                  <RotateCcw size={15} aria-hidden="true" />
                   一键重新识别所有未知人物
                 </button>
+              </div>
+              <div className="micro-row section-actions people-command-row">
                 <button disabled={busy} onClick={handleExportPersons}>
+                  <Download size={15} aria-hidden="true" />
                   导出样本库
                 </button>
                 <button disabled={busy} onClick={handlePickImportFile}>
+                  <FileUp size={15} aria-hidden="true" />
                   导入样本库
                 </button>
+              </div>
                 <input
                   ref={importFileRef}
                   type="file"
@@ -3122,22 +3144,25 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                     <span>导入失败：{importTask.message}</span>
                   </div>
                 )}
-              </div>
             </div>
 
-            <div className="inline-editor">
+            <div className="inline-editor people-create-row">
               <input value={newPersonName} onChange={(event) => setNewPersonName(event.target.value)} placeholder="输入新人物名称" />
               <button disabled={busy || !newPersonName.trim()} onClick={() => void handleCreatePerson()}>
+                <UserPlus size={15} aria-hidden="true" />
                 创建人物
               </button>
             </div>
 
-            <input
-              className="search-input subtle"
-              value={peopleSearch}
-              onChange={(event) => setPeopleSearch(event.target.value)}
-              placeholder="搜索人物（样本库）"
-            />
+            <label className="people-search">
+              <Search size={16} aria-hidden="true" />
+              <input
+                className="search-input subtle"
+                value={peopleSearch}
+                onChange={(event) => setPeopleSearch(event.target.value)}
+                placeholder="搜索人物（样本库）"
+              />
+            </label>
 
             <div className="person-list">
               {filteredPeopleInLibrary.map((person) => (
@@ -3146,12 +3171,18 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                     className={selectedPerson?.id === person.id ? "person-card active" : "person-card"}
                     onClick={() => handleSelectPerson(person)}
                   >
-                    <div>
+                    <span className={person.is_unknown ? "person-avatar-marker unknown" : "person-avatar-marker"}>
+                      {person.display_name.slice(0, 1)}
+                    </span>
+                    <div className="person-card-main">
                       <strong>{person.display_name}</strong>
                       <span>{person.is_unknown ? "未知人物" : "正式人物"}</span>
                     </div>
-                    <small>
-                      样本 {person.sample_count} · 图库 {person.gallery_photo_count}
+                    <small className="person-card-stats">
+                      <b>{person.sample_count}</b>
+                      <span>样本</span>
+                      <b>{person.gallery_photo_count}</b>
+                      <span>图库</span>
                     </small>
                   </button>
                   {peopleBatchDeleteMode && (
@@ -4016,7 +4047,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
       {page === "gallery" && GalleryPageComponent()}
 
-      {page === "people" && <PeoplePageComponent />}
+      {page === "people" && PeoplePageComponent()}
 
       {page === "upload" && renderUploadPage()}
 
