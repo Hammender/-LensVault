@@ -351,7 +351,10 @@ input:focus, select:focus, textarea:focus {
   align-items: start;
 }
 .people-page { grid-template-columns: 320px minmax(0, 1fr); }
-.upload-page { grid-template-columns: minmax(0, 1.2fr) 320px; }
+.upload-page {
+  grid-template-columns: minmax(0, 1fr) 340px;
+  align-items: start;
+}
 .videos-page {
   grid-template-columns: 280px minmax(0, 1fr) 380px;
   align-items: start;
@@ -1357,6 +1360,166 @@ input:focus, select:focus, textarea:focus {
 .upload-box span { color: var(--muted); }
 .upload-box input { display: none; }
 
+.upload-main {
+  gap: 24px;
+}
+
+.upload-main .section-head {
+  margin-bottom: 4px;
+}
+
+.upload-channel-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.95fr);
+  gap: 18px;
+}
+
+.upload-channel-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  border: 2px solid var(--panel-border);
+  background: linear-gradient(180deg, rgba(255, 253, 248, 0.9), rgba(245, 238, 224, 0.8));
+  padding: 22px;
+  box-shadow: 4px 4px 0 var(--panel-border);
+  overflow: hidden;
+}
+
+.upload-channel-card::after {
+  content: "";
+  position: absolute;
+  inset: auto -36px -48px auto;
+  width: 150px;
+  height: 150px;
+  border: 2px solid rgba(53, 37, 29, 0.12);
+  border-radius: 50%;
+  background: rgba(199, 71, 85, 0.08);
+  pointer-events: none;
+}
+
+.upload-channel-card-video {
+  background: linear-gradient(180deg, rgba(255, 253, 248, 0.94), rgba(226, 238, 232, 0.86));
+}
+
+.upload-channel-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.upload-channel-head h3 {
+  margin: 2px 0 0;
+  font-family: var(--font-serif);
+  font-size: 1.55rem;
+  line-height: 1.05;
+}
+
+.upload-channel-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  border: 2px solid var(--panel-border);
+  background: var(--bg-strong);
+  box-shadow: 3px 3px 0 var(--panel-border);
+}
+
+.upload-channel-card .upload-mode-switch {
+  position: relative;
+  z-index: 1;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 0;
+}
+
+.upload-channel-card .upload-box {
+  position: relative;
+  z-index: 1;
+}
+
+.upload-box-image {
+  min-height: 172px;
+  background:
+    linear-gradient(135deg, rgba(199, 71, 85, 0.08), transparent 42%),
+    rgba(255, 255, 255, 0.58);
+}
+
+.upload-channel-note {
+  position: relative;
+  z-index: 1;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.upload-channel-status {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 8px;
+  min-height: 118px;
+  border: 2px solid rgba(53, 37, 29, 0.18);
+  background: rgba(255, 253, 248, 0.66);
+  padding: 16px;
+}
+
+.upload-channel-status strong {
+  font-size: 1.15rem;
+}
+
+.upload-channel-status span {
+  color: var(--muted);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.upload-channel-progress {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.upload-channel-progress .meter {
+  margin-top: 0;
+}
+
+.upload-video-entry {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.upload-side {
+  position: sticky;
+  top: 18px;
+}
+
+.upload-side .task-box {
+  display: grid;
+  gap: 10px;
+}
+
+.upload-side .task-box p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.upload-video-info {
+  margin-top: 16px;
+}
+
 .videos-page .panel {
   min-width: 0;
 }
@@ -1815,6 +1978,9 @@ input:focus, select:focus, textarea:focus {
 
 @media (max-width: 1240px) {
   .gallery-page, .people-page, .upload-page, .videos-page { grid-template-columns: 1fr; }
+  .upload-side {
+    position: static;
+  }
   .gallery-grid, .sample-grid { grid-template-columns: repeat(3, 1fr); }
   .export-filter-grid { grid-template-columns: 1fr; }
   .filter-panel {
@@ -1863,6 +2029,24 @@ input:focus, select:focus, textarea:focus {
   }
   .subtitle-job-progress {
     grid-template-columns: minmax(0, 1fr) 42px;
+  }
+  .upload-channel-grid {
+    grid-template-columns: 1fr;
+  }
+  .upload-channel-card {
+    padding: 18px;
+  }
+  .upload-box {
+    padding: 22px;
+  }
+  .upload-box strong {
+    font-size: 1.45rem;
+  }
+  .upload-channel-head h3 {
+    font-size: 1.35rem;
+  }
+  .upload-channel-progress {
+    grid-template-columns: 1fr;
   }
 }
 /* Bilibili Style Video Page */

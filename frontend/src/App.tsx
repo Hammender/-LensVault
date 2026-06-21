@@ -8,6 +8,7 @@ import {
   FileUp,
   GalleryHorizontalEnd,
   HomeIcon,
+  ImagePlus,
   LogOut,
   RotateCcw,
   Search,
@@ -3328,43 +3329,92 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   };
 
   const renderUploadPage = () => {
+    const videoUploadState =
+      videoUploadTotalCount > 0
+        ? `上传中 ${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / ${videoUploadTotalCount}`
+        : videoFiles.length > 0
+          ? `已选择 ${videoFiles.length} 个视频`
+          : "待选择";
+    const videoUploadNote =
+      videoFiles.length > 0
+        ? videoFiles.map((file) => file.name).join("、")
+        : "支持长视频分片上传，上传后自动转为网页可播放格式。";
+
     return (
         <main className="page-grid upload-page">
           <section className="panel upload-main">
             <div className="section-head">
               <div>
-                <p className="eyebrow">展示图上传</p>
-                <h2>自动识别并打标签</h2>
+                <p className="eyebrow">素材上传</p>
+                <h2>图片与视频统一入库</h2>
               </div>
-              <span>支持批量导入</span>
+              <span>批量导入工作台</span>
             </div>
 
-            <div className="upload-mode-switch">
-              <button
-                className={uploadMode === "normal" ? "soft-chip active" : "soft-chip"}
-                onClick={() => setUploadMode("normal")}
-              >
-                普通图片
-              </button>
-              <button className={uploadMode === "rich" ? "soft-chip active" : "soft-chip"} onClick={() => setUploadMode("rich")}>
-                图文图片
-              </button>
-              <small className="tip">
-                {uploadMode === "rich"
-                  ? `将自动打 #图文 标签${richTag ? "" : "（系统会自动创建）"}，并执行 OCR + 人脸识别`
-                  : "沿用普通图片流程：人脸识别 + 人物标签 + 普通标签"}
-              </small>
-            </div>
+            <div className="upload-channel-grid">
+              <article className="upload-channel-card upload-channel-card-image">
+                <div className="upload-channel-head">
+                  <span className="upload-channel-icon">
+                    <ImagePlus size={22} aria-hidden="true" />
+                  </span>
+                  <div>
+                    <p className="eyebrow">图片入库</p>
+                    <h3>展示图识别</h3>
+                  </div>
+                </div>
+                <div className="upload-mode-switch">
+                  <button
+                    className={uploadMode === "normal" ? "soft-chip active" : "soft-chip"}
+                    onClick={() => setUploadMode("normal")}
+                  >
+                    普通图片
+                  </button>
+                  <button className={uploadMode === "rich" ? "soft-chip active" : "soft-chip"} onClick={() => setUploadMode("rich")}>
+                    图文图片
+                  </button>
+                </div>
+                <label className="upload-box large upload-box-image">
+                  <input type="file" multiple accept="image/*" onChange={(event) => handlePickGalleryFiles(event.target.files)} />
+                  <strong>{uploadMode === "rich" ? "选择图文图片" : "选择展示图片"}</strong>
+                  <span>
+                    {uploadMode === "rich"
+                      ? "可补录文本或留空走 OCR，并自动执行人脸识别。"
+                      : "预览后填写人物和标签，再统一提交到识别队列。"}
+                  </span>
+                </label>
+                <small className="upload-channel-note">
+                  {uploadMode === "rich"
+                    ? `将自动打 #图文 标签${richTag ? "" : "（系统会自动创建）"}`
+                    : "沿用普通图片流程：人脸识别 + 人物标签 + 普通标签"}
+                </small>
+              </article>
 
-            <label className="upload-box large">
-              <input type="file" multiple accept="image/*" onChange={(event) => handlePickGalleryFiles(event.target.files)} />
-              <strong>{uploadMode === "rich" ? "拖入或选择图文图片" : "拖入或选择展示图片"}</strong>
-              <span>
-                {uploadMode === "rich"
-                  ? "先预览并补录文本（可留空走 OCR），确认后再统一上传。"
-                  : "先预览并填写每张图的人物和标签，确认后再统一上传到后端识别。"}
-              </span>
-            </label>
+              <article className="upload-channel-card upload-channel-card-video">
+                <div className="upload-channel-head">
+                  <span className="upload-channel-icon">
+                    <Clapperboard size={22} aria-hidden="true" />
+                  </span>
+                  <div>
+                    <p className="eyebrow">视频入库</p>
+                    <h3>分片上传</h3>
+                  </div>
+                </div>
+                <div className="upload-channel-status">
+                  <strong>{videoUploadState}</strong>
+                  <span>{videoUploadNote}</span>
+                </div>
+                <div className="upload-channel-progress">
+                  <div className="meter">
+                    <span style={{ width: `${videoUploadProgress}%` }} />
+                  </div>
+                  <small>{videoUploadProgress}%</small>
+                </div>
+                <button className="primary upload-video-entry" onClick={() => setIsVideoUploadModalOpen(true)}>
+                  <UploadCloud size={16} aria-hidden="true" />
+                  上传视频
+                </button>
+              </article>
+            </div>
 
             {pendingGalleryUploads.length > 0 && (
               <div className="editor-block">
@@ -3456,10 +3506,116 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                 <span>支持选已有，也支持上传时现场新增，供展示图库组合检索。</span>
               </article>
             </div>
+
+            <div className="info-list upload-video-info">
+              <article>
+                <strong>视频状态</strong>
+                <span>{videoUploadState}</span>
+              </article>
+              <article>
+                <strong>字幕处理</strong>
+                <span>{videoUploadGenerateSubtitles ? "上传完成后自动提交中文字幕生成。" : "可在视频上传弹窗中开启中文字幕生成。"}</span>
+              </article>
+            </div>
           </aside>
         </main>
     );
   };
+
+  const renderVideoUploadModal = () => (
+    <div className="modal-backdrop">
+      <aside className="panel video-upload-panel bili-modal-content">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">上传视频</p>
+            <h2>分片入库</h2>
+          </div>
+          <button className="close-modal" onClick={() => setIsVideoUploadModalOpen(false)}>关闭</button>
+        </div>
+
+        <label className="upload-box video-upload-box">
+          <input type="file" accept={supportedVideoAccept} multiple onChange={(event) => handlePickVideoFile(event.target.files)} />
+          <strong>{videoFiles.length === 1 ? videoFiles[0].name : videoFiles.length > 1 ? `已选 ${videoFiles.length} 个视频` : `选择视频（${supportedVideoFormatLabel}，可多选）`}</strong>
+          <span>{videoFiles.length >= 1 ? videoFiles.map((f) => formatBytes(f.size)).join("、") : "支持长视频分片上传，上传后会自动转为网页可播放格式。"}</span>
+        </label>
+
+        <div className="stack-editor">
+          <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="单个视频时可自定义标题" disabled={videoFiles.length > 1} />
+          <textarea
+            className="rich-text-editor compact"
+            value={videoDescription}
+            onChange={(event) => setVideoDescription(event.target.value)}
+            placeholder="视频简介（批量上传时所有文件共用此简介）"
+          />
+        </div>
+
+        <div className="editor-block">
+          <label>上传时绑定类别</label>
+          <div className="chip-cloud compact">
+            {videoCategoryTags.map((tag) => (
+              <button
+                key={tag.id}
+                className={videoUploadCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                onClick={() => handleToggleVideoUploadCategory(tag.id)}
+              >
+                #{tag.name}
+              </button>
+            ))}
+          </div>
+          <input
+            value={videoUploadNewCategories}
+            onChange={(event) => setVideoUploadNewCategories(event.target.value)}
+            placeholder="新类别标签，逗号分隔"
+          />
+        </div>
+
+        <div className="editor-block">
+          <label>上传时绑定人物</label>
+          <div className="video-person-cloud compact">
+            {videoPeople.map((person) => (
+              <button
+                key={person.id}
+                className={videoUploadPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
+                onClick={() => handleToggleVideoUploadPerson(person.id)}
+              >
+                {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
+                <b>{person.name}</b>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <label className="toggle-row subtitle-upload-toggle">
+          <input
+            type="checkbox"
+            checked={videoUploadGenerateSubtitles}
+            onChange={(event) => setVideoUploadGenerateSubtitles(event.target.checked)}
+          />
+          <span>自动生成中文字幕</span>
+        </label>
+
+        {error && <div className="error-banner modal-inline-error">{error}</div>}
+
+        <div className="video-progress">
+          <strong>{videoUploadProgress}%</strong>
+          <div className="meter"><span style={{ width: `${videoUploadProgress}%` }} /></div>
+          {videoUploadTotalCount > 0 && (
+            <small>文件 {Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / {videoUploadTotalCount}</small>
+          )}
+          {videoUploadSession && <small>{videoUploadSession.uploaded_parts.length} / {videoUploadSession.total_parts} 分片</small>}
+        </div>
+
+        <div className="micro-row wrap">
+          <button disabled={busy || videoFiles.length === 0 || (videoFiles.length === 1 && !videoTitle.trim())} onClick={() => void handleConfirmVideoUpload()}>
+            {videoUploadTotalCount > 0 ? `上传中 (${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)}/${videoUploadTotalCount})` : "开始上传"}
+          </button>
+          <button className="ghost-button" disabled={busy} onClick={() => void handleCancelVideoUpload()}>
+            清理续传会话
+          </button>
+        </div>
+      </aside>
+    </div>
+  );
 
   const renderVideosPage = () => {
     return (
@@ -3484,7 +3640,6 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
             <div className="micro-row wrap compact-actions">
               <button className="compact-button" onClick={() => setIsCategoryManageModalOpen(true)}>管理分区</button>
               <button className="compact-button" onClick={() => setIsVideoPersonManageModalOpen(true)}>管理UP主</button>
-              <button className="primary" onClick={() => setIsVideoUploadModalOpen(true)}>上传视频</button>
             </div>
           </div>
 
@@ -3697,100 +3852,6 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
             </div>
           )}
 
-          {isVideoUploadModalOpen && (
-            <div className="modal-backdrop">
-              <aside className="panel video-upload-panel bili-modal-content">
-                <div className="section-head">
-                  <div>
-                    <p className="eyebrow">上传视频</p>
-                    <h2>分片入库</h2>
-                  </div>
-                  <button className="close-modal" onClick={() => setIsVideoUploadModalOpen(false)}>关闭</button>
-                </div>
-
-                <label className="upload-box video-upload-box">
-                  <input type="file" accept={supportedVideoAccept} multiple onChange={(event) => handlePickVideoFile(event.target.files)} />
-                  <strong>{videoFiles.length === 1 ? videoFiles[0].name : videoFiles.length > 1 ? `已选 ${videoFiles.length} 个视频` : `选择视频（${supportedVideoFormatLabel}，可多选）`}</strong>
-                  <span>{videoFiles.length >= 1 ? videoFiles.map((f) => formatBytes(f.size)).join("、") : "支持长视频分片上传，上传后会自动转为网页可播放格式。"}</span>
-                </label>
-
-                <div className="stack-editor">
-                  <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="单个视频时可自定义标题" disabled={videoFiles.length > 1} />
-                  <textarea
-                    className="rich-text-editor compact"
-                    value={videoDescription}
-                    onChange={(event) => setVideoDescription(event.target.value)}
-                    placeholder="视频简介（批量上传时所有文件共用此简介）"
-                  />
-                </div>
-
-                <div className="editor-block">
-                  <label>上传时绑定类别</label>
-                  <div className="chip-cloud compact">
-                    {videoCategoryTags.map((tag) => (
-                      <button
-                        key={tag.id}
-                        className={videoUploadCategoryIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
-                        onClick={() => handleToggleVideoUploadCategory(tag.id)}
-                      >
-                        #{tag.name}
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    value={videoUploadNewCategories}
-                    onChange={(event) => setVideoUploadNewCategories(event.target.value)}
-                    placeholder="新类别标签，逗号分隔"
-                  />
-                </div>
-
-                <div className="editor-block">
-                  <label>上传时绑定人物</label>
-                  <div className="video-person-cloud compact">
-                    {videoPeople.map((person) => (
-                      <button
-                        key={person.id}
-                        className={videoUploadPersonIds.includes(person.id) ? "video-person-chip active" : "video-person-chip"}
-                        onClick={() => handleToggleVideoUploadPerson(person.id)}
-                      >
-                        {person.avatar_url ? <img src={person.avatar_url} alt={person.name} /> : <span>{person.name.slice(0, 1)}</span>}
-                        <b>{person.name}</b>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <label className="toggle-row subtitle-upload-toggle">
-                  <input
-                    type="checkbox"
-                    checked={videoUploadGenerateSubtitles}
-                    onChange={(event) => setVideoUploadGenerateSubtitles(event.target.checked)}
-                  />
-                  <span>自动生成中文字幕</span>
-                </label>
-
-                {error && <div className="error-banner modal-inline-error">{error}</div>}
-
-                <div className="video-progress">
-                  <strong>{videoUploadProgress}%</strong>
-                  <div className="meter"><span style={{ width: `${videoUploadProgress}%` }} /></div>
-                  {videoUploadTotalCount > 0 && (
-                    <small>文件 {Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / {videoUploadTotalCount}</small>
-                  )}
-                  {videoUploadSession && <small>{videoUploadSession.uploaded_parts.length} / {videoUploadSession.total_parts} 分片</small>}
-                </div>
-
-                <div className="micro-row wrap">
-                  <button disabled={busy || videoFiles.length === 0 || (videoFiles.length === 1 && !videoTitle.trim())} onClick={() => void handleConfirmVideoUpload()}>
-                    {videoUploadTotalCount > 0 ? `上传中 (${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)}/${videoUploadTotalCount})` : "开始上传"}
-                  </button>
-                  <button className="ghost-button" disabled={busy} onClick={() => void handleCancelVideoUpload()}>
-                    清理续传会话
-                  </button>
-                </div>
-              </aside>
-            </div>
-          )}
         </main>
     );
   };
@@ -4050,6 +4111,8 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       {page === "people" && PeoplePageComponent()}
 
       {page === "upload" && renderUploadPage()}
+
+      {isVideoUploadModalOpen && renderVideoUploadModal()}
 
       {isVideoEditModalOpen && selectedVideo && (
         <div className="modal-backdrop" onClick={() => setIsVideoEditModalOpen(false)}>
