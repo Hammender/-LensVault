@@ -146,10 +146,35 @@ type PendingGalleryUpload = {
 
 type UploadMode = "normal" | "rich";
 
+type VideoUploadQueueStatus = "queued" | "uploading" | "completed" | "failed" | "needs_file";
+
+type VideoUploadQueueItem = {
+  id: string;
+  filename: string;
+  size: number;
+  lastModified: number;
+  contentType: string | null;
+  title: string;
+  description: string;
+  categoryTagIds: number[];
+  categoryTagNames: string[];
+  personIds: number[];
+  generateZhSubtitles: boolean;
+  sessionId: string | null;
+  partSize: number;
+  totalParts: number;
+  uploadedParts: number[];
+  progress: number;
+  status: VideoUploadQueueStatus;
+  error: string | null;
+  completedVideoId: number | null;
+};
+
 const galleryPageSize = 20;
 const videoPageSize = 24;
 const videoPartSize = 16 * 1024 * 1024;
-const videoResumeStorageKey = "pictureshow-video-upload-session";
+const legacyVideoResumeStorageKey = "pictureshow-video-upload-session";
+const videoUploadQueueStorageKey = "pictureshow-video-upload-queue";
 const videoPartUploadMaxAttempts = 4;
 const videoPartUploadRetryDelayMs = 1200;
 const videoSeekSeconds = 10;
@@ -334,6 +359,123 @@ function splitCommaList(input: string): string[] {
         .filter(Boolean)
     )
   );
+}
+
+function videoFileFingerprint(file: File): string {
+  return `${file.name}::${file.size}::${file.lastModified}`;
+}
+
+function makeVideoQueueItem(
+  file: File,
+  options: {
+    title: string;
+    description: string;
+    categoryTagIds: number[];
+    categoryTagNames: string[];
+    personIds: number[];
+    generateZhSubtitles: boolean;
+  }
+): VideoUploadQueueItem {
+  return {
+    id: videoFileFingerprint(file),
+    filename: file.name,
+    size: file.size,
+    lastModified: file.lastModified,
+    contentType: file.type || null,
+    title: options.title,
+    description: options.description,
+    categoryTagIds: [...options.categoryTagIds],
+    categoryTagNames: [...options.categoryTagNames],
+    personIds: [...options.personIds],
+    generateZhSubtitles: options.generateZhSubtitles,
+    sessionId: null,
+    partSize: videoPartSize,
+    totalParts: Math.max(1, Math.ceil(file.size / videoPartSize)),
+    uploadedParts: [],
+    progress: 0,
+    status: "queued",
+    error: null,
+    completedVideoId: null
+  };
+}
+
+function normalizeVideoQueueItem(source: Partial<VideoUploadQueueItem>): VideoUploadQueueItem | null {
+  if (!source.id || !source.filename || typeof source.size !== "number" || typeof source.lastModified !== "number") {
+    return null;
+  }
+  const uploadedParts = Array.isArray(source.uploadedParts)
+    ? source.uploadedParts.filter((part): part is number => Number.isInteger(part) && part >= 0)
+    : [];
+  const totalParts = typeof source.totalParts === "number" && source.totalParts > 0 ? source.totalParts : Math.max(1, uploadedParts.length);
+  const status: VideoUploadQueueStatus =
+    source.status === "completed"
+      ? "completed"
+      : source.status === "failed"
+        ? "failed"
+        : "needs_file";
+  return {
+    id: source.id,
+    filename: source.filename,
+    size: source.size,
+    lastModified: source.lastModified,
+    contentType: source.contentType ?? null,
+    title: source.title ?? source.filename.replace(/\.[^.]+$/, ""),
+    description: source.description ?? "",
+    categoryTagIds: Array.isArray(source.categoryTagIds) ? source.categoryTagIds.filter((id): id is number => Number.isInteger(id)) : [],
+    categoryTagNames: Array.isArray(source.categoryTagNames) ? source.categoryTagNames.filter((name): name is string => typeof name === "string") : [],
+    personIds: Array.isArray(source.personIds) ? source.personIds.filter((id): id is number => Number.isInteger(id)) : [],
+    generateZhSubtitles: Boolean(source.generateZhSubtitles),
+    sessionId: source.sessionId ?? null,
+    partSize: typeof source.partSize === "number" && source.partSize > 0 ? source.partSize : videoPartSize,
+    totalParts,
+    uploadedParts,
+    progress:
+      typeof source.progress === "number"
+        ? Math.min(100, Math.max(0, source.progress))
+        : Math.round((uploadedParts.length / totalParts) * 100),
+    status,
+    error: status === "needs_file" ? "浏览器刷新已中断上传，请重新选择这个原视频文件后继续。" : source.error ?? null,
+    completedVideoId: typeof source.completedVideoId === "number" ? source.completedVideoId : null
+  };
+}
+
+function loadStoredVideoUploadQueue(): VideoUploadQueueItem[] {
+  try {
+    const raw = window.localStorage.getItem(videoUploadQueueStorageKey);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((item) => normalizeVideoQueueItem(item))
+      .filter((item): item is VideoUploadQueueItem => Boolean(item));
+  } catch {
+    window.localStorage.removeItem(videoUploadQueueStorageKey);
+    return [];
+  }
+}
+
+function saveStoredVideoUploadQueue(queue: VideoUploadQueueItem[]) {
+  const visibleQueue = queue.filter((item) => item.status !== "completed");
+  if (visibleQueue.length === 0) {
+    window.localStorage.removeItem(videoUploadQueueStorageKey);
+    return;
+  }
+  window.localStorage.setItem(videoUploadQueueStorageKey, JSON.stringify(visibleQueue));
+}
+
+function videoQueueStatusLabel(status: VideoUploadQueueStatus): string {
+  const labels: Record<VideoUploadQueueStatus, string> = {
+    queued: "待上传",
+    uploading: "上传中",
+    completed: "已完成",
+    failed: "失败",
+    needs_file: "需重选文件"
+  };
+  return labels[status];
 }
 
 function delay(ms: number): Promise<void> {
@@ -628,6 +770,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const [batchApplyPersonNames, setBatchApplyPersonNames] = useState("");
   const [batchApplyTagNames, setBatchApplyTagNames] = useState("");
   const [uploadMode, setUploadMode] = useState<UploadMode>("normal");
+  const [galleryUploadBusy, setGalleryUploadBusy] = useState(false);
   const [importTask, setImportTask] = useState<Task | null>(null);
   const [galleryImportTask, setGalleryImportTask] = useState<Task | null>(null);
   const [videoItems, setVideoItems] = useState<VideoItem[]>([]);
@@ -655,6 +798,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const [videoUploadSession, setVideoUploadSession] = useState<VideoUploadSession | null>(null);
   const [videoUploadCurrentIndex, setVideoUploadCurrentIndex] = useState(0);
   const [videoUploadTotalCount, setVideoUploadTotalCount] = useState(0);
+  const [videoUploadBusy, setVideoUploadBusy] = useState(false);
+  const [videoUploadQueue, setVideoUploadQueue] = useState<VideoUploadQueueItem[]>(() => loadStoredVideoUploadQueue());
+  const videoUploadQueueRef = useRef<VideoUploadQueueItem[]>(videoUploadQueue);
+  const previousPageRef = useRef<PageKey>(page);
   const [subtitleServiceStatus, setSubtitleServiceStatus] = useState<SubtitleServiceStatus | null>(null);
   const [subtitleServiceLogs, setSubtitleServiceLogs] = useState<SubtitleServiceLogs | null>(null);
   const [subtitleJobs, setSubtitleJobs] = useState<SubtitleJob[]>([]);
@@ -1008,6 +1155,30 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    videoUploadQueueRef.current = videoUploadQueue;
+    saveStoredVideoUploadQueue(videoUploadQueue);
+  }, [videoUploadQueue]);
+
+  useEffect(() => {
+    if (!videoUploadBusy) {
+      return undefined;
+    }
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [videoUploadBusy]);
+
+  useEffect(() => {
+    if (page === "videos" && previousPageRef.current !== "videos") {
+      void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+    }
+    previousPageRef.current = page;
+  }, [page]);
 
   useEffect(() => {
     if (page !== "videos") {
@@ -1614,7 +1785,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     if (pendingGalleryUploads.length === 0) {
       return;
     }
-    setBusy(true);
+    setGalleryUploadBusy(true);
     setError(null);
     try {
       const files = pendingGalleryUploads.map((item) => item.file);
@@ -1631,18 +1802,85 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "展示图上传失败。");
     } finally {
-      setBusy(false);
+      setGalleryUploadBusy(false);
     }
+  }
+
+  function setVideoUploadQueueSynced(updater: (current: VideoUploadQueueItem[]) => VideoUploadQueueItem[]) {
+    setVideoUploadQueue((current) => {
+      const next = updater(current);
+      videoUploadQueueRef.current = next;
+      saveStoredVideoUploadQueue(next);
+      return next;
+    });
+  }
+
+  function updateVideoQueueItem(
+    itemId: string,
+    updater: Partial<VideoUploadQueueItem> | ((item: VideoUploadQueueItem) => VideoUploadQueueItem)
+  ) {
+    setVideoUploadQueueSynced((current) =>
+      current.map((item) => {
+        if (item.id !== itemId) {
+          return item;
+        }
+        return typeof updater === "function" ? updater(item) : { ...item, ...updater };
+      })
+    );
+  }
+
+  function getVideoUploadOptionsForFile(file: File, totalCount: number) {
+    return {
+      title: totalCount === 1 ? videoTitle.trim() || file.name.replace(/\.[^.]+$/, "") : file.name.replace(/\.[^.]+$/, ""),
+      description: videoDescription.trim(),
+      categoryTagIds: videoUploadCategoryIds,
+      categoryTagNames: splitCommaList(videoUploadNewCategories),
+      personIds: videoUploadPersonIds,
+      generateZhSubtitles: videoUploadGenerateSubtitles
+    };
   }
 
   function handlePickVideoFile(files: FileList | null) {
     const picked = Array.from(files ?? []);
-    setVideoFiles(picked);
-    if (picked.length === 1 && !videoTitle.trim()) {
-      setVideoTitle(picked[0].name.replace(/\.[^.]+$/, ""));
-    } else if (picked.length > 1) {
+    const supportedPicked = picked.filter((file) => isSupportedVideoFile(file.name));
+    setVideoFiles(supportedPicked);
+    if (supportedPicked.length === 1 && !videoTitle.trim()) {
+      setVideoTitle(supportedPicked[0].name.replace(/\.[^.]+$/, ""));
+    } else if (supportedPicked.length > 1) {
       setVideoTitle("");
     }
+    if (picked.length !== supportedPicked.length) {
+      setError(`已忽略不支持的视频格式，仅支持 ${supportedVideoFormatLabel}。`);
+    } else {
+      setError(null);
+    }
+    const pickedIds = new Set(supportedPicked.map((file) => videoFileFingerprint(file)));
+    const pickedById = new Map(supportedPicked.map((file) => [videoFileFingerprint(file), file]));
+    setVideoUploadQueueSynced((current) => {
+      const existingIds = new Set(current.map((item) => item.id));
+      const next = current.map((item) => {
+        if (!pickedIds.has(item.id) || item.status === "completed") {
+          return item;
+        }
+        const file = pickedById.get(item.id);
+        return {
+          ...item,
+          filename: file?.name ?? item.filename,
+          size: file?.size ?? item.size,
+          lastModified: file?.lastModified ?? item.lastModified,
+          contentType: file?.type || item.contentType,
+          status: "queued" as VideoUploadQueueStatus,
+          error: null
+        };
+      });
+      for (const file of supportedPicked) {
+        const id = videoFileFingerprint(file);
+        if (!existingIds.has(id)) {
+          next.push(makeVideoQueueItem(file, getVideoUploadOptionsForFile(file, supportedPicked.length)));
+        }
+      }
+      return next;
+    });
     setVideoUploadProgress(0);
     setVideoUploadSession(null);
   }
@@ -1945,33 +2183,38 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     }
   }
 
-  async function resolveVideoUploadSession(file: File, title: string, description: string, partSize: number): Promise<VideoUploadSession> {
-    const raw = window.localStorage.getItem(videoResumeStorageKey);
-    if (raw) {
+  async function resolveVideoUploadSession(file: File, item: VideoUploadQueueItem): Promise<VideoUploadSession> {
+    if (item.sessionId) {
       try {
-        const saved = JSON.parse(raw) as { sessionId: string; name: string; size: number; lastModified: number };
-        if (saved.name === file.name && saved.size === file.size && saved.lastModified === file.lastModified) {
-          const existing = await getVideoUploadSession(saved.sessionId);
-          setVideoUploadSession(existing);
-          return existing;
-        }
+        const existing = await getVideoUploadSession(item.sessionId);
+        setVideoUploadSession(existing);
+        updateVideoQueueItem(item.id, {
+          partSize: existing.part_size,
+          totalParts: existing.total_parts,
+          uploadedParts: existing.uploaded_parts,
+          progress: Math.round((existing.uploaded_parts.length / existing.total_parts) * 100)
+        });
+        return existing;
       } catch {
-        window.localStorage.removeItem(videoResumeStorageKey);
+        updateVideoQueueItem(item.id, { sessionId: null, uploadedParts: [], progress: 0 });
       }
     }
     const session = await createVideoUploadSession({
-      title: title.trim(),
-      description: description.trim() || null,
+      title: item.title.trim(),
+      description: item.description.trim() || null,
       filename: file.name,
-      content_type: file.type || null,
+      content_type: file.type || item.contentType,
       size_bytes: file.size,
-      part_size: partSize
+      part_size: item.partSize || videoPartSize
     });
-    window.localStorage.setItem(
-      videoResumeStorageKey,
-      JSON.stringify({ sessionId: session.id, name: file.name, size: file.size, lastModified: file.lastModified })
-    );
     setVideoUploadSession(session);
+    updateVideoQueueItem(item.id, {
+      sessionId: session.id,
+      partSize: session.part_size,
+      totalParts: session.total_parts,
+      uploadedParts: session.uploaded_parts,
+      progress: Math.round((session.uploaded_parts.length / session.total_parts) * 100)
+    });
     return session;
   }
 
@@ -1993,15 +2236,51 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
   async function handleConfirmVideoUpload() {
-    const filesToUpload = videoFiles;
+    const selectedFilesById = new Map(videoFiles.map((file) => [videoFileFingerprint(file), file]));
+    let preparedQueue = videoUploadQueueRef.current;
+    if (videoFiles.length > 0) {
+      const existingIds = new Set(preparedQueue.map((item) => item.id));
+      preparedQueue = preparedQueue.map((item) => {
+        const file = selectedFilesById.get(item.id);
+        if (!file || item.status === "completed") {
+          return item;
+        }
+        return {
+          ...item,
+          ...getVideoUploadOptionsForFile(file, videoFiles.length),
+          filename: file.name,
+          size: file.size,
+          lastModified: file.lastModified,
+          contentType: file.type || item.contentType,
+          status: "queued" as VideoUploadQueueStatus,
+          error: null
+        };
+      });
+      const addedItems: VideoUploadQueueItem[] = [];
+      for (const file of videoFiles) {
+        const id = videoFileFingerprint(file);
+        if (!existingIds.has(id)) {
+          addedItems.push(makeVideoQueueItem(file, getVideoUploadOptionsForFile(file, videoFiles.length)));
+        }
+      }
+      preparedQueue = [...preparedQueue, ...addedItems];
+      setVideoUploadQueueSynced(() => preparedQueue);
+    }
+    const filesToUpload = preparedQueue
+      .filter((item) => item.status !== "completed" && selectedFilesById.has(item.id))
+      .map((item) => ({ item, file: selectedFilesById.get(item.id)! }));
     const totalCount = filesToUpload.length;
     if (totalCount === 0) {
+      const hasInterrupted = preparedQueue.some((item) => item.status === "needs_file" || item.status === "failed");
+      if (hasInterrupted) {
+        setError("请重新选择队列里标记为“需重选文件”的原视频文件后继续上传。");
+      }
       return;
     }
-    if (totalCount === 1 && !videoTitle.trim()) {
+    if (videoFiles.length === 1 && !videoTitle.trim()) {
       return;
     }
-    setBusy(true);
+    setVideoUploadBusy(true);
     setError(null);
     setVideoUploadTotalCount(totalCount);
 
@@ -2009,11 +2288,12 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     let lastError: string | null = null;
 
     for (let fileIndex = 0; fileIndex < totalCount; fileIndex += 1) {
-      const file = filesToUpload[fileIndex];
+      const { item, file } = filesToUpload[fileIndex];
       console.log(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个: ${file.name} (${file.size} bytes)`);
 
       if (!isSupportedVideoFile(file.name)) {
         lastError = `"${file.name}" 不是支持的视频格式（${supportedVideoFormatLabel}），已跳过。`;
+        updateVideoQueueItem(item.id, { status: "failed", error: lastError });
         continue;
       }
 
@@ -2024,14 +2304,19 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
           setVideoUploadSession(null);
         });
 
-        const useTitle = totalCount === 1 ? videoTitle.trim() : file.name.replace(/\.[^.]+$/, "");
-        const partSize = videoPartSize;
-        let session = await resolveVideoUploadSession(file, useTitle, videoDescription, partSize);
+        updateVideoQueueItem(item.id, { status: "uploading", error: null });
+        let session = await resolveVideoUploadSession(file, item);
         const uploaded = new Set(session.uploaded_parts);
         setVideoUploadSession(session);
+        updateVideoQueueItem(item.id, {
+          uploadedParts: Array.from(uploaded).sort((left, right) => left - right),
+          progress: Math.round((uploaded.size / session.total_parts) * 100)
+        });
         for (let index = 0; index < session.total_parts; index += 1) {
           if (uploaded.has(index)) {
-            setVideoUploadProgress(Math.round(((index + 1) / session.total_parts) * 100));
+            const progress = Math.round((uploaded.size / session.total_parts) * 100);
+            setVideoUploadProgress(progress);
+            updateVideoQueueItem(item.id, { progress });
             continue;
           }
           const start = index * session.part_size;
@@ -2041,22 +2326,32 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
           const uploadedParts = Array.from(uploaded).sort((left, right) => left - right);
           session = { ...session, uploaded_parts: uploadedParts };
           setVideoUploadSession(session);
-          setVideoUploadProgress(Math.round((uploadedParts.length / session.total_parts) * 100));
+          const progress = Math.round((uploadedParts.length / session.total_parts) * 100);
+          setVideoUploadProgress(progress);
+          updateVideoQueueItem(item.id, { uploadedParts, progress });
         }
         session = await getVideoUploadSession(session.id);
         setVideoUploadSession(session);
-        await completeVideoUpload(session.id, {
-          category_tag_ids: videoUploadCategoryIds,
-          category_tag_names: splitCommaList(videoUploadNewCategories),
-          person_ids: videoUploadPersonIds,
-          generate_zh_subtitles: videoUploadGenerateSubtitles
+        const detail = await completeVideoUpload(session.id, {
+          category_tag_ids: item.categoryTagIds,
+          category_tag_names: item.categoryTagNames,
+          person_ids: item.personIds,
+          generate_zh_subtitles: item.generateZhSubtitles
         });
-        window.localStorage.removeItem(videoResumeStorageKey);
+        updateVideoQueueItem(item.id, {
+          sessionId: null,
+          uploadedParts: session.uploaded_parts,
+          progress: 100,
+          status: "completed",
+          error: null,
+          completedVideoId: detail.id
+        });
         completedCount += 1;
         console.log(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个完成: ${file.name}`);
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : "视频上传失败。";
         lastError = `"${file.name}" ${message}`;
+        updateVideoQueueItem(item.id, { status: "failed", error: message });
         console.error(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个失败: ${file.name}`, cause);
       }
     }
@@ -2082,34 +2377,52 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     setVideoUploadCurrentIndex(0);
     setVideoUploadTotalCount(0);
 
+    const remainingQueue = videoUploadQueueRef.current.filter((item) => item.status !== "completed");
     if (lastError) {
       setError(`${lastError}（已完成 ${completedCount}/${totalCount} 个）`);
-      if (completedCount === 0) {
-        setVideoFiles([]);
-      }
+    } else if (remainingQueue.length > 0) {
+      setError("还有未完成的视频，请重新选择对应原文件后继续上传。");
     } else {
+      setVideoUploadQueueSynced(() => []);
       setIsVideoUploadModalOpen(false);
     }
-    setBusy(false);
+    setVideoUploadBusy(false);
   }
 
   async function handleCancelVideoUpload() {
-    if (!videoUploadSession) {
-      window.localStorage.removeItem(videoResumeStorageKey);
+    const sessionsToCancel = videoUploadQueueRef.current
+      .filter((item) => item.sessionId && item.status !== "completed")
+      .map((item) => item.sessionId!);
+    if (sessionsToCancel.length === 0 && !videoUploadSession) {
+      window.localStorage.removeItem(legacyVideoResumeStorageKey);
+      window.localStorage.removeItem(videoUploadQueueStorageKey);
       setVideoUploadProgress(0);
+      setVideoUploadQueueSynced(() => []);
+      setVideoFiles([]);
       return;
     }
-    setBusy(true);
+    if (!window.confirm("确认清理当前视频上传队列和未完成的续传会话吗？")) {
+      return;
+    }
+    setVideoUploadBusy(true);
     setError(null);
     try {
-      await cancelVideoUpload(videoUploadSession.id);
-      window.localStorage.removeItem(videoResumeStorageKey);
+      await Promise.allSettled(sessionsToCancel.map((sessionId) => cancelVideoUpload(sessionId)));
+      if (videoUploadSession && !sessionsToCancel.includes(videoUploadSession.id)) {
+        await cancelVideoUpload(videoUploadSession.id);
+      }
+      window.localStorage.removeItem(legacyVideoResumeStorageKey);
+      window.localStorage.removeItem(videoUploadQueueStorageKey);
       setVideoUploadSession(null);
       setVideoUploadProgress(0);
+      setVideoUploadCurrentIndex(0);
+      setVideoUploadTotalCount(0);
+      setVideoUploadQueueSynced(() => []);
+      setVideoFiles([]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "取消视频上传失败。");
     } finally {
-      setBusy(false);
+      setVideoUploadBusy(false);
     }
   }
 
@@ -3329,16 +3642,38 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   };
 
   const renderUploadPage = () => {
-    const videoUploadState =
-      videoUploadTotalCount > 0
-        ? `上传中 ${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / ${videoUploadTotalCount}`
-        : videoFiles.length > 0
-          ? `已选择 ${videoFiles.length} 个视频`
-          : "待选择";
-    const videoUploadNote =
-      videoFiles.length > 0
-        ? videoFiles.map((file) => file.name).join("、")
-        : "支持长视频分片上传，上传后自动转为网页可播放格式。";
+    const queueTotal = videoUploadQueue.length;
+    const queueCompleted = videoUploadQueue.filter((item) => item.status === "completed").length;
+    const queueFailed = videoUploadQueue.filter((item) => item.status === "failed").length;
+    const queueNeedsFile = videoUploadQueue.filter((item) => item.status === "needs_file").length;
+    const queueUploading = videoUploadQueue.find((item) => item.status === "uploading");
+    const queueProgress =
+      queueTotal > 0
+        ? Math.round(videoUploadQueue.reduce((sum, item) => sum + item.progress, 0) / queueTotal)
+        : videoUploadProgress;
+    let videoUploadState = "待选择";
+    if (queueTotal > 0) {
+      videoUploadState =
+        videoUploadBusy && videoUploadTotalCount > 0
+          ? `上传中 ${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / ${videoUploadTotalCount}`
+          : `队列 ${queueTotal} 个，完成 ${queueCompleted} 个`;
+    } else if (videoUploadTotalCount > 0) {
+      videoUploadState = `上传中 ${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / ${videoUploadTotalCount}`;
+    } else if (videoFiles.length > 0) {
+      videoUploadState = `已选择 ${videoFiles.length} 个视频`;
+    }
+    let videoUploadNote = "支持长视频分片上传，上传后自动转为网页可播放格式。";
+    if (queueNeedsFile > 0) {
+      videoUploadNote = `${queueNeedsFile} 个视频需要重新选择原文件后继续上传。`;
+    } else if (queueFailed > 0) {
+      videoUploadNote = `${queueFailed} 个视频上传失败，可重新选择原文件后继续。`;
+    } else if (queueUploading) {
+      videoUploadNote = queueUploading.filename;
+    } else if (videoUploadQueue.length > 0) {
+      videoUploadNote = videoUploadQueue.map((item) => item.filename).join("、");
+    } else if (videoFiles.length > 0) {
+      videoUploadNote = videoFiles.map((file) => file.name).join("、");
+    }
 
     return (
         <main className="page-grid upload-page">
@@ -3405,9 +3740,9 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                 </div>
                 <div className="upload-channel-progress">
                   <div className="meter">
-                    <span style={{ width: `${videoUploadProgress}%` }} />
+                    <span style={{ width: `${queueProgress}%` }} />
                   </div>
-                  <small>{videoUploadProgress}%</small>
+                  <small>{queueProgress}%</small>
                 </div>
                 <button className="primary upload-video-entry" onClick={() => setIsVideoUploadModalOpen(true)}>
                   <UploadCloud size={16} aria-hidden="true" />
@@ -3431,7 +3766,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                       onChange={(event) => setBatchApplyTagNames(event.target.value)}
                       placeholder="普通标签（逗号分隔）"
                     />
-                    <button disabled={busy} onClick={() => handleApplyBatchMetadataToAll()}>
+                    <button disabled={galleryUploadBusy} onClick={() => handleApplyBatchMetadataToAll()}>
                       批量套用
                     </button>
                   </div>
@@ -3469,7 +3804,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                     </article>
                   ))}
                 </div>
-                <button disabled={busy} onClick={() => void handleConfirmGalleryUpload()}>
+                <button disabled={galleryUploadBusy} onClick={() => void handleConfirmGalleryUpload()}>
                   确认上传（批量）
                 </button>
               </div>
@@ -3522,7 +3857,18 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     );
   };
 
-  const renderVideoUploadModal = () => (
+  const renderVideoUploadModal = () => {
+    const selectedVideoFileIds = new Set(videoFiles.map((file) => videoFileFingerprint(file)));
+    const uploadableQueueCount = videoUploadQueue.filter((item) => item.status !== "completed" && selectedVideoFileIds.has(item.id)).length;
+    const queueNeedsFileCount = videoUploadQueue.filter((item) => item.status === "needs_file").length;
+    const queueFailedCount = videoUploadQueue.filter((item) => item.status === "failed").length;
+    const canStartVideoUpload = uploadableQueueCount > 0 && !(videoFiles.length === 1 && !videoTitle.trim());
+    const videoModalProgress =
+      videoUploadQueue.length > 0
+        ? Math.round(videoUploadQueue.reduce((sum, item) => sum + item.progress, 0) / videoUploadQueue.length)
+        : videoUploadProgress;
+
+    return (
     <div className="modal-backdrop">
       <aside className="panel video-upload-panel bili-modal-content">
         <div className="section-head">
@@ -3538,6 +3884,31 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
           <strong>{videoFiles.length === 1 ? videoFiles[0].name : videoFiles.length > 1 ? `已选 ${videoFiles.length} 个视频` : `选择视频（${supportedVideoFormatLabel}，可多选）`}</strong>
           <span>{videoFiles.length >= 1 ? videoFiles.map((f) => formatBytes(f.size)).join("、") : "支持长视频分片上传，上传后会自动转为网页可播放格式。"}</span>
         </label>
+
+        {videoUploadQueue.length > 0 && (
+          <div className="editor-block">
+            <label>
+              上传队列（{videoUploadQueue.length}）
+              {queueNeedsFileCount > 0 && ` · ${queueNeedsFileCount} 个需重选文件`}
+              {queueFailedCount > 0 && ` · ${queueFailedCount} 个失败`}
+            </label>
+            <div className="video-upload-queue">
+              {videoUploadQueue.map((item) => (
+                <article key={item.id} className="video-upload-queue-item">
+                  <div className="pending-card-copy">
+                    <strong>{item.title || item.filename}</strong>
+                    <span>{item.filename} · {formatBytes(item.size)}</span>
+                    <span>{videoQueueStatusLabel(item.status)} · {item.progress}%</span>
+                    <div className="meter">
+                      <span style={{ width: `${item.progress}%` }} />
+                    </div>
+                    {item.error && <small>{item.error}</small>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="stack-editor">
           <input value={videoTitle} onChange={(event) => setVideoTitle(event.target.value)} placeholder="单个视频时可自定义标题" disabled={videoFiles.length > 1} />
@@ -3597,8 +3968,8 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
         {error && <div className="error-banner modal-inline-error">{error}</div>}
 
         <div className="video-progress">
-          <strong>{videoUploadProgress}%</strong>
-          <div className="meter"><span style={{ width: `${videoUploadProgress}%` }} /></div>
+          <strong>{videoModalProgress}%</strong>
+          <div className="meter"><span style={{ width: `${videoModalProgress}%` }} /></div>
           {videoUploadTotalCount > 0 && (
             <small>文件 {Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)} / {videoUploadTotalCount}</small>
           )}
@@ -3606,16 +3977,21 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
         </div>
 
         <div className="micro-row wrap">
-          <button disabled={busy || videoFiles.length === 0 || (videoFiles.length === 1 && !videoTitle.trim())} onClick={() => void handleConfirmVideoUpload()}>
-            {videoUploadTotalCount > 0 ? `上传中 (${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)}/${videoUploadTotalCount})` : "开始上传"}
+          <button disabled={videoUploadBusy || !canStartVideoUpload} onClick={() => void handleConfirmVideoUpload()}>
+            {videoUploadTotalCount > 0
+              ? `上传中 (${Math.min(videoUploadCurrentIndex + 1, videoUploadTotalCount)}/${videoUploadTotalCount})`
+              : videoUploadQueue.some((item) => item.status === "needs_file" || item.status === "failed")
+                ? "继续上传"
+                : "开始上传"}
           </button>
-          <button className="ghost-button" disabled={busy} onClick={() => void handleCancelVideoUpload()}>
+          <button className="ghost-button" disabled={videoUploadBusy} onClick={() => void handleCancelVideoUpload()}>
             清理续传会话
           </button>
         </div>
       </aside>
     </div>
   );
+  };
 
   const renderVideosPage = () => {
     return (
