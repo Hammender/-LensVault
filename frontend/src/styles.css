@@ -1760,6 +1760,12 @@ input:focus, select:focus, textarea:focus {
   border-color: #1f7a3f;
 }
 
+.subtitle-download-link {
+  justify-self: start;
+  margin-top: 2px;
+  text-decoration: none;
+}
+
 .subtitle-status-failed {
   border-color: #ff3b30;
 }
@@ -1868,6 +1874,29 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 8px 8px 0 var(--panel-border);
   font-weight: 600;
   z-index: 100;
+}
+
+.floating-top-button {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  z-index: 80;
+  width: 54px;
+  height: 54px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--panel-border);
+  color: var(--bg-strong);
+  box-shadow: 5px 5px 0 var(--accent);
+}
+
+.floating-top-button:hover,
+.floating-top-button:focus-visible {
+  transform: translate(-2px, -2px);
+  box-shadow: 7px 7px 0 var(--accent);
 }
 
 .lightbox-backdrop {
@@ -2000,6 +2029,136 @@ input:focus, select:focus, textarea:focus {
 .lightbox-arrow.left { left: -28px; }
 .lightbox-arrow.right { right: -28px; }
 
+.lightbox-meta-rail {
+  position: absolute;
+  top: 50%;
+  left: calc(50% + min(800px, 49vw) + 22px);
+  transform: translateY(-50%);
+  z-index: 9;
+  width: clamp(180px, calc(50vw - min(800px, 49vw) - 24px), 280px);
+  max-height: min(72vh, 680px);
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  overflow-y: auto;
+  border: 2px solid rgba(53, 37, 29, 0.26);
+  border-left: 5px solid var(--accent);
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.94), rgba(246, 242, 234, 0.84)),
+    rgba(255, 253, 248, 0.78);
+  color: var(--text);
+  box-shadow: 10px 10px 0 rgba(53, 37, 29, 0.52), 0 18px 56px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(20px) saturate(1.12);
+}
+
+.lightbox-meta-head,
+.lightbox-meta-section {
+  display: grid;
+  gap: 10px;
+}
+
+.lightbox-meta-head {
+  padding-bottom: 14px;
+  border-bottom: 1px dashed rgba(53, 37, 29, 0.24);
+}
+
+.lightbox-meta-head span,
+.lightbox-meta-section > span,
+.lightbox-meta-empty {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lightbox-meta-head strong {
+  font-family: var(--font-num);
+  font-size: 1.05rem;
+  line-height: 1.2;
+  color: var(--text);
+}
+
+.lightbox-meta-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lightbox-meta-chips .pill {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  border: 1px solid rgba(53, 37, 29, 0.22);
+  background: rgba(255, 253, 248, 0.88);
+  color: var(--text);
+  border-radius: 999px;
+  text-transform: none;
+}
+
+.lightbox-meta-chips .pill.unknown {
+  background: var(--unknown);
+  color: var(--bg-strong);
+  border-color: var(--unknown);
+}
+
+.lightbox-meta-chips .pill.muted {
+  background: rgba(255, 253, 248, 0.62);
+  color: var(--text);
+  border-color: rgba(53, 37, 29, 0.22);
+}
+
+.lightbox-meta-empty {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px dashed rgba(53, 37, 29, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 253, 248, 0.46);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.lightbox-detail-button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 12px 14px;
+  background: var(--accent);
+  color: var(--bg-strong);
+  border-color: var(--panel-border);
+  box-shadow: 4px 4px 0 var(--panel-border);
+  font-size: 0.95rem;
+}
+
+.lightbox-detail-button:hover:not(:disabled),
+.lightbox-detail-button:focus-visible:not(:disabled) {
+  transform: translateY(-1px);
+  background: var(--accent-strong);
+  box-shadow: 5px 5px 0 var(--panel-border);
+}
+
+@media (max-width: 1900px) {
+  .lightbox-meta-rail {
+    left: auto;
+    right: 24px;
+    bottom: 24px;
+    top: auto;
+    transform: none;
+    width: min(460px, calc(100vw - 48px));
+    max-height: 28vh;
+    border-left-width: 2px;
+    border-top: 5px solid var(--accent);
+  }
+}
+
 @media (max-width: 1240px) {
   .gallery-page, .people-page, .upload-page, .videos-page { grid-template-columns: 1fr; }
   .upload-side {
@@ -2037,6 +2196,27 @@ input:focus, select:focus, textarea:focus {
   .rich-lightbox-copy { width: 100%; border-left: none; border-top: 2px solid var(--panel-border); }
   .lightbox-arrow.left { left: 10px; }
   .lightbox-arrow.right { right: 10px; }
+  .floating-top-button {
+    right: 18px;
+    bottom: 18px;
+    width: 48px;
+    height: 48px;
+  }
+  .lightbox-meta-rail {
+    right: 16px;
+    bottom: 16px;
+    width: calc(100vw - 32px);
+    max-height: 30vh;
+    padding: 14px;
+    gap: 12px;
+  }
+  .lightbox-meta-head {
+    padding-bottom: 10px;
+  }
+  .lightbox-meta-chips .pill {
+    font-size: 0.78rem;
+    padding: 5px 9px;
+  }
   .filter-section-toggle {
     flex-wrap: wrap;
     justify-content: flex-start;

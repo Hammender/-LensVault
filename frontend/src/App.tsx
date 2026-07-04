@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   BarChart3,
+  ArrowUp,
   Clapperboard,
   Download,
   Edit3,
@@ -9,6 +10,7 @@ import {
   GalleryHorizontalEnd,
   HomeIcon,
   ImagePlus,
+  Info,
   LogOut,
   RotateCcw,
   Search,
@@ -836,6 +838,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const [busy, setBusy] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
   const peopleMainRef = useRef<HTMLElement | null>(null);
+  const galleryDetailRef = useRef<HTMLElement | null>(null);
 
   const richTag = useMemo(() => tags.find((tag) => tag.name === "图文") ?? null, [tags]);
   const normalTags = useMemo(() => sortByPinyinName(tags.filter((tag) => !tag.is_system)), [tags]);
@@ -1403,6 +1406,22 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   function closeGalleryLightbox() {
     setLightboxPhotoId(null);
     setLightboxEditMode(false);
+  }
+
+  function scrollToPageTop() {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function openLightboxPhotoDetail() {
+    if (!lightboxPhoto) {
+      return;
+    }
+    const photoId = lightboxPhoto.id;
+    closeGalleryLightbox();
+    await openGalleryPhoto(photoId);
+    window.setTimeout(() => {
+      galleryDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }
 
   async function handleCreatePerson() {
@@ -2269,6 +2288,19 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     const filesToUpload = preparedQueue
       .filter((item) => item.status !== "completed" && selectedFilesById.has(item.id))
       .map((item) => ({ item, file: selectedFilesById.get(item.id)! }));
+    let workingQueue = preparedQueue;
+    const syncWorkingQueueItem = (
+      itemId: string,
+      updater: Partial<VideoUploadQueueItem> | ((item: VideoUploadQueueItem) => VideoUploadQueueItem)
+    ) => {
+      workingQueue = workingQueue.map((queueItem) => {
+        if (queueItem.id !== itemId) {
+          return queueItem;
+        }
+        return typeof updater === "function" ? updater(queueItem) : { ...queueItem, ...updater };
+      });
+      setVideoUploadQueueSynced(() => workingQueue);
+    };
     const totalCount = filesToUpload.length;
     if (totalCount === 0) {
       const hasInterrupted = preparedQueue.some((item) => item.status === "needs_file" || item.status === "failed");
@@ -2293,7 +2325,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
       if (!isSupportedVideoFile(file.name)) {
         lastError = `"${file.name}" 不是支持的视频格式（${supportedVideoFormatLabel}），已跳过。`;
-        updateVideoQueueItem(item.id, { status: "failed", error: lastError });
+        syncWorkingQueueItem(item.id, { status: "failed", error: lastError });
         continue;
       }
 
@@ -2304,11 +2336,14 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
           setVideoUploadSession(null);
         });
 
-        updateVideoQueueItem(item.id, { status: "uploading", error: null });
+        syncWorkingQueueItem(item.id, { status: "uploading", error: null });
         let session = await resolveVideoUploadSession(file, item);
         const uploaded = new Set(session.uploaded_parts);
         setVideoUploadSession(session);
-        updateVideoQueueItem(item.id, {
+        syncWorkingQueueItem(item.id, {
+          sessionId: session.id,
+          partSize: session.part_size,
+          totalParts: session.total_parts,
           uploadedParts: Array.from(uploaded).sort((left, right) => left - right),
           progress: Math.round((uploaded.size / session.total_parts) * 100)
         });
@@ -2316,7 +2351,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
           if (uploaded.has(index)) {
             const progress = Math.round((uploaded.size / session.total_parts) * 100);
             setVideoUploadProgress(progress);
-            updateVideoQueueItem(item.id, { progress });
+            syncWorkingQueueItem(item.id, { progress });
             continue;
           }
           const start = index * session.part_size;
@@ -2328,7 +2363,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
           setVideoUploadSession(session);
           const progress = Math.round((uploadedParts.length / session.total_parts) * 100);
           setVideoUploadProgress(progress);
-          updateVideoQueueItem(item.id, { uploadedParts, progress });
+          syncWorkingQueueItem(item.id, { uploadedParts, progress });
         }
         session = await getVideoUploadSession(session.id);
         setVideoUploadSession(session);
@@ -2338,7 +2373,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
           person_ids: item.personIds,
           generate_zh_subtitles: item.generateZhSubtitles
         });
-        updateVideoQueueItem(item.id, {
+        syncWorkingQueueItem(item.id, {
           sessionId: null,
           uploadedParts: session.uploaded_parts,
           progress: 100,
@@ -2351,7 +2386,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : "视频上传失败。";
         lastError = `"${file.name}" ${message}`;
-        updateVideoQueueItem(item.id, { status: "failed", error: message });
+        syncWorkingQueueItem(item.id, { status: "failed", error: message });
         console.error(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个失败: ${file.name}`, cause);
       }
     }
@@ -2377,7 +2412,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     setVideoUploadCurrentIndex(0);
     setVideoUploadTotalCount(0);
 
-    const remainingQueue = videoUploadQueueRef.current.filter((item) => item.status !== "completed");
+    const remainingQueue = workingQueue.filter((item) => item.status !== "completed");
     if (lastError) {
       setError(`${lastError}（已完成 ${completedCount}/${totalCount} 个）`);
     } else if (remainingQueue.length > 0) {
@@ -3251,7 +3286,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
             </div>
           </section>
 
-          <aside className="panel detail-panel">
+          <aside ref={galleryDetailRef} className="panel detail-panel">
             <div className="section-head">
               <div>
                 <p className="eyebrow">详情</p>
@@ -4372,6 +4407,12 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                           <strong>{track.label}</strong>
                           <span>{subtitleTrackStatusLabel(track.status)}</span>
                           {track.error_message && <small>{track.error_message}</small>}
+                          {track.status === "ready" && track.srt_url && (
+                            <a className="compact-button subtitle-download-link" href={track.srt_url}>
+                              <Download size={14} aria-hidden="true" />
+                              下载 SRT
+                            </a>
+                          )}
                         </div>
                       ))
                     ) : (
@@ -4487,6 +4528,12 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       {page === "people" && PeoplePageComponent()}
 
       {page === "upload" && renderUploadPage()}
+
+      {(page === "gallery" || page === "videos") && (
+        <button className="floating-top-button" type="button" onClick={scrollToPageTop} aria-label="回到顶部" title="回到顶部">
+          <ArrowUp size={24} aria-hidden="true" />
+        </button>
+      )}
 
       {isVideoUploadModalOpen && renderVideoUploadModal()}
 
@@ -4826,6 +4873,44 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
               )}
             </button>
           </div>
+          <aside className="lightbox-meta-rail" onClick={(event) => event.stopPropagation()}>
+            <div className="lightbox-meta-head">
+              <span>#{lightboxPhoto.id}</span>
+              <strong>{lightboxIndex >= 0 ? `${galleryOffset + lightboxIndex + 1} / ${galleryTotal}` : "图片信息"}</strong>
+            </div>
+            <div className="lightbox-meta-section">
+              <span>人物标签</span>
+              <div className="lightbox-meta-chips">
+                {lightboxPhoto.persons.length > 0 ? (
+                  lightboxPhoto.persons.map((person) => (
+                    <small key={`rail-p-${lightboxPhoto.id}-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
+                      {person.person_name}
+                    </small>
+                  ))
+                ) : (
+                  <small className="lightbox-meta-empty">无人物标签</small>
+                )}
+              </div>
+            </div>
+            <div className="lightbox-meta-section">
+              <span>普通标签</span>
+              <div className="lightbox-meta-chips">
+                {lightboxPhoto.tags.length > 0 ? (
+                  sortByPinyinName(lightboxPhoto.tags).map((tag) => (
+                    <small key={`rail-t-${lightboxPhoto.id}-${tag.id}`} className="pill muted">
+                      #{tag.name}
+                    </small>
+                  ))
+                ) : (
+                  <small className="lightbox-meta-empty">无普通标签</small>
+                )}
+              </div>
+            </div>
+            <button className="lightbox-detail-button" disabled={busy} onClick={() => void openLightboxPhotoDetail()}>
+              <Info size={16} aria-hidden="true" />
+              查看详情
+            </button>
+          </aside>
         </div>
       )}
 

@@ -206,6 +206,7 @@ export type VideoSubtitleTrack = {
   created_at: string;
   updated_at: string;
   vtt_url: string | null;
+  srt_url: string | null;
 };
 
 export type SubtitleAsrStatus = {

@@ -868,6 +868,47 @@ class SubtitleService:
         return f"{normalized}\n"
 
     @staticmethod
+    def webvtt_to_srt(content: str) -> str:
+        blocks: list[str] = []
+        current_timing: str | None = None
+        current_text: list[str] = []
+
+        def flush_block() -> None:
+            nonlocal current_timing, current_text
+            if current_timing and current_text:
+                start, end = current_timing.split("-->", 1)
+                end = end.split()[0]
+                blocks.append(
+                    "\n".join(
+                        [
+                            str(len(blocks) + 1),
+                            f"{_vtt_timestamp_to_srt(start.strip())} --> {_vtt_timestamp_to_srt(end.strip())}",
+                            *current_text,
+                        ]
+                    )
+                )
+            current_timing = None
+            current_text = []
+
+        for raw_line in content.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            line = raw_line.strip()
+            if not line:
+                flush_block()
+                continue
+            if line == "WEBVTT" or line.startswith("NOTE"):
+                continue
+            if "-->" in line:
+                flush_block()
+                current_timing = line
+                continue
+            if current_timing:
+                current_text.append(line)
+
+        flush_block()
+        body = "\n\n".join(blocks)
+        return f"{body}\n" if body else ""
+
+    @staticmethod
     def _safe_temp_name(filename: str) -> str:
         suffix = Path(filename).suffix or ".video"
         return f"input{suffix}"
@@ -884,6 +925,10 @@ def _format_timestamp(seconds: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     secs, ms = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{ms:03d}"
+
+
+def _vtt_timestamp_to_srt(timestamp: str) -> str:
+    return timestamp.replace(".", ",", 1)
 
 
 def _format_duration(seconds: float) -> str:

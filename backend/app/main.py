@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 from io import BytesIO
 import logging
+from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
@@ -513,8 +514,10 @@ def _video_cover_url(video: VideoItem) -> str | None:
 
 def _subtitle_to_read(track: VideoSubtitleTrack) -> VideoSubtitleTrackRead:
     vtt_url = None
+    srt_url = None
     if track.status == "ready" and track.content_vtt:
         vtt_url = f"/api/videos/{track.video_id}/subtitles/{track.id}.vtt"
+        srt_url = f"/api/videos/{track.video_id}/subtitles/{track.id}.srt"
     return VideoSubtitleTrackRead(
         id=track.id,
         video_id=track.video_id,
@@ -529,6 +532,7 @@ def _subtitle_to_read(track: VideoSubtitleTrack) -> VideoSubtitleTrackRead:
         created_at=track.created_at,
         updated_at=track.updated_at,
         vtt_url=vtt_url,
+        srt_url=srt_url,
     )
 
 
@@ -2580,6 +2584,28 @@ def get_video_subtitle_vtt(
     if track.status != "ready" or not track.content_vtt:
         raise HTTPException(status_code=409, detail="Subtitle track is not ready")
     return Response(content=track.content_vtt, media_type="text/vtt; charset=utf-8")
+
+
+@app.get("/api/videos/{video_id}/subtitles/{track_id}.srt")
+def get_video_subtitle_srt(
+    video_id: int,
+    track_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> Response:
+    video = _get_workspace_object(db, VideoItem, video_id, current.workspace_id, "Video")
+    track = db.get(VideoSubtitleTrack, track_id)
+    if track is None or track.video_id != video_id:
+        raise HTTPException(status_code=404, detail="Subtitle track not found")
+    if track.status != "ready" or not track.content_vtt:
+        raise HTTPException(status_code=409, detail="Subtitle track is not ready")
+    filename = f"{Path(video.filename).stem or 'subtitle'}.srt"
+    ascii_filename = quote(filename)
+    return Response(
+        content=subtitle_service.webvtt_to_srt(track.content_vtt),
+        media_type="application/x-subrip; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{ascii_filename}"},
+    )
 
 
 @app.patch("/api/videos/{video_id}/subtitles/{track_id}", response_model=VideoSubtitleTrackRead)

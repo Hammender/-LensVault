@@ -399,6 +399,7 @@ class VideoSubtitleTrackRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     vtt_url: str | None = None
+    srt_url: str | None = None
 
     model_config = {"from_attributes": True}
 
