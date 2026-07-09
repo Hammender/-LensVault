@@ -10,7 +10,6 @@ from pathlib import Path
 from uuid import uuid4
 from zipfile import ZipFile
 
-import numpy as np
 from PIL import Image, ImageOps
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -18,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
 from app.services.face import FaceService
-from app.services.milvus import MilvusVectorStore
+from app.services.qdrant import QdrantVectorStore
 from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
 
@@ -43,8 +42,7 @@ def parse_image_metadata(payload: bytes) -> tuple[int, int, datetime | None]:
 @dataclass
 class GalleryImportSummary:
     known_matches: int = 0
-    unknown_created: int = 0
-    unknown_reused: int = 0
+    unknown_faces: int = 0
     duplicated: int = 0
 
 
@@ -53,7 +51,7 @@ class PictureService:
         self,
         storage: MinioStorage,
         face_service: FaceService,
-        vector_store: MilvusVectorStore,
+        vector_store: QdrantVectorStore,
         ocr_service: OcrService,
         settings: Settings | None = None,
     ) -> None:
@@ -63,6 +61,11 @@ class PictureService:
         self.ocr_service = ocr_service
         self.settings = settings or get_settings()
         self.rich_text_tag_name = "图文"
+        self.unknown_person_name = "未知人物"
+
+    def _unknown_person_internal_name(self, workspace_id: int | None) -> str:
+        workspace_key = "global" if workspace_id is None else str(workspace_id)
+        return f"__system_unknown_person__:{workspace_key}"
 
     def _build_object_key(self, workspace_id: int | None, prefix: str, filename: str) -> str:
         suffix = Path(filename).suffix.lower()
@@ -129,27 +132,117 @@ class PictureService:
             link.tag
             self._ensure_gallery_tag(db, gallery_photo_id, link.tag, source="person")
 
-    def _next_unknown_serial(self, db: Session, workspace_id: int | None) -> int:
-        current = db.scalar(select(func.max(Person.unknown_serial)).where(Person.workspace_id == workspace_id))
-        return int(current or 0) + 1
-
-    def create_unknown_person(self, db: Session, workspace_id: int | None) -> Person:
-        serial = self._next_unknown_serial(db, workspace_id)
-        display_name = f"未知人物-{serial:04d}"
-        person = Person(
-            workspace_id=workspace_id,
-            name=display_name,
-            display_name=display_name,
-            is_unknown=True,
-            unknown_serial=serial,
-            note="系统自动创建的未知人物",
+    def get_or_create_unknown_person(self, db: Session, workspace_id: int | None) -> Person:
+        internal_name = self._unknown_person_internal_name(workspace_id)
+        person = db.scalar(
+            select(Person).where(
+                Person.workspace_id == workspace_id,
+                Person.name == internal_name,
+            )
         )
-        db.add(person)
-        db.flush()
-        logger.info("Created unknown person person_id=%s serial=%04d", person.id, serial)
+        if person is None:
+            person = db.scalar(
+                select(Person).where(
+                    Person.workspace_id == workspace_id,
+                    Person.is_unknown.is_(True),
+                    Person.unknown_serial == 0,
+                )
+            )
+        if person is None:
+            person = db.scalar(
+                select(Person).where(
+                    Person.workspace_id == workspace_id,
+                    Person.is_unknown.is_(True),
+                    Person.display_name == self.unknown_person_name,
+                )
+            )
+        if person is None:
+            person = db.scalar(
+                select(Person).where(
+                    Person.workspace_id == workspace_id,
+                    Person.name == self.unknown_person_name,
+                )
+            )
+        if person is None:
+            person = Person(
+                workspace_id=workspace_id,
+                name=internal_name,
+                display_name=self.unknown_person_name,
+                is_unknown=True,
+                unknown_serial=None,
+                note="系统占位未知人物，不保存样本向量",
+            )
+            db.add(person)
+            db.flush()
+            logger.info("Created singleton unknown person person_id=%s workspace_id=%s", person.id, workspace_id)
+            return person
+        if (
+            not person.is_unknown
+            or person.name != internal_name
+            or person.display_name != self.unknown_person_name
+            or person.unknown_serial is not None
+        ):
+            person.is_unknown = True
+            person.name = internal_name
+            person.display_name = self.unknown_person_name
+            person.unknown_serial = None
+            if not person.note:
+                person.note = "系统占位未知人物，不保存样本向量"
+            db.add(person)
+            db.flush()
+            logger.info("Normalized singleton unknown person person_id=%s workspace_id=%s", person.id, workspace_id)
         return person
 
+    def _is_singleton_unknown_person(self, person: Person) -> bool:
+        return (
+            person.is_unknown
+            and person.display_name == self.unknown_person_name
+            and (
+                person.name.startswith("__system_unknown_person__:")
+                or person.name == self.unknown_person_name
+            )
+        )
+
+    def _remove_unknown_person_tag_if_resolved(self, db: Session, gallery_photo_id: int, workspace_id: int | None) -> None:
+        internal_name = self._unknown_person_internal_name(workspace_id)
+        unknown = db.scalar(
+            select(Person).where(
+                Person.workspace_id == workspace_id,
+                Person.is_unknown.is_(True),
+                Person.name == internal_name,
+            )
+        )
+        if unknown is None:
+            unknown = db.scalar(
+                select(Person).where(
+                    Person.workspace_id == workspace_id,
+                    Person.is_unknown.is_(True),
+                    Person.display_name == self.unknown_person_name,
+                )
+            )
+        if unknown is None:
+            return
+        unresolved_count = db.scalar(
+            select(func.count(FaceRecord.id)).where(
+                FaceRecord.gallery_photo_id == gallery_photo_id,
+                FaceRecord.matched_person_id == unknown.id,
+                FaceRecord.needs_review.is_(True),
+            )
+        ) or 0
+        if unresolved_count > 0:
+            return
+        link = db.scalar(
+            select(GalleryPhotoPersonTag).where(
+                GalleryPhotoPersonTag.gallery_photo_id == gallery_photo_id,
+                GalleryPhotoPersonTag.person_id == unknown.id,
+            )
+        )
+        if link is not None:
+            db.delete(link)
+
     def add_person_samples(self, db: Session, person: Person, uploads: list[tuple[str, bytes, str | None]]) -> list[SamplePhoto]:
+        if person.is_unknown:
+            raise ValueError("系统未知人物不能上传样本图")
         logger.info("Start add_person_samples person_id=%s uploads=%d", person.id, len(uploads))
         sample_photos: list[SamplePhoto] = []
         for filename, payload, content_type in uploads:
@@ -249,13 +342,13 @@ class PictureService:
             )
             db.add(face)
             db.flush()
-            self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, person.id, detected.embedding)
+            self.vector_store.upsert_face(self.settings.qdrant_known_collection, face.id, person.id, detected.embedding)
             logger.info(
                 "Sample indexed to known collection person_id=%s sample_id=%s face_id=%s collection=%s",
                 person.id,
                 sample.id,
                 face.id,
-                self.settings.milvus_known_collection,
+                self.settings.qdrant_known_collection,
             )
             sample.status = "ready"
             sample_photos.append(sample)
@@ -369,7 +462,7 @@ class PictureService:
             try:
                 with db.begin_nested():
                     matched_person_id, matched_score = self.vector_store.search(
-                        self.settings.milvus_known_collection,
+                        self.settings.qdrant_known_collection,
                         detected.embedding,
                     )
                     matched_person = None
@@ -391,11 +484,10 @@ class PictureService:
                             matched_person_id=matched_person.id,
                             match_score=matched_score,
                             needs_review=False,
-                            vector_collection="known",
+                            vector_collection=None,
                         )
                         db.add(face)
                         db.flush()
-                        self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, matched_person.id, detected.embedding)
                         self._ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
                         self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
                         summary.known_matches += 1
@@ -408,38 +500,14 @@ class PictureService:
                         )
                         continue
 
-                    unknown_person_id, unknown_score = self.vector_store.search(
-                        self.settings.milvus_unknown_collection,
-                        detected.embedding,
+                    person = self.get_or_create_unknown_person(db, workspace_id)
+                    summary.unknown_faces += 1
+                    logger.info(
+                        "Gallery unknown face tagged photo_id=%s person_id=%s matched_score=%s",
+                        photo.id,
+                        person.id,
+                        f"{matched_score:.4f}" if matched_score is not None else "None",
                     )
-                    if unknown_score is not None and unknown_score >= self.settings.face_unknown_match_threshold and unknown_person_id is not None:
-                        person = db.scalar(select(Person).where(Person.id == unknown_person_id, Person.workspace_id == workspace_id))
-                        if person is None:
-                            person = self.create_unknown_person(db, workspace_id)
-                            summary.unknown_created += 1
-                            logger.warning(
-                                "Unknown vector hit missing person, created new person old_person_id=%s new_person_id=%s score=%.4f",
-                                unknown_person_id,
-                                person.id,
-                                unknown_score,
-                            )
-                        else:
-                            summary.unknown_reused += 1
-                            logger.info(
-                                "Gallery unknown reused photo_id=%s person_id=%s score=%.4f",
-                                photo.id,
-                                person.id,
-                                unknown_score,
-                            )
-                    else:
-                        person = self.create_unknown_person(db, workspace_id)
-                        summary.unknown_created += 1
-                        logger.info(
-                            "Gallery unknown created photo_id=%s person_id=%s unknown_score=%s",
-                            photo.id,
-                            person.id,
-                            f"{unknown_score:.4f}" if unknown_score is not None else "None",
-                        )
 
                     face = FaceRecord(
                         workspace_id=workspace_id,
@@ -450,21 +518,18 @@ class PictureService:
                         bbox_bottom=detected.bbox[3],
                         detection_score=detected.score,
                         matched_person_id=person.id,
-                        match_score=unknown_score,
+                        match_score=matched_score,
                         needs_review=True,
-                        vector_collection="unknown",
+                        vector_collection=None,
                     )
                     db.add(face)
                     db.flush()
-                    self.vector_store.upsert_face(self.settings.milvus_unknown_collection, face.id, person.id, detected.embedding)
                     self._ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
-                    self._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
                     logger.info(
-                        "Gallery unknown face indexed photo_id=%s face_id=%s person_id=%s collection=%s",
+                        "Gallery unknown face recorded photo_id=%s face_id=%s person_id=%s",
                         photo.id,
                         face.id,
                         person.id,
-                        self.settings.milvus_unknown_collection,
                     )
             except Exception:
                 logger.exception("Face process failed, skip this face photo_id=%s filename=%s", photo.id, filename)
@@ -473,16 +538,17 @@ class PictureService:
         db.commit()
         db.refresh(photo)
         logger.info(
-            "Completed import_gallery_photo photo_id=%s known=%d unknown_created=%d unknown_reused=%d duplicated=%d",
+            "Completed import_gallery_photo photo_id=%s known=%d unknown_faces=%d duplicated=%d",
             photo.id,
             summary.known_matches,
-            summary.unknown_created,
-            summary.unknown_reused,
+            summary.unknown_faces,
             summary.duplicated,
         )
         return photo, summary
 
     def rename_person(self, db: Session, person: Person, new_name: str) -> Person:
+        if self._is_singleton_unknown_person(person):
+            raise ValueError("系统未知人物不能直接改名，请在图片详情中重新识别或改为已有正式人物")
         new_name = new_name.strip()
         if not new_name:
             raise ValueError("人物名称不能为空")
@@ -492,27 +558,12 @@ class PictureService:
         if existing is not None:
             raise ValueError("人物名称已存在")
 
-        unknown_faces = db.scalars(
-            select(FaceRecord).where(
-                FaceRecord.matched_person_id == person.id,
-                FaceRecord.vector_collection == "unknown",
-            )
-        ).all()
         logger.info(
-            "Start rename_person person_id=%s old_name=%s new_name=%s unknown_faces=%d",
+            "Start rename_person person_id=%s old_name=%s new_name=%s",
             person.id,
             person.name,
             new_name,
-            len(unknown_faces),
         )
-        for face in unknown_faces:
-            vector = self.vector_store.get_face_vector(self.settings.milvus_unknown_collection, face.id)
-            if vector is not None:
-                self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, person.id, vector)
-                self.vector_store.delete_faces(self.settings.milvus_unknown_collection, [face.id])
-                face.vector_collection = "known"
-                face.needs_review = False
-                logger.debug("Promoted unknown face to known face_id=%s person_id=%s", face.id, person.id)
 
         person.name = new_name
         person.display_name = new_name
@@ -526,7 +577,7 @@ class PictureService:
 
     def delete_sample_photo(self, db: Session, sample_photo: SamplePhoto) -> None:
         face_ids = [face.id for face in sample_photo.faces if face.vector_collection == "known"]
-        self.vector_store.delete_faces(self.settings.milvus_known_collection, face_ids)
+        self.vector_store.delete_faces(self.settings.qdrant_known_collection, face_ids)
         self.storage.remove_object(sample_photo.object_key)
         logger.info(
             "Delete sample photo sample_id=%s person_id=%s known_faces_deleted=%d",
@@ -541,17 +592,14 @@ class PictureService:
         deleted = 0
         for photo in photos:
             known_face_ids = [face.id for face in photo.faces if face.vector_collection == "known"]
-            unknown_face_ids = [face.id for face in photo.faces if face.vector_collection == "unknown"]
-            self.vector_store.delete_faces(self.settings.milvus_known_collection, known_face_ids)
-            self.vector_store.delete_faces(self.settings.milvus_unknown_collection, unknown_face_ids)
+            self.vector_store.delete_faces(self.settings.qdrant_known_collection, known_face_ids)
             self.storage.remove_object(photo.object_key)
             db.delete(photo)
             deleted += 1
             logger.info(
-                "Delete gallery photo photo_id=%s known_faces_deleted=%d unknown_faces_deleted=%d",
+                "Delete gallery photo photo_id=%s legacy_known_vectors_deleted=%d",
                 photo.id,
                 len(known_face_ids),
-                len(unknown_face_ids),
             )
         db.commit()
         return deleted
@@ -559,44 +607,38 @@ class PictureService:
     def delete_persons(self, db: Session, persons: list[Person]) -> int:
         deleted = 0
         for person in persons:
+            if self._is_singleton_unknown_person(person):
+                logger.info("Skip deleting singleton unknown person person_id=%s", person.id)
+                continue
             known_face_ids = [face.id for face in person.faces if face.vector_collection == "known"]
-            unknown_face_ids = [face.id for face in person.faces if face.vector_collection == "unknown"]
-            self.vector_store.delete_faces(self.settings.milvus_known_collection, known_face_ids)
-            self.vector_store.delete_faces(self.settings.milvus_unknown_collection, unknown_face_ids)
+            self.vector_store.delete_faces(self.settings.qdrant_known_collection, known_face_ids)
             for sample in person.sample_photos:
                 self.storage.remove_object(sample.object_key)
             db.delete(person)
             deleted += 1
             logger.info(
-                "Delete person person_id=%s known_faces_deleted=%d unknown_faces_deleted=%d samples_deleted=%d",
+                "Delete person person_id=%s known_vectors_deleted=%d samples_deleted=%d",
                 person.id,
                 len(known_face_ids),
-                len(unknown_face_ids),
                 len(person.sample_photos),
             )
         db.commit()
         return deleted
 
-    def move_gallery_face_to_known(self, db: Session, face: FaceRecord, person: Person, vector: np.ndarray | None) -> None:
+    def move_gallery_face_to_known(self, db: Session, face: FaceRecord, person: Person) -> None:
+        if person.is_unknown:
+            raise ValueError("不能将图库人脸确认到未知人物")
         previous_collection = face.vector_collection
-        face.vector_collection = "known"
+        face.vector_collection = None
         face.matched_person_id = person.id
         face.match_score = 1.0
         face.needs_review = False
-        if vector is None:
-            logger.warning(
-                "Skip vector move due to missing embedding face_id=%s photo_id=%s person_id=%s previous_collection=%s",
-                face.id,
-                face.gallery_photo_id,
-                person.id,
-                previous_collection,
-            )
-            return
-        if previous_collection == "unknown":
-            self.vector_store.delete_faces(self.settings.milvus_unknown_collection, [face.id])
-        self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, person.id, vector)
+        if previous_collection == "known":
+            self.vector_store.delete_faces(self.settings.qdrant_known_collection, [face.id])
+        if face.gallery_photo_id is not None:
+            self._remove_unknown_person_tag_if_resolved(db, face.gallery_photo_id, face.workspace_id)
         logger.info(
-            "Moved gallery face to known face_id=%s photo_id=%s person_id=%s from=%s to=known",
+            "Confirmed gallery face as known face_id=%s photo_id=%s person_id=%s previous_collection=%s",
             face.id,
             face.gallery_photo_id,
             person.id,
@@ -604,6 +646,8 @@ class PictureService:
         )
 
     def bind_person_tag(self, db: Session, person: Person, tag: Tag) -> None:
+        if self._is_singleton_unknown_person(person):
+            raise ValueError("系统未知人物不能维护普通标签")
         self._ensure_person_tag(db, person.id, tag)
         photo_ids = db.scalars(
             select(GalleryPhotoPersonTag.gallery_photo_id).where(GalleryPhotoPersonTag.person_id == person.id)
@@ -619,6 +663,8 @@ class PictureService:
         )
 
     def unbind_person_tag(self, db: Session, person: Person, tag_id: int) -> None:
+        if self._is_singleton_unknown_person(person):
+            raise ValueError("系统未知人物不能维护普通标签")
         link = db.scalar(select(PersonTag).where(PersonTag.person_id == person.id, PersonTag.tag_id == tag_id))
         if link is not None:
             db.delete(link)
@@ -699,14 +745,11 @@ class PictureService:
         logger.info("Start re_recognize_gallery_photo photo_id=%s", photo.id)
         payload = self.storage.get_bytes(photo.object_key)
         old_known_face_ids = [face.id for face in photo.faces if face.vector_collection == "known"]
-        old_unknown_face_ids = [face.id for face in photo.faces if face.vector_collection == "unknown"]
-        self.vector_store.delete_faces(self.settings.milvus_known_collection, old_known_face_ids)
-        self.vector_store.delete_faces(self.settings.milvus_unknown_collection, old_unknown_face_ids)
+        self.vector_store.delete_faces(self.settings.qdrant_known_collection, old_known_face_ids)
         logger.info(
-            "Deleted old vectors photo_id=%s known=%d unknown=%d",
+            "Deleted old gallery vectors from known collection photo_id=%s known=%d",
             photo.id,
             len(old_known_face_ids),
-            len(old_unknown_face_ids),
         )
         old_person_ids = set(tag.person_id for tag in photo.person_tags)
         for person_id in old_person_ids:
@@ -718,7 +761,20 @@ class PictureService:
             )
             if link is not None:
                 db.delete(link)
-        logger.info("Cleared old person tags photo_id=%s persons=%d", photo.id, len(old_person_ids))
+        old_person_gallery_tags = db.scalars(
+            select(GalleryPhotoTag).where(
+                GalleryPhotoTag.gallery_photo_id == photo.id,
+                GalleryPhotoTag.source == "person",
+            )
+        ).all()
+        for tag_link in old_person_gallery_tags:
+            db.delete(tag_link)
+        logger.info(
+            "Cleared old person tags photo_id=%s persons=%d inherited_tags=%d",
+            photo.id,
+            len(old_person_ids),
+            len(old_person_gallery_tags),
+        )
         for face in photo.faces:
             db.delete(face)
         db.flush()
@@ -736,7 +792,7 @@ class PictureService:
             try:
                 with db.begin_nested():
                     matched_person_id, matched_score = self.vector_store.search(
-                        self.settings.milvus_known_collection,
+                        self.settings.qdrant_known_collection,
                         detected.embedding,
                     )
                     matched_person = None
@@ -760,11 +816,10 @@ class PictureService:
                             matched_person_id=matched_person.id,
                             match_score=matched_score,
                             needs_review=False,
-                            vector_collection="known",
+                            vector_collection=None,
                         )
                         db.add(face)
                         db.flush()
-                        self.vector_store.upsert_face(self.settings.milvus_known_collection, face.id, matched_person.id, detected.embedding)
                         self._ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
                         self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
                         summary.known_matches += 1
@@ -777,22 +832,8 @@ class PictureService:
                         )
                         continue
 
-                    unknown_person_id, unknown_score = self.vector_store.search(
-                        self.settings.milvus_unknown_collection,
-                        detected.embedding,
-                    )
-                    if unknown_score is not None and unknown_score >= self.settings.face_unknown_match_threshold and unknown_person_id is not None:
-                        person = db.scalar(
-                            select(Person).where(Person.id == unknown_person_id, Person.workspace_id == photo.workspace_id)
-                        )
-                        if person is None:
-                            person = self.create_unknown_person(db, photo.workspace_id)
-                            summary.unknown_created += 1
-                        else:
-                            summary.unknown_reused += 1
-                    else:
-                        person = self.create_unknown_person(db, photo.workspace_id)
-                        summary.unknown_created += 1
+                    person = self.get_or_create_unknown_person(db, photo.workspace_id)
+                    summary.unknown_faces += 1
 
                     face = FaceRecord(
                         workspace_id=photo.workspace_id,
@@ -803,17 +844,15 @@ class PictureService:
                         bbox_bottom=detected.bbox[3],
                         detection_score=detected.score,
                         matched_person_id=person.id,
-                        match_score=unknown_score,
+                        match_score=matched_score,
                         needs_review=True,
-                        vector_collection="unknown",
+                        vector_collection=None,
                     )
                     db.add(face)
                     db.flush()
-                    self.vector_store.upsert_face(self.settings.milvus_unknown_collection, face.id, person.id, detected.embedding)
                     self._ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
-                    self._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
                     logger.info(
-                        "Re-recognize unknown face indexed photo_id=%s face_id=%s person_id=%s",
+                        "Re-recognize unknown face tagged photo_id=%s face_id=%s person_id=%s",
                         photo.id,
                         face.id,
                         person.id,
@@ -831,11 +870,10 @@ class PictureService:
         for tag_link in photo.tags:
             tag_link.tag
         logger.info(
-            "Completed re_recognize_gallery_photo photo_id=%s known=%d unknown_created=%d unknown_reused=%d",
+            "Completed re_recognize_gallery_photo photo_id=%s known=%d unknown_faces=%d",
             photo.id,
             summary.known_matches,
-            summary.unknown_created,
-            summary.unknown_reused,
+            summary.unknown_faces,
         )
         return photo
 
@@ -980,7 +1018,7 @@ class PictureService:
                     db.add(face)
                     db.flush()
                     self.vector_store.upsert_face(
-                        self.settings.milvus_known_collection, face.id, person.id, detected.embedding
+                        self.settings.qdrant_known_collection, face.id, person.id, detected.embedding
                     )
                     sample_photo.status = "ready"
                     result["added_samples"] += 1
@@ -1101,39 +1139,39 @@ class PictureService:
                     if not isinstance(person_data, dict):
                         continue
                     person_name = str(person_data.get("name") or person_data.get("display_name") or "").strip()
-                    if not person_name:
-                        continue
-                    person = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
                     manifest_is_unknown = bool(person_data.get("is_unknown"))
-                    if person is None:
-                        unknown_serial = self._next_unknown_serial(db, workspace_id) if manifest_is_unknown else None
-                        person = Person(
-                            workspace_id=workspace_id,
-                            name=person_name,
-                            display_name=str(person_data.get("display_name") or person_name).strip() or person_name,
-                            note=None,
-                            is_unknown=manifest_is_unknown,
-                            unknown_serial=unknown_serial,
-                        )
-                        db.add(person)
-                        db.flush()
+                    if manifest_is_unknown:
+                        person = self.get_or_create_unknown_person(db, workspace_id)
                     else:
-                        person.display_name = str(person_data.get("display_name") or person.display_name).strip() or person.display_name
-                        person.is_unknown = manifest_is_unknown
-                        if person.is_unknown and person.unknown_serial is None:
-                            person.unknown_serial = self._next_unknown_serial(db, workspace_id)
+                        if not person_name:
+                            continue
+                        person = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
+                        if person is None:
+                            person = Person(
+                                workspace_id=workspace_id,
+                                name=person_name,
+                                display_name=str(person_data.get("display_name") or person_name).strip() or person_name,
+                                note=None,
+                                is_unknown=False,
+                            )
+                            db.add(person)
+                            db.flush()
+                        else:
+                            person.display_name = str(person_data.get("display_name") or person.display_name).strip() or person.display_name
+                            person.is_unknown = False
+                            person.unknown_serial = None
                     existing_person_link = db.scalar(
                         select(GalleryPhotoPersonTag).where(
                             GalleryPhotoPersonTag.gallery_photo_id == photo.id,
                             GalleryPhotoPersonTag.person_id == person.id,
                         )
                     )
-                    source = str(person_data.get("source") or "import")
+                    source = str(person_data.get("source") or ("unknown" if person.is_unknown else "import"))
                     self._ensure_gallery_person_tag(db, photo.id, person.id, source)
-                    self._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
+                    if not person.is_unknown:
+                        self._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
                     if existing_person_link is None:
                         result["persons_added"] += 1
-
                 db.add(photo)
                 db.commit()
                 if progress_callback:

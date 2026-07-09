@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     auth_secret_key: str = "pictureshow-local-dev-secret-change-me"
     access_token_expire_minutes: int = 7 * 24 * 60
 
-    minio_endpoint: str = "127.0.0.1:9000"
+    minio_endpoint: str = "127.0.0.1:19000"
     minio_access_key: str = "pictureshow"
     minio_secret_key: str = "pictureshow-secret"
     minio_bucket: str = "photos"
@@ -57,14 +57,14 @@ class Settings(BaseSettings):
     subtitle_llama_server_gpu_layers: int = 0
     subtitle_llama_server_warmup: bool = False
 
-    milvus_host: str = "127.0.0.1"
-    milvus_port: int = 19530
-    milvus_known_collection: str = "pictureshow_known_faces"
-    milvus_unknown_collection: str = "pictureshow_unknown_faces"
-    milvus_vector_dimension: int = 512
+    qdrant_host: str = "127.0.0.1"
+    qdrant_port: int = 16333
+    qdrant_grpc_port: int = 16334
+    qdrant_prefer_grpc: bool = True
+    qdrant_known_collection: str = "pictureshow_known_faces"
+    qdrant_vector_dimension: int = 512
 
     face_recognition_threshold: float = 0.45
-    face_unknown_match_threshold: float = 0.6
     thumbnail_cache_size: int = 256
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

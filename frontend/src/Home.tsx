@@ -50,7 +50,7 @@ const quickAccess = [
 const features = [
   {
     title: "人脸识别",
-    description: "自动检测照片中的人脸，并与样本库匹配，支持未知人物自动创建。",
+    description: "自动检测照片中的人脸，并与样本库匹配，未命中时统一标记为未知人物。",
     Icon: ScanFace
   },
   {
@@ -209,7 +209,7 @@ export default function Home() {
           </div>
           <div className="tip-card">
             <strong>3. 处理未知人物</strong>
-            <p>识别出的未知人物可以在"人物样本库"中查看并改名转正。</p>
+            <p>未命中的人脸会统一显示为"未知人物"，可在展示图库详情中重新识别或改为正式人物。</p>
           </div>
           <div className="tip-card">
             <strong>4. 灵活筛选</strong>

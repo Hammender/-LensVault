@@ -103,8 +103,8 @@ from app.schemas import (
 from app.services.auth import create_access_token, decode_access_token, hash_password, verify_password
 from app.services.face import FaceService
 from app.services.importer import PictureService
-from app.services.milvus import MilvusVectorStore
 from app.services.ocr import OcrService
+from app.services.qdrant import QdrantVectorStore
 from app.services.storage import MinioStorage
 from app.services.subtitles import SubtitleService
 from app.services.tasks import create_task, fail_incomplete_tasks, update_task
@@ -153,7 +153,7 @@ app.add_middleware(
 
 storage = MinioStorage(settings)
 face_service = FaceService(settings)
-vector_store = MilvusVectorStore(settings)
+vector_store = QdrantVectorStore(settings)
 ocr_service = OcrService()
 picture_service = PictureService(storage, face_service, vector_store, ocr_service, settings)
 video_service = VideoService(storage)
@@ -422,10 +422,9 @@ def on_startup() -> None:
     finally:
         db.close()
     logger.info(
-        "应用启动完成：minio_bucket=%s milvus_known=%s milvus_unknown=%s",
+        "应用启动完成：minio_bucket=%s qdrant_sample_collection=%s",
         settings.minio_bucket,
-        settings.milvus_known_collection,
-        settings.milvus_unknown_collection,
+        settings.qdrant_known_collection,
     )
 
 
@@ -826,8 +825,7 @@ def _process_gallery_import_task(
         update_task(db, task_id, status="running", progress=0.05, message="正在识别上传图片")
         total = max(len(uploads), 1)
         total_known = 0
-        total_unknown_created = 0
-        total_unknown_reused = 0
+        total_unknown_faces = 0
         total_duplicated = 0
         for index, (filename, payload, content_type) in enumerate(uploads, start=1):
             metadata = metadata_by_index[index - 1] if index - 1 < len(metadata_by_index) else {"person_names": [], "tag_names": []}
@@ -871,18 +869,16 @@ def _process_gallery_import_task(
                 picture_service._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
             db.commit()
             total_known += summary.known_matches
-            total_unknown_created += summary.unknown_created
-            total_unknown_reused += summary.unknown_reused
+            total_unknown_faces += summary.unknown_faces
             total_duplicated += summary.duplicated
             logger.info(
-                "Gallery import progress task_id=%s index=%d/%d photo_id=%s known=%d unknown_created=%d unknown_reused=%d duplicated=%d",
+                "Gallery import progress task_id=%s index=%d/%d photo_id=%s known=%d unknown_faces=%d duplicated=%d",
                 task_id,
                 index,
                 total,
                 photo.id,
                 total_known,
-                total_unknown_created,
-                total_unknown_reused,
+                total_unknown_faces,
                 total_duplicated,
             )
             update_task(
@@ -892,12 +888,12 @@ def _process_gallery_import_task(
                 progress=index / total,
                 message=(
                     f"已处理 {index}/{total} 张，识别 {total_known} 个已知人物，"
-                    f"新增 {total_unknown_created} 个未知人物，重复跳过 {total_duplicated} 张"
+                    f"标记 {total_unknown_faces} 张未知人脸，重复跳过 {total_duplicated} 张"
                 ),
             )
         final_message = (
-            f"导入完成：识别 {total_known} 个已知人物，新增 {total_unknown_created} 个未知人物，"
-            f"复用 {total_unknown_reused} 个未知人物，重复跳过 {total_duplicated} 张"
+            f"导入完成：识别 {total_known} 个已知人物，标记 {total_unknown_faces} 张未知人脸，"
+            f"重复跳过 {total_duplicated} 张"
         )
         update_task(db, task_id, status="completed", progress=1.0, message=final_message)
         # 记录上传历史
@@ -922,11 +918,10 @@ def _process_gallery_import_task(
             logger.exception("Failed to record upload history")
             db.rollback()
         logger.info(
-            "Gallery import task completed task_id=%s known=%d unknown_created=%d unknown_reused=%d duplicated=%d",
+            "Gallery import task completed task_id=%s known=%d unknown_faces=%d duplicated=%d",
             task_id,
             total_known,
-            total_unknown_created,
-            total_unknown_reused,
+            total_unknown_faces,
             total_duplicated,
         )
     except Exception as exc:
@@ -1500,6 +1495,8 @@ def update_person(
 ) -> PersonRead:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     if payload.name is not None:
+        if picture_service._is_singleton_unknown_person(person):
+            raise HTTPException(status_code=400, detail="系统未知人物不能直接改名")
         normalized = payload.name.strip()
         duplicate = db.scalar(
             select(Person).where(Person.workspace_id == current.workspace_id, Person.name == normalized, Person.id != person_id)
@@ -1535,6 +1532,8 @@ def rename_person(
 @app.delete("/api/persons/{person_id}")
 def delete_person(person_id: int, db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> dict[str, str]:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
+    if picture_service._is_singleton_unknown_person(person):
+        raise HTTPException(status_code=400, detail="系统未知人物不能删除")
     picture_service.delete_persons(db, [person])
     return {"status": "ok"}
 
@@ -1564,13 +1563,18 @@ def bind_person_tag(
     current: CurrentContext = Depends(require_context),
 ) -> list[TagRead]:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
+    if picture_service._is_singleton_unknown_person(person):
+        raise HTTPException(status_code=400, detail="系统未知人物不能维护普通标签")
     if payload.tag_id is not None:
         tag = db.get(Tag, payload.tag_id)
         if tag is None or tag.workspace_id != current.workspace_id:
             raise HTTPException(status_code=404, detail="Tag not found")
     else:
         tag = picture_service._find_or_create_tag(db, payload.name or "", current.workspace_id)
-    picture_service.bind_person_tag(db, person, tag)
+    try:
+        picture_service.bind_person_tag(db, person, tag)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return [TagRead.model_validate(item) for item in picture_service.list_person_tags(db, person_id)]
 
 
@@ -1582,7 +1586,12 @@ def unbind_person_tag(
     current: CurrentContext = Depends(require_context),
 ) -> list[TagRead]:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
-    picture_service.unbind_person_tag(db, person, tag_id)
+    if picture_service._is_singleton_unknown_person(person):
+        raise HTTPException(status_code=400, detail="系统未知人物不能维护普通标签")
+    try:
+        picture_service.unbind_person_tag(db, person, tag_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return [TagRead.model_validate(item) for item in picture_service.list_person_tags(db, person_id)]
 
 
@@ -1595,7 +1604,10 @@ async def add_person_samples(
 ) -> list[SamplePhotoRead]:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     uploads = [(file.filename, await file.read(), file.content_type) for file in files]
-    samples = picture_service.add_person_samples(db, person, uploads)
+    try:
+        samples = picture_service.add_person_samples(db, person, uploads)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return [_sample_photo_to_read(sample) for sample in samples]
 
 
@@ -2029,18 +2041,15 @@ def add_gallery_photo_person(
 ) -> GalleryPhotoDetail:
     _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     person = _get_workspace_object(db, Person, payload.person_id, current.workspace_id, "Person")
+    if person.is_unknown:
+        raise HTTPException(status_code=400, detail="不能手动添加系统未知人物标签")
     picture_service._ensure_gallery_person_tag(db, photo_id, person.id, "manual")
     picture_service._apply_person_tags_to_gallery_photo(db, photo_id, person.id)
 
     faces = db.scalars(select(FaceRecord).where(FaceRecord.gallery_photo_id == photo_id)).all()
     if len(faces) == 1:
         face = faces[0]
-        vector = None
-        if face.vector_collection == "unknown":
-            vector = vector_store.get_face_vector(settings.milvus_unknown_collection, face.id)
-        elif face.vector_collection == "known":
-            vector = vector_store.get_face_vector(settings.milvus_known_collection, face.id)
-        picture_service.move_gallery_face_to_known(db, face, person, vector)
+        picture_service.move_gallery_face_to_known(db, face, person)
 
     db.commit()
     return get_gallery_photo(photo_id, db, current)
@@ -2054,7 +2063,7 @@ def delete_gallery_photo_person(
     current: CurrentContext = Depends(require_context),
 ) -> GalleryPhotoDetail:
     _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
-    _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     link = db.scalar(
         select(GalleryPhotoPersonTag).where(
             GalleryPhotoPersonTag.gallery_photo_id == photo_id,
@@ -2063,6 +2072,22 @@ def delete_gallery_photo_person(
     )
     if link is None:
         raise HTTPException(status_code=404, detail="Person tag not found")
+    if picture_service._is_singleton_unknown_person(person):
+        faces = db.scalars(
+            select(FaceRecord).where(
+                FaceRecord.gallery_photo_id == photo_id,
+                FaceRecord.matched_person_id == person.id,
+            )
+        ).all()
+        for face in faces:
+            face.matched_person_id = None
+            face.match_score = None
+            face.needs_review = False
+            face.vector_collection = None
+            db.add(face)
+        db.delete(link)
+        db.commit()
+        return get_gallery_photo(photo_id, db, current)
     
     person_tags = db.scalars(select(PersonTag).where(PersonTag.person_id == person_id)).all()
     tag_ids = [pt.tag_id for pt in person_tags]

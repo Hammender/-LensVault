@@ -1,56 +1,108 @@
-﻿# PictureShow（本地人脸图库）
+﻿# LensVault
 
-PictureShow 是一个单用户、完全本地运行的人脸图库：
+LensVault 是一个本地优先的智能媒体库，用来管理图片、图文和视频素材。它把原始文件存入本地 MinIO，把元数据写入 SQLite，并通过人脸识别、向量检索、OCR、视频转码和本地字幕生成，把散落的媒体文件整理成可搜索、可筛选、可回看的内容资产。
 
-- 原图以对象形式写入本地 MinIO（不在仓库目录里落一堆可直接打开的 `jpg/png` 文件）
-- 元数据、人物、标签、人脸检测与识别结果存入 SQLite
-- 前端提供批量导入、人物样本库、按标签筛选分页浏览、未知人脸聚类归并、原图查看与纠错
+> 项目历史名称为 PictureShow，代码、环境变量示例和对象存储前缀中仍可能保留 `pictureshow` 字样。
 
-## 开发期运行（源码直跑）
+## 主要功能
 
-### 快速启动脚本（Windows）
+- 图片图库：批量导入展示图，按人物、普通标签、排除条件分页筛选，支持 ZIP 导入导出。
+- 人物样本库：维护人物与样本照，使用 InsightFace 提取人脸特征并写入 Qdrant。
+- 未知人物归并：未命中样本库的人脸统一标记为“未知人物”，不写入向量库，可在图库详情中重新识别或改为正式人物。
+- 图文 OCR：支持图文图片导入，自动提取文字，也可以手动编辑图文内容。
+- 视频库：支持 MP4、MKV、MOV、WEBM 分片上传、分类、UP 主/人物绑定、封面生成和在线播放。
+- 播放优化：使用 FFmpeg/FFprobe 生成封面、应用 faststart，并可按配置转码为更适合浏览器拖动播放的格式。
+- 中文字幕：使用 faster-whisper 做语音识别，并通过本地 OpenAI-compatible 翻译服务生成 WebVTT/SRT 字幕。
+- 多账号与工作区：支持初始化管理员、注册登录、私人空间、共享空间、成员邀请和细粒度权限。
+- 统计面板：查看图库、人物、标签、上传历史和素材规模。
 
-项目根目录提供 `start-dev.ps1`，默认使用根目录 `.venv` 启动后端，并使用 `npm.cmd` 启动前端。
+## 技术栈
 
-```powershell
-.\start-dev.ps1
+- 后端：FastAPI、SQLAlchemy、SQLite、MinIO、Qdrant、InsightFace、Pillow、FFmpeg。
+- 前端：React 18、Vite、TypeScript、lucide-react。
+- AI 能力：InsightFace 人脸识别，RapidOCR 或 pytesseract OCR，faster-whisper ASR，本地 llama-server/Hy-MT2 翻译。
+
+## 目录结构
+
+```text
+backend/                 FastAPI 服务
+  app/main.py            API 路由与应用初始化
+  app/models.py          SQLAlchemy 数据模型
+  app/schemas.py         Pydantic 请求与响应模型
+  app/services/          图片、人脸、OCR、视频、字幕、存储等服务
+  app/core/config.py     环境变量配置
+frontend/                Vite + React 前端
+  src/App.tsx            主应用与页面流程
+  src/api.ts             前端 API 封装
+  src/types.ts           前端类型定义
+  src/Home.tsx           首页
+openspec/                功能变更设计记录
+requirements.txt         Python 依赖
+docker-compose.yml       本地 MinIO 与 Qdrant 依赖服务
+.env.example             环境变量模板
 ```
 
-脚本会打开两个 PowerShell 窗口：
+## 环境要求
 
-- 后端：`http://127.0.0.1:8000`
-- 前端：`http://127.0.0.1:5173`
+- Windows 本地开发环境优先；其他系统需要自行调整路径和脚本。
+- Python 3.11 或 3.12 建议优先使用。Python 3.13 下 RapidOCR 依赖可能不可用，会走 pytesseract 备用路径。
+- Node.js 与 npm。
+- Docker Desktop，用于启动 MinIO 和 Qdrant。
+- FFmpeg 与 FFprobe，并确保命令在 `PATH` 中，或在 `.env` 中配置绝对路径。
+- 可选：Tesseract OCR、本地 faster-whisper 模型、本地 Hy-MT2 GGUF 模型和 llama-server。
 
-注意：执行前请先确保 MinIO 已运行。
+## 快速开始
 
-### 1) 启动 MinIO
+### 1. 准备配置
 
-确保有一个本地 MinIO 实例可用，默认配置如下（可通过 `.env` 覆盖）：
-
-- Endpoint: `127.0.0.1:9000`
-- Access Key: `pictureshow`
-- Secret Key: `pictureshow-secret`
-- Bucket: `photos`
-
-`.env.example` 中已给出默认值。
-
-### 2) 启动后端（FastAPI）
+复制环境变量模板：
 
 ```powershell
-cd backend
+Copy-Item .env.example .env
+```
+
+然后按本机环境修改 `.env`。尤其注意：
+
+- `DATABASE_URL` 和 `DATA_DIR` 默认是开发者本机路径，开源部署时应改成自己的数据目录。
+- `SUBTITLE_ASR_MODEL_PATH`、`SUBTITLE_TRANSLATION_MODEL_PATH`、`SUBTITLE_LLAMA_SERVER_PATH` 只有在使用字幕功能时才需要配置。
+- `AUTH_SECRET_KEY` 发布或长期使用前必须改成随机强密钥。
+- `CORS_ORIGINS` 需要包含实际前端地址。
+
+### 2. 启动依赖服务
+
+`docker-compose.yml` 提供 MinIO 和 Qdrant。当前 compose 文件使用了 Windows 主机绝对路径，首次使用前请先把 `volumes` 改成你自己的持久化目录。
+
+```powershell
+docker compose up -d
+```
+
+默认服务：
+
+- MinIO API: `http://127.0.0.1:19000`，容器内端口仍是 `9000`
+- MinIO Console: `http://127.0.0.1:19001`，容器内端口仍是 `9001`
+- Qdrant REST/UI: `http://127.0.0.1:16333`，容器内端口仍是 `6333`
+- Qdrant gRPC: `127.0.0.1:16334`，容器内端口仍是 `6334`
+
+### 3. 启动后端
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -r requirements.txt
-cd ..
-Copy-Item .env.example .env
 python -m uvicorn app.main:app --reload --app-dir backend
 ```
 
-后端地址：`http://127.0.0.1:8000`
+后端默认地址：`http://127.0.0.1:8000`
 
-### 3) 启动前端（React + Vite）
+接口文档：`http://127.0.0.1:8000/docs`
 
-你的 PowerShell 可能禁用 `npm.ps1`，因此这里使用 `npm.cmd`：
+健康检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/health
+```
+
+### 4. 启动前端
 
 ```powershell
 cd frontend
@@ -58,24 +110,67 @@ cmd /c npm.cmd install
 cmd /c npm.cmd run dev
 ```
 
-前端地址：`http://127.0.0.1:5173`（`/api` 会代理到后端）
+前端端口由 `frontend/vite.config.ts` 控制，也可以用 `VITE_FRONTEND_PORT` 覆盖。Vite 启动后会输出实际访问地址，`/api` 会代理到后端。
 
-## 主要能力
+### 5. 首次使用
 
-- 批量导入图片：后台异步识别，任务有进度与状态。
-- 人物库：先创建人物，再上传样本照写入人物特征库。
-- 未知人脸聚类：未命中人物库的人脸会被聚类，可在前端命名归并到某人物。
-- 标签检索：按人物标签分页查询图片列表。
-- 原图查看：详情查看直接读取 MinIO 原图对象流，不做“压缩后落盘”。
-- 纠错与重跑：支持移除标签、对单张图片重新识别。
+打开前端后，系统会检测是否需要初始化管理员。首次进入需要创建管理员账号和默认内容空间。之后可以创建私人或共享工作区，并按成员配置图库、样本和视频权限。
 
-## 目录结构
+## 字幕功能说明
 
-- `backend/`：FastAPI、SQLite、MinIO、识别/聚类服务。
-- `frontend/`：React + Vite 前端页面。
-- `.env.example`：配置模板。
+字幕生成是可选能力。它依赖三部分：
 
-## 备注
+1. FFmpeg 从视频中提取音频。
+2. faster-whisper 对音频做语音识别。
+3. 本地 OpenAI-compatible 翻译服务把识别文本翻译成简体中文字幕。
 
-- InsightFace 首次运行可能需要下载模型或准备本地模型文件；目前按 CPU 基线实现。
-- 开发阶段默认源码直跑；Docker 相关文件仅为后续打包预留。
+当前实现默认使用本地 `llama-server` 加载 Hy-MT2 GGUF 模型。配置项集中在 `.env.example` 的 `SUBTITLE_*` 段。未配置模型时，图片、视频管理等核心功能仍可使用，但字幕生成会失败。
+
+## 向量库与旧 Milvus 清理
+
+当前版本使用 Qdrant 保存人物样本库向量，集合名默认是 `pictureshow_known_faces`。展示图人脸识别结果只写入 SQLite，不再把展示图人脸或未知人物写入向量库。
+
+如果已经完成旧 Milvus 到 Qdrant 的迁移，并确认前端样本库、图库重新识别和未知人物筛选都正常，旧 Milvus 相关容器可以停止并删除。旧 Milvus standalone 部署通常包含三个容器：
+
+- `pictureshow-milvus`：Milvus 主服务，保存向量库索引和查询服务。
+- `pictureshow-milvus-etcd`：Milvus 的元数据与协调服务。
+- `pictureshow-milvus-minio`：Milvus 内部使用的对象存储，只服务于 Milvus 向量库，不是本项目保存图片/视频的 MinIO。
+
+不要删除 `pictureshow-minio`。它是当前应用的对象存储，保存图库原图、样本图、视频、封面和分片。清理旧 Milvus 时只需要处理 `pictureshow-milvus`、`pictureshow-milvus-etcd`、`pictureshow-milvus-minio` 以及它们绑定的旧数据卷。
+
+建议先停止旧 Milvus 容器，确认应用运行正常后再删除：
+
+```powershell
+docker stop pictureshow-milvus pictureshow-milvus-etcd pictureshow-milvus-minio
+docker rm pictureshow-milvus pictureshow-milvus-etcd pictureshow-milvus-minio
+```
+
+如果旧 Milvus 的数据目录是单独挂载的本地目录，也可以在确认不再回滚后手动删除对应目录。不要删除 `E:\dockerVolums\picture-show\minio` 和 `E:\dockerVolums\picture-show\Qdrant`。
+
+## 数据与隐私
+
+- 原图、视频、封面、上传分片等对象存储在 MinIO。
+- 账号、工作区、标签、识别结果、字幕内容等元数据存储在 SQLite。
+- 人脸向量存储在 Qdrant。
+- 本项目按本地部署设计，不需要把媒体文件上传到第三方云服务。
+- 不要提交 `.env`、本地数据库、MinIO 数据目录、Qdrant 数据目录、模型文件或生成缓存。
+
+## 常用开发命令
+
+```powershell
+# 前端类型检查与生产构建
+cd frontend
+cmd /c npm.cmd run build
+
+# 后端开发服务
+python -m uvicorn app.main:app --reload --app-dir backend
+```
+
+目前仓库没有完整自动化测试套件。提交后端改动时，至少检查 `/api/health` 和受影响接口；提交前端改动时，至少运行 `cmd /c npm.cmd run build`。
+
+## 开源发布前建议
+
+- 添加 `LICENSE` 文件，并在本节说明实际许可证。
+- 检查 `.env.example` 和 `docker-compose.yml`，避免保留个人机器路径。
+- 清理本地生成文件，例如数据库、对象存储数据、模型文件、日志和前端构建缓存。
+- 如需完全改名，可继续把代码中的 `PictureShow`、`pictureshow-*`、存储桶和 collection 默认名统一迁移为 `LensVault` 命名。

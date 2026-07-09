@@ -14,5 +14,5 @@ ctranslate2==4.7.2
 # Keep it enabled for older runtimes; Python 3.13 will use pytesseract fallback.
 rapidocr_onnxruntime==1.2.3; python_version < "3.13"
 pytesseract==0.3.13
-pymilvus==2.5.4
+qdrant-client==1.17.1
 setuptools==80.9.0

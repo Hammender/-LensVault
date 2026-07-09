@@ -172,6 +172,10 @@ type VideoUploadQueueItem = {
   completedVideoId: number | null;
 };
 
+function isSystemUnknownPerson(person: Person | null | undefined): boolean {
+  return Boolean(person?.is_unknown && person.display_name === systemUnknownPersonName);
+}
+
 const galleryPageSize = 20;
 const videoPageSize = 24;
 const videoPartSize = 16 * 1024 * 1024;
@@ -186,6 +190,7 @@ const videoLongPressRate = 3;
 const supportedVideoExtensions = [".mp4", ".mkv", ".mov", ".webm"];
 const supportedVideoAccept = "video/mp4,video/x-matroska,video/quicktime,video/webm,.mp4,.mkv,.mov,.webm";
 const supportedVideoFormatLabel = "MP4/MKV/MOV/WEBM";
+const systemUnknownPersonName = "未知人物";
 const workspacePermissionFields: Array<{ key: keyof WorkspacePermissionsPayload; label: string }> = [
   { key: "can_add_gallery", label: "新增展示图" },
   { key: "can_delete_gallery", label: "删除展示图" },
@@ -842,6 +847,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
   const richTag = useMemo(() => tags.find((tag) => tag.name === "图文") ?? null, [tags]);
   const normalTags = useMemo(() => sortByPinyinName(tags.filter((tag) => !tag.is_system)), [tags]);
+  const selectedPersonIsSystemUnknown = isSystemUnknownPerson(selectedPerson);
 
   const filteredPersons = useMemo(() => {
     const keyword = personSearch.trim().toLowerCase();
@@ -925,11 +931,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }, [peopleSearch, persons]);
 
   const unknownPersonCount = useMemo(() => persons.filter((person) => person.is_unknown).length, [persons]);
-  const orphanUnknownPersons = useMemo(
-    () => persons.filter((person) => person.is_unknown && person.sample_count === 0 && person.gallery_photo_count === 0),
-    [persons]
+  const selectedPersonDeleteCount = useMemo(
+    () => selectedPersonDeleteIds.filter((id) => !isSystemUnknownPerson(persons.find((person) => person.id === id))).length,
+    [persons, selectedPersonDeleteIds]
   );
-  const orphanUnknownCount = orphanUnknownPersons.length;
 
   const filteredVideoCategoryTags = useMemo(() => sortByPinyinName(videoCategoryTags), [videoCategoryTags]);
   const filteredVideoPeople = useMemo(() => sortByPinyinName(videoPeople), [videoPeople]);
@@ -1448,6 +1453,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     if (!selectedPerson || !renameValue.trim()) {
       return;
     }
+    if (selectedPersonIsSystemUnknown) {
+      setError("系统未知人物不能改名，请在图库详情中重新识别或改为已有正式人物。");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -1465,6 +1474,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     if (!files?.length) {
       return;
     }
+    if (selectedPersonIsSystemUnknown) {
+      setError("系统未知人物不能上传样本图。");
+      return;
+    }
     setPendingSampleUploads((current) => [
       ...current,
       ...Array.from(files).map((file) => ({ file, previewUrl: URL.createObjectURL(file) }))
@@ -1473,6 +1486,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
   async function handleConfirmSampleUpload() {
     if (!selectedPerson || pendingSampleUploads.length === 0) {
+      return;
+    }
+    if (selectedPersonIsSystemUnknown) {
+      setError("系统未知人物不能上传样本图。");
       return;
     }
     setBusy(true);
@@ -1531,13 +1548,18 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     if (selectedPersonDeleteIds.length === 0) {
       return;
     }
-    if (!window.confirm(`确认删除选中的 ${selectedPersonDeleteIds.length} 个人物吗？这会删除其样本图、关联向量与对象存储文件。`)) {
+    const deletableIds = selectedPersonDeleteIds.filter((id) => !isSystemUnknownPerson(persons.find((person) => person.id === id)));
+    if (deletableIds.length === 0) {
+      setError("系统未知人物不能删除。");
+      return;
+    }
+    if (!window.confirm(`确认删除选中的 ${deletableIds.length} 个人物吗？这会删除其样本图、关联向量与对象存储文件。`)) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await batchDeletePersons(selectedPersonDeleteIds);
+      await batchDeletePersons(deletableIds);
       setSelectedPersonDeleteIds([]);
       setPeopleBatchDeleteMode(false);
       await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
@@ -1552,6 +1574,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     if (!selectedPerson) {
       return;
     }
+    if (selectedPersonIsSystemUnknown) {
+      setError("系统未知人物不能删除。");
+      return;
+    }
     if (!window.confirm(`确认删除人物「${selectedPerson.display_name}」吗？`)) {
       return;
     }
@@ -1563,31 +1589,6 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "删除人物失败。");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleDeleteAllUnknownPersons() {
-    const unknownIds = orphanUnknownPersons.map((person) => person.id);
-    if (unknownIds.length === 0) {
-      return;
-    }
-    if (
-      !window.confirm(
-        `确定清理 ${unknownIds.length} 个无任何图库和样本关联的未知人物吗？\n删除后不可恢复。`
-      )
-    ) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await batchDeletePersons(unknownIds);
-      setSelectedPersonDeleteIds((current) => current.filter((id) => !unknownIds.includes(id)));
-      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "清空未知人物失败。");
     } finally {
       setBusy(false);
     }
@@ -1698,6 +1699,8 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
   function handleSelectPerson(person: Person) {
+    pendingSampleUploads.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    setPendingSampleUploads([]);
     setSelectedPerson(person);
     if (window.matchMedia("(max-width: 1240px)").matches) {
       window.requestAnimationFrame(() => {
@@ -1708,6 +1711,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
   async function handleBindPersonTag() {
     if (!selectedPerson || (!personTagSelectId && !personTagName.trim())) {
+      return;
+    }
+    if (selectedPersonIsSystemUnknown) {
+      setError("系统未知人物不能维护普通标签。");
       return;
     }
     setBusy(true);
@@ -1730,6 +1737,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
   async function handleUnbindPersonTag(tagId: number) {
     if (!selectedPerson) {
+      return;
+    }
+    if (selectedPersonIsSystemUnknown) {
+      setError("系统未知人物不能维护普通标签。");
       return;
     }
     setBusy(true);
@@ -2767,8 +2778,8 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
   const availablePersonsForPhoto = selectedPhoto
-    ? persons.filter((person) => !selectedPhoto.persons.some((tag) => tag.person_id === person.id))
-    : persons;
+    ? persons.filter((person) => !person.is_unknown && !selectedPhoto.persons.some((tag) => tag.person_id === person.id))
+    : persons.filter((person) => !person.is_unknown);
 
   const selectedPhotoTags = selectedPhoto ? sortByPinyinName(selectedPhoto.tags) : [];
 
@@ -3443,18 +3454,14 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                   {peopleBatchDeleteMode ? "取消批量" : "批量删除"}
                 </button>
                 <button
-                  disabled={busy || !peopleBatchDeleteMode || selectedPersonDeleteIds.length === 0}
+                  disabled={busy || !peopleBatchDeleteMode || selectedPersonDeleteCount === 0}
                   onClick={() => void handleDeleteSelectedPersons()}
                 >
                   <Trash2 size={15} aria-hidden="true" />
-                  删除选中（{selectedPersonDeleteIds.length}）
+                  删除选中（{selectedPersonDeleteCount}）
                 </button>
               </div>
               <div className="micro-row section-actions people-command-row">
-                <button disabled={busy || orphanUnknownCount === 0} onClick={() => void handleDeleteAllUnknownPersons()}>
-                  <Trash2 size={15} aria-hidden="true" />
-                  清空无关联未知人物（{orphanUnknownCount}）
-                </button>
                 <button disabled={busy || unknownPersonCount === 0} onClick={() => void handleReRecognizeAllUnknownPhotos()}>
                   <RotateCcw size={15} aria-hidden="true" />
                   一键重新识别所有未知人物
@@ -3538,8 +3545,12 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                     <label className="row-check">
                       <input
                         type="checkbox"
+                        disabled={isSystemUnknownPerson(person)}
                         checked={selectedPersonDeleteIds.includes(person.id)}
                         onChange={(event) => {
+                          if (isSystemUnknownPerson(person)) {
+                            return;
+                          }
                           setSelectedPersonDeleteIds((current) =>
                             event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id)
                           );
@@ -3563,64 +3574,68 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                     <h2>{selectedPerson.display_name}</h2>
                   </div>
                   <div className="micro-row">
-                    <span>{selectedPerson.is_unknown ? "可直接改名转正" : "样本库维护"}</span>
-                    <button disabled={busy} onClick={() => void handleDeleteCurrentPerson()}>
+                    <span>{selectedPersonIsSystemUnknown ? "图库未知标签" : selectedPerson.is_unknown ? "未知人物" : "样本库维护"}</span>
+                    <button disabled={busy || selectedPersonIsSystemUnknown} onClick={() => void handleDeleteCurrentPerson()}>
                       删除当前人物
                     </button>
                   </div>
                 </div>
 
-                <div className="rename-strip">
-                  <input value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder="输入新名字" />
-                  <button disabled={busy || !renameValue.trim()} onClick={() => void handleRenamePerson()}>
-                    {selectedPerson.is_unknown ? "转正并改名" : "更新名称"}
-                  </button>
-                </div>
-
-                <div className="editor-block">
-                  <label>人物普通标签（自动继承到该人物相关图库图片）</label>
-                  <div className="micro-row wrap">
-                    {personTags.map((tag) => (
-                      <button key={tag.id} className="pill muted action-pill" onClick={() => void handleUnbindPersonTag(tag.id)}>
-                        #{tag.name}
+                {!selectedPersonIsSystemUnknown && (
+                  <>
+                    <div className="rename-strip">
+                      <input value={renameValue} onChange={(event) => setRenameValue(event.target.value)} placeholder="输入新名字" />
+                      <button disabled={busy || !renameValue.trim()} onClick={() => void handleRenamePerson()}>
+                        {selectedPerson.is_unknown ? "转正并改名" : "更新名称"}
                       </button>
-                    ))}
-                    {personTags.length === 0 && <span className="tip">还没有人物级普通标签。</span>}
-                  </div>
-                  <div className="stack-editor">
-                    <div className="inline-editor">
-                      <select value={personTagSelectId} onChange={(event) => setPersonTagSelectId(event.target.value)}>
-                        <option value="">从已有标签添加</option>
-                        {sortByPinyinName(tags.filter((tag) => !personTags.some((item) => item.id === tag.id))).map((tag) => (
-                          <option key={tag.id} value={tag.id}>
+                    </div>
+
+                    <div className="editor-block">
+                      <label>人物普通标签（自动继承到该人物相关图库图片）</label>
+                      <div className="micro-row wrap">
+                        {personTags.map((tag) => (
+                          <button key={tag.id} className="pill muted action-pill" onClick={() => void handleUnbindPersonTag(tag.id)}>
                             #{tag.name}
-                          </option>
+                          </button>
                         ))}
-                      </select>
-                      <button disabled={busy || !personTagSelectId} onClick={() => void handleBindPersonTag()}>
-                        添加已有标签
-                      </button>
+                        {personTags.length === 0 && <span className="tip">还没有人物级普通标签。</span>}
+                      </div>
+                      <div className="stack-editor">
+                        <div className="inline-editor">
+                          <select value={personTagSelectId} onChange={(event) => setPersonTagSelectId(event.target.value)}>
+                            <option value="">从已有标签添加</option>
+                            {sortByPinyinName(tags.filter((tag) => !personTags.some((item) => item.id === tag.id))).map((tag) => (
+                              <option key={tag.id} value={tag.id}>
+                                #{tag.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button disabled={busy || !personTagSelectId} onClick={() => void handleBindPersonTag()}>
+                            添加已有标签
+                          </button>
+                        </div>
+                        <div className="inline-editor">
+                          <input
+                            value={personTagName}
+                            onChange={(event) => setPersonTagName(event.target.value)}
+                            placeholder="输入新标签名称"
+                          />
+                          <button disabled={busy || !personTagName.trim()} onClick={() => void handleBindPersonTag()}>
+                            新建并添加
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    <div className="inline-editor">
-                      <input
-                        value={personTagName}
-                        onChange={(event) => setPersonTagName(event.target.value)}
-                        placeholder="输入新标签名称"
-                      />
-                      <button disabled={busy || !personTagName.trim()} onClick={() => void handleBindPersonTag()}>
-                        新建并添加
-                      </button>
-                    </div>
-                  </div>
-                </div>
 
-                <label className="upload-box">
-                  <input type="file" multiple accept="image/*" onChange={(event) => handlePickSampleFiles(event.target.files)} />
-                  <strong>上传人物样本图</strong>
-                  <span>先预览样本，再点击确认上传；仅接受单张照片恰好一张脸的样本进入向量库。</span>
-                </label>
+                    <label className="upload-box">
+                      <input type="file" multiple accept="image/*" onChange={(event) => handlePickSampleFiles(event.target.files)} />
+                      <strong>上传人物样本图</strong>
+                      <span>先预览样本，再点击确认上传；仅接受单张照片恰好一张脸的样本进入向量库。</span>
+                    </label>
+                  </>
+                )}
 
-                {pendingSampleUploads.length > 0 && (
+                {!selectedPersonIsSystemUnknown && pendingSampleUploads.length > 0 && (
                   <div className="editor-block">
                     <label>待上传样本预览（{pendingSampleUploads.length}）</label>
                     <div className="pending-grid">
@@ -3659,9 +3674,11 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                           <small className={`status-pill status-${sample.status}`}>{sample.status}</small>
                           {sample.error_message && <p>{sample.error_message}</p>}
                         </div>
-                        <button className="ghost-button" onClick={() => void handleDeleteSample(sample.id)}>
-                          删除样本
-                        </button>
+                        {!selectedPersonIsSystemUnknown && (
+                          <button className="ghost-button" onClick={() => void handleDeleteSample(sample.id)}>
+                            删除样本
+                          </button>
+                        )}
                       </article>
                     );
                   })}
@@ -3869,7 +3886,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
               </article>
               <article>
                 <strong>未知人物</strong>
-                <span>自动生成 `未知人物-0001` 这类实体，后续可在人物样本库页直接改名转正。</span>
+                <span>未命中样本库时统一标记为“未知人物”，可在图库详情中重新识别或改为正式人物。</span>
               </article>
               <article>
                 <strong>普通标签</strong>
