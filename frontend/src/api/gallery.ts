@@ -12,6 +12,8 @@ export {
   importGalleryPhotos,
   importGalleryRichPhotos,
   listGalleryPhotos,
+  promoteGalleryPhotoPersonSample,
+  undoGalleryPhotoPersonSample,
   reRecognizeGalleryPhoto,
   reRecognizeUnknownGalleryPhotos,
   updateGalleryPhotoRichText

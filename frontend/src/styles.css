@@ -1876,6 +1876,70 @@ input:focus, select:focus, textarea:focus {
   z-index: 100;
 }
 
+.recognition-notice {
+  position: fixed;
+  right: 32px;
+  bottom: 32px;
+  z-index: 101;
+  width: min(440px, calc(100vw - 40px));
+  padding: 16px 18px 13px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px;
+  overflow: hidden;
+  border: 2px solid var(--panel-border);
+  background: var(--bg-strong);
+  color: var(--text);
+  box-shadow: 8px 8px 0 var(--accent);
+  animation: recognition-notice-in 180ms ease-out;
+}
+
+.recognition-notice > div {
+  display: grid;
+  gap: 4px;
+}
+
+.recognition-notice strong {
+  font-family: var(--font-serif);
+  font-size: 1rem;
+}
+
+.recognition-notice span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.recognition-notice button {
+  align-self: center;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
+.recognition-notice > i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 4px;
+  background: var(--accent);
+  transform-origin: left;
+  animation: recognition-notice-life 5s linear forwards;
+}
+
+@keyframes recognition-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+@keyframes recognition-notice-life {
+  to {
+    transform: scaleX(0);
+  }
+}
+
 .floating-top-button {
   position: fixed;
   right: 28px;

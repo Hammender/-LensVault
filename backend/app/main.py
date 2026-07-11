@@ -127,6 +127,7 @@ from app.schemas import (
 )
 from app.services.auth import create_access_token, hash_password, verify_password
 from app.services.container import build_service_container
+from app.services.face_index import build_face_index_health
 from app.services.tasks import create_task, update_task
 
 if not logging.getLogger().handlers:
@@ -529,8 +530,12 @@ def _process_gallery_zip_import_task(task_id: str, zip_bytes: bytes, workspace_i
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(db: Session = Depends(get_db)) -> dict[str, object]:
+    face_index = build_face_index_health(db, vector_store, settings)
+    return {
+        "status": "ok" if face_index["status"] == "ok" else "degraded",
+        "face_index": face_index,
+    }
 
 
 @app.get("/api/auth/bootstrap-status", response_model=BootstrapStatus)
@@ -1466,6 +1471,7 @@ def get_gallery_photo(
     photo.person_tags
     photo.tags
     photo.faces
+    photo.promoted_samples
     for tag in photo.person_tags:
         tag.person
     for tag_link in photo.tags:
@@ -1533,7 +1539,7 @@ def add_gallery_photo_person(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> GalleryPhotoDetail:
-    _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
     person = _get_workspace_object(db, Person, payload.person_id, current.workspace_id, "Person")
     if person.is_unknown:
         raise HTTPException(status_code=400, detail="不能手动添加系统未知人物标签")
@@ -1542,10 +1548,58 @@ def add_gallery_photo_person(
 
     faces = db.scalars(select(FaceRecord).where(FaceRecord.gallery_photo_id == photo_id)).all()
     if len(faces) == 1:
-        face = faces[0]
-        picture_service.move_gallery_face_to_known(db, face, person)
+        picture_service.move_gallery_face_to_known(db, faces[0], person)
 
     db.commit()
+    return get_gallery_photo(photo_id, db, current)
+
+
+@app.post("/api/gallery/photos/{photo_id}/persons/{person_id}/sample", response_model=GalleryPhotoDetail)
+def promote_gallery_photo_person_sample(
+    photo_id: int,
+    person_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
+    link = db.scalar(
+        select(GalleryPhotoPersonTag).where(
+            GalleryPhotoPersonTag.gallery_photo_id == photo_id,
+            GalleryPhotoPersonTag.person_id == person_id,
+        )
+    )
+    if link is None or person.is_unknown:
+        raise HTTPException(status_code=400, detail="当前图片没有可加入样本库的正式人物标签")
+    faces = db.scalars(select(FaceRecord).where(FaceRecord.gallery_photo_id == photo_id)).all()
+    if len(faces) != 1:
+        raise HTTPException(status_code=400, detail="只有检测到恰好一张人脸时才能加入样本库")
+    try:
+        picture_service.promote_gallery_face_to_sample(db, photo, faces[0], person)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return get_gallery_photo(photo_id, db, current)
+
+
+@app.delete("/api/gallery/photos/{photo_id}/persons/{person_id}/sample", response_model=GalleryPhotoDetail)
+def undo_gallery_photo_person_sample(
+    photo_id: int,
+    person_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
+    sample = db.scalar(
+        select(SamplePhoto).where(
+            SamplePhoto.workspace_id == current.workspace_id,
+            SamplePhoto.person_id == person_id,
+            SamplePhoto.source_gallery_photo_id == photo_id,
+        )
+    )
+    if sample is None:
+        raise HTTPException(status_code=404, detail="该图片尚未加入此人物样本库")
+    picture_service.delete_sample_photo(db, sample)
     return get_gallery_photo(photo_id, db, current)
 
 

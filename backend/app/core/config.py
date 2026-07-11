@@ -2,7 +2,22 @@ from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+
+ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
+
+
+def _dotenv_keys(path: Path) -> set[str]:
+    if not path.is_file():
+        raise RuntimeError(f"Runtime configuration file does not exist: {path}")
+    keys: set[str] = set()
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        keys.add(line.split("=", 1)[0].strip())
+    return keys
 
 
 class Settings(BaseSettings):
@@ -64,14 +79,42 @@ class Settings(BaseSettings):
     qdrant_known_collection: str = "pictureshow_known_faces"
     qdrant_vector_dimension: int = 512
 
+    face_model_name: str = "buffalo_l"
+    face_embedding_version: str = "buffalo_l-v2-exif"
+    face_detection_size: int = 640
+    face_search_limit: int = 50
+    face_flip_augmentation: bool = False
     face_recognition_threshold: float = 0.45
+    face_sample_min_size: int = 40
+    face_sample_warning_size: int = 80
+    face_sample_min_detection_score: float = 0.5
+    face_sample_blur_warning: float = 45.0
+    face_evaluation_min_labels: int = 100
+    face_evaluation_min_people: int = 20
     thumbnail_cache_size: int = 256
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Runtime configuration is intentionally sourced from the project .env.
+        # Explicit constructor values remain available for tests and tools.
+        return init_settings, dotenv_settings
 
 
 @lru_cache
 def get_settings() -> Settings:
+    expected_keys = {field_name.upper() for field_name in Settings.model_fields}
+    missing_keys = sorted(expected_keys - _dotenv_keys(ENV_FILE))
+    if missing_keys:
+        raise RuntimeError(f"Missing required settings in {ENV_FILE}: {', '.join(missing_keys)}")
     settings = Settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     return settings

@@ -133,7 +133,10 @@ class Person(Base):
 
 class SamplePhoto(Base):
     __tablename__ = "sample_photos"
-    __table_args__ = (UniqueConstraint("workspace_id", "sha256", name="uq_sample_photos_workspace_sha256"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "sha256", name="uq_sample_photos_workspace_sha256"),
+        UniqueConstraint("person_id", "source_gallery_photo_id", name="uq_sample_person_source_gallery"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -147,10 +150,19 @@ class SamplePhoto(Base):
     taken_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quality_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    quality_warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="upload", nullable=False, index=True)
+    source_gallery_photo_id: Mapped[int | None] = mapped_column(
+        ForeignKey("gallery_photos.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     person: Mapped[Person] = relationship(back_populates="sample_photos")
     faces: Mapped[list[FaceRecord]] = relationship(back_populates="sample_photo", cascade="all, delete-orphan")
+    source_gallery_photo: Mapped[GalleryPhoto | None] = relationship(
+        back_populates="promoted_samples", foreign_keys=[source_gallery_photo_id]
+    )
 
 
 class GalleryPhoto(Base):
@@ -183,6 +195,9 @@ class GalleryPhoto(Base):
         cascade="all, delete-orphan",
     )
     tags: Mapped[list[GalleryPhotoTag]] = relationship(back_populates="gallery_photo", cascade="all, delete-orphan")
+    promoted_samples: Mapped[list[SamplePhoto]] = relationship(
+        back_populates="source_gallery_photo", foreign_keys=[SamplePhoto.source_gallery_photo_id], passive_deletes=True
+    )
 
 
 class FaceRecord(Base):
@@ -207,6 +222,13 @@ class FaceRecord(Base):
         index=True,
     )
     match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    second_person_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    second_match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    match_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    embedding_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    face_size: Mapped[float | None] = mapped_column(Float, nullable=True)
+    blur_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pose_yaw: Mapped[float | None] = mapped_column(Float, nullable=True)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     vector_collection: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -214,6 +236,23 @@ class FaceRecord(Base):
     sample_photo: Mapped[SamplePhoto | None] = relationship(back_populates="faces")
     gallery_photo: Mapped[GalleryPhoto | None] = relationship(back_populates="faces")
     matched_person: Mapped[Person | None] = relationship(back_populates="faces")
+
+
+class FaceRecognitionCorrection(Base):
+    __tablename__ = "face_recognition_corrections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
+    gallery_photo_id: Mapped[int | None] = mapped_column(ForeignKey("gallery_photos.id", ondelete="SET NULL"), nullable=True, index=True)
+    face_record_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    predicted_person_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    predicted_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    second_person_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    second_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    corrected_person_id: Mapped[int] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"), index=True)
+    embedding_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    promoted_to_sample: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class Tag(Base):

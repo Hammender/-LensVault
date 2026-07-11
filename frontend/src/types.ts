@@ -66,6 +66,10 @@ export type SamplePhoto = {
   taken_at: string | null;
   status: string;
   error_message: string | null;
+  quality_status: string | null;
+  quality_warnings: string | null;
+  source_type: string;
+  source_gallery_photo_id: number | null;
   thumbnail_url: string;
   original_url: string;
   created_at: string;
@@ -83,6 +87,7 @@ export type GalleryPersonTag = {
   person_name: string;
   is_unknown: boolean;
   source: string;
+  promoted_sample_id: number | null;
 };
 
 export type GalleryTag = {
@@ -99,6 +104,13 @@ export type Face = {
   bbox_bottom: number;
   matched_person_id: number | null;
   match_score: number | null;
+  second_person_id: number | null;
+  second_match_score: number | null;
+  match_margin: number | null;
+  embedding_version: string | null;
+  face_size: number | null;
+  blur_score: number | null;
+  pose_yaw: number | null;
   needs_review: boolean;
   vector_collection: string | null;
 };
@@ -122,6 +134,12 @@ export type GalleryPhotoDetail = GalleryPhotoListItem & {
   faces: Face[];
   created_at: string;
   content_type: string | null;
+  recognition_summary: {
+    faces: number;
+    known: number;
+    unknown: number;
+    manual_tags_preserved: number;
+  } | null;
 };
 
 export type PaginatedGalleryPhotos = {

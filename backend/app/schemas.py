@@ -153,6 +153,10 @@ class SamplePhotoRead(BaseModel):
     taken_at: datetime | None
     status: str
     error_message: str | None
+    quality_status: str | None = None
+    quality_warnings: str | None = None
+    source_type: str = "upload"
+    source_gallery_photo_id: int | None = None
     thumbnail_url: str
     original_url: str
     created_at: datetime
@@ -193,6 +197,7 @@ class GalleryPersonTagRead(BaseModel):
     person_name: str
     is_unknown: bool
     source: str
+    promoted_sample_id: int | None = None
 
 
 class GalleryTagRead(BaseModel):
@@ -209,6 +214,13 @@ class FaceRead(BaseModel):
     bbox_bottom: float
     matched_person_id: int | None
     match_score: float | None
+    second_person_id: int | None = None
+    second_match_score: float | None = None
+    match_margin: float | None = None
+    embedding_version: str | None = None
+    face_size: float | None = None
+    blur_score: float | None = None
+    pose_yaw: float | None = None
     needs_review: bool
     vector_collection: str | None
 
@@ -232,6 +244,7 @@ class GalleryPhotoDetail(GalleryPhotoListItem):
     faces: list[FaceRead]
     created_at: datetime
     content_type: str | None
+    recognition_summary: dict[str, int] | None = None
 
 
 class PaginatedGalleryPhotos(BaseModel):

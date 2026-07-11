@@ -130,6 +130,46 @@ cmd /c npm.cmd run dev
 
 当前版本使用 Qdrant 保存人物样本库向量，集合名默认是 `pictureshow_known_faces`。展示图人脸识别结果只写入 SQLite，不再把展示图人脸或未知人物写入向量库。
 
+Qdrant 中的参考点带有工作区、向量版本和来源类型；正常业务只写入有效样本向量及其人物中心向量。人脸图片会先按 EXIF 方向旋转到实际显示方向，再交给 InsightFace。修改模型或预处理版本后，应先离线重建到新集合，核对计数后再手工修改 `.env` 并重启服务：
+
+```powershell
+cd backend
+python -m app.tools.rebuild_face_index --embedding-version buffalo_l-v2-exif
+```
+
+命令禁止覆盖 `.env` 当前配置的活动集合，默认创建类似 `pictureshow_known_faces_buffalo_l_v2_exif` 的独立集合。如果目标集合已经存在，只有显式添加 `--replace` 才会重建该目标集合。输出中的 `ready_for_activation` 必须为 `true`，并且需要检查：
+
+- `indexed`、`skipped` 和 `skip_details` 是否符合预期。
+- `missing_person_ids` 必须为空，确保每个有可用样本的人物都进入索引。
+- `inspection` 中维度为 512、距离为 `Cosine`、无缺失载荷和异常向量。
+
+验证通过后，把命令输出的两个值写入 `.env`：
+
+```dotenv
+QDRANT_KNOWN_COLLECTION=pictureshow_known_faces_buffalo_l_v2_exif
+FACE_EMBEDDING_VERSION=buffalo_l-v2-exif
+```
+
+然后由操作人员手动重启服务。程序不会自动重新识别图库；服务恢复后可在人物样本库使用现有的“一键重新识别所有未知人物”。旧集合应暂时保留，若新索引结果异常，只需把 `.env` 恢复为原集合和原 embedding 版本并手动重启，即可回退。
+
+针对某一张低分展示图，可以在切换前对新集合执行只读诊断：
+
+```powershell
+cd backend
+python -m app.tools.diagnose_face_match --gallery-photo-id 123 --person-id 45 --collection pictureshow_known_faces_buffalo_l_v2_exif --embedding-version buffalo_l-v2-exif
+```
+
+报告会重新计算该人物每张可用样本的直接余弦分数，并对比 Qdrant 返回分数；命令不会修改 SQLite、MinIO、Qdrant 或图库标签。
+
+人工修正会形成匿名化评估记录，可用以下命令生成阈值报告（Markdown、JSON、CSV）：
+
+```powershell
+cd backend
+python -m app.tools.evaluate_face_recognition --output ../data/face-evaluation
+```
+
+样本质量门槛、搜索候选数、模型名、检测尺寸及可选翻转增强均在 `.env.example` 的 `FACE_*` 配置中。翻转增强默认关闭，评估样本不足时工具不会建议自动调整生产阈值。
+
 如果已经完成旧 Milvus 到 Qdrant 的迁移，并确认前端样本库、图库重新识别和未知人物筛选都正常，旧 Milvus 相关容器可以停止并删除。旧 Milvus standalone 部署通常包含三个容器：
 
 - `pictureshow-milvus`：Milvus 主服务，保存向量库索引和查询服务。

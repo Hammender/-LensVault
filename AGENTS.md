@@ -35,5 +35,7 @@ This repository currently has no commit history, so use clear imperative commit 
 ## Configuration & Data Notes
 Do not commit real secrets in `.env`. Keep `.env.example` updated when adding settings. Avoid committing generated data, model downloads, or local database changes from `data/`.
 
+配置变更必须优先维护本地 `.env` 的完整字段和值，程序运行时只读取 `.env`（不得读取 `.env.example`），而 `.env.example` 仅保留完整字段名及不泄露隐私的示例默认值。
+
 ## 约束
 1.你在运行过程中绝对不能主动启动前端或后端程序，除非得到用户的授权，否则启动程序只能让用户自己手动启动。

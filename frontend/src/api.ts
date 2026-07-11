@@ -331,12 +331,34 @@ export async function batchDeleteGalleryPhotos(photoIds: number[]): Promise<numb
   return response.deleted;
 }
 
-export async function addGalleryPhotoPerson(photoId: number, personId: number): Promise<GalleryPhotoDetail> {
+export async function addGalleryPhotoPerson(
+  photoId: number,
+  personId: number
+): Promise<GalleryPhotoDetail> {
   return parse<GalleryPhotoDetail>(
     await fetch(`/api/gallery/photos/${photoId}/persons`, {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ person_id: personId })
+    })
+  );
+}
+
+export async function promoteGalleryPhotoPersonSample(
+  photoId: number,
+  personId: number
+): Promise<GalleryPhotoDetail> {
+  return parse<GalleryPhotoDetail>(
+    await fetch(`/api/gallery/photos/${photoId}/persons/${personId}/sample`, {
+      method: "POST"
+    })
+  );
+}
+
+export async function undoGalleryPhotoPersonSample(photoId: number, personId: number): Promise<GalleryPhotoDetail> {
+  return parse<GalleryPhotoDetail>(
+    await fetch(`/api/gallery/photos/${photoId}/persons/${personId}/sample`, {
+      method: "DELETE"
     })
   );
 }

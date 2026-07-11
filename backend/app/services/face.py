@@ -6,7 +6,7 @@ import logging
 import time
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.core.config import Settings, get_settings
 
@@ -24,6 +24,9 @@ class DetectedFace:
     bbox: tuple[float, float, float, float]
     score: float | None
     embedding: np.ndarray
+    face_size: float
+    blur_score: float | None
+    pose_yaw: float | None
 
 
 class FaceService:
@@ -36,10 +39,15 @@ class FaceService:
             logger.error("InsightFace load failed, FaceAnalysis is unavailable")
             raise RuntimeError("InsightFace is not installed or failed to load.")
         if self._app is None:
-            logger.info("Initializing InsightFace model: name=buffalo_l providers=CPUExecutionProvider")
+            logger.info(
+                "Initializing InsightFace model: name=%s det_size=%s providers=CPUExecutionProvider",
+                self.settings.face_model_name,
+                self.settings.face_detection_size,
+            )
             started_at = time.perf_counter()
-            self._app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-            self._app.prepare(ctx_id=0, det_size=(640, 640))
+            self._app = FaceAnalysis(name=self.settings.face_model_name, providers=["CPUExecutionProvider"])
+            size = self.settings.face_detection_size
+            self._app.prepare(ctx_id=0, det_size=(size, size))
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             logger.info("InsightFace model initialized in %.1fms", elapsed_ms)
         return self._app
@@ -51,7 +59,8 @@ class FaceService:
     def detect_faces(self, payload: bytes) -> list[DetectedFace]:
         logger.info("Start detect_faces payload_bytes=%d", len(payload))
         started_at = time.perf_counter()
-        image = Image.open(BytesIO(payload)).convert("RGB")
+        with Image.open(BytesIO(payload)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
         logger.info("Decoded image size=%sx%s mode=%s", image.width, image.height, image.mode)
         array = np.asarray(image)[:, :, ::-1]
         faces = self._get_app().get(array)
@@ -64,11 +73,30 @@ class FaceService:
             if norm > 0:
                 embedding = embedding / norm
             score = float(getattr(face, "det_score", 0.0)) if getattr(face, "det_score", None) is not None else None
+            left, top, right, bottom = bbox
+            face_size = max(0.0, min(right - left, bottom - top))
+            x1 = max(0, int(left))
+            y1 = max(0, int(top))
+            x2 = min(array.shape[1], int(right))
+            y2 = min(array.shape[0], int(bottom))
+            crop = array[y1:y2, x1:x2]
+            blur_score = self._blur_score(crop)
+            pose_yaw = self._pose_yaw(getattr(face, "kps", None))
+            if self.settings.face_flip_augmentation and crop.size:
+                augmented = self._embedding_from_crop(crop[:, ::-1])
+                if augmented is not None:
+                    embedding = embedding + augmented
+                    norm = np.linalg.norm(embedding)
+                    if norm > 0:
+                        embedding = embedding / norm
             results.append(
                 DetectedFace(
                     bbox=bbox,
                     score=score,
                     embedding=embedding,
+                    face_size=face_size,
+                    blur_score=blur_score,
+                    pose_yaw=pose_yaw,
                 )
             )
             logger.debug(
@@ -83,6 +111,37 @@ class FaceService:
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info("detect_faces completed in %.1fms", elapsed_ms)
         return results
+
+    def _embedding_from_crop(self, crop: np.ndarray) -> np.ndarray | None:
+        faces = self._get_app().get(np.ascontiguousarray(crop))
+        if not faces:
+            return None
+        face = max(faces, key=lambda item: float((item.bbox[2] - item.bbox[0]) * (item.bbox[3] - item.bbox[1])))
+        embedding = np.asarray(face.embedding, dtype=np.float32)
+        norm = np.linalg.norm(embedding)
+        return embedding / norm if norm > 0 else None
+
+    @staticmethod
+    def _blur_score(crop: np.ndarray) -> float | None:
+        if crop.size == 0 or min(crop.shape[:2]) < 3:
+            return None
+        gray = crop.astype(np.float32).mean(axis=2)
+        laplacian = -4 * gray[1:-1, 1:-1] + gray[:-2, 1:-1] + gray[2:, 1:-1] + gray[1:-1, :-2] + gray[1:-1, 2:]
+        return float(np.var(laplacian))
+
+    @staticmethod
+    def _pose_yaw(keypoints: object) -> float | None:
+        if keypoints is None:
+            return None
+        points = np.asarray(keypoints, dtype=np.float32)
+        if points.shape[0] < 3:
+            return None
+        left_eye, right_eye, nose = points[0], points[1], points[2]
+        eye_span = float(np.linalg.norm(right_eye - left_eye))
+        if eye_span <= 0:
+            return None
+        midpoint = (left_eye + right_eye) / 2
+        return float((nose[0] - midpoint[0]) / eye_span * 90.0)
 
     @staticmethod
     def cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:

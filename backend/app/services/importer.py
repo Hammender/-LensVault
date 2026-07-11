@@ -10,13 +10,14 @@ from pathlib import Path
 from uuid import uuid4
 from zipfile import ZipFile
 
+import numpy as np
 from PIL import Image, ImageOps
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
-from app.services.face import FaceService
+from app.models import FaceRecognitionCorrection, FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
+from app.services.face import DetectedFace, FaceService
 from app.services.qdrant import QdrantVectorStore
 from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
@@ -46,6 +47,20 @@ class GalleryImportSummary:
     duplicated: int = 0
 
 
+@dataclass(frozen=True)
+class PersonMatch:
+    person_id: int | None
+    score: float | None
+    second_person_id: int | None = None
+    second_score: float | None = None
+
+    @property
+    def margin(self) -> float | None:
+        if self.score is None or self.second_score is None:
+            return None
+        return self.score - self.second_score
+
+
 class PictureService:
     def __init__(
         self,
@@ -62,6 +77,86 @@ class PictureService:
         self.settings = settings or get_settings()
         self.rich_text_tag_name = "图文"
         self.unknown_person_name = "未知人物"
+
+    def _match_face(self, detected: DetectedFace, workspace_id: int | None) -> PersonMatch:
+        hits = self.vector_store.search_candidates(
+            self.settings.qdrant_known_collection,
+            detected.embedding,
+            workspace_id=workspace_id,
+            embedding_version=self.settings.face_embedding_version,
+            limit=self.settings.face_search_limit,
+        )
+        by_person: dict[int, float] = {}
+        for hit in hits:
+            by_person[hit.person_id] = max(by_person.get(hit.person_id, -1.0), hit.score)
+        ranked = sorted(by_person.items(), key=lambda item: item[1], reverse=True)
+        if not ranked:
+            return PersonMatch(None, None)
+        second = ranked[1] if len(ranked) > 1 else (None, None)
+        return PersonMatch(ranked[0][0], ranked[0][1], second[0], second[1])
+
+    def _quality_warnings(self, detected: DetectedFace) -> list[str]:
+        warnings: list[str] = []
+        if detected.face_size < self.settings.face_sample_warning_size:
+            warnings.append(f"人脸尺寸较小（{detected.face_size:.0f}px）")
+        if detected.score is not None and detected.score < self.settings.face_sample_min_detection_score:
+            warnings.append(f"检测置信度较低（{detected.score:.3f}）")
+        if detected.blur_score is not None and detected.blur_score < self.settings.face_sample_blur_warning:
+            warnings.append(f"图像可能模糊（{detected.blur_score:.1f}）")
+        if detected.pose_yaw is not None and abs(detected.pose_yaw) > 35:
+            warnings.append(f"侧脸角度较大（{detected.pose_yaw:.0f}°）")
+        return warnings
+
+    def _face_fields(self, detected: DetectedFace, match: PersonMatch | None = None) -> dict[str, object]:
+        return {
+            "bbox_left": detected.bbox[0],
+            "bbox_top": detected.bbox[1],
+            "bbox_right": detected.bbox[2],
+            "bbox_bottom": detected.bbox[3],
+            "detection_score": detected.score,
+            "second_person_id": match.second_person_id if match else None,
+            "second_match_score": match.second_score if match else None,
+            "match_margin": match.margin if match else None,
+            "embedding_version": self.settings.face_embedding_version,
+            "face_size": detected.face_size,
+            "blur_score": detected.blur_score,
+            "pose_yaw": detected.pose_yaw,
+        }
+
+    def _recompute_person_centroid(self, db: Session, person_id: int, workspace_id: int | None) -> None:
+        face_ids = db.scalars(
+            select(FaceRecord.id)
+            .join(SamplePhoto, SamplePhoto.id == FaceRecord.sample_photo_id)
+            .where(
+                SamplePhoto.person_id == person_id,
+                SamplePhoto.status == "ready",
+                FaceRecord.vector_collection == "known",
+            )
+        ).all()
+        vectors = [
+            vector
+            for face_id in face_ids
+            if (vector := self.vector_store.get_face_vector(self.settings.qdrant_known_collection, face_id)) is not None
+        ]
+        if not vectors:
+            self.vector_store.delete_centroid(
+                self.settings.qdrant_known_collection,
+                workspace_id,
+                person_id,
+                self.settings.face_embedding_version,
+            )
+            return
+        centroid = np.mean(np.stack(vectors), axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+        self.vector_store.upsert_centroid(
+            self.settings.qdrant_known_collection,
+            person_id,
+            centroid,
+            workspace_id=workspace_id,
+            embedding_version=self.settings.face_embedding_version,
+        )
 
     def _unknown_person_internal_name(self, workspace_id: int | None) -> str:
         workspace_key = "global" if workspace_id is None else str(workspace_id)
@@ -240,12 +335,22 @@ class PictureService:
         if link is not None:
             db.delete(link)
 
-    def add_person_samples(self, db: Session, person: Person, uploads: list[tuple[str, bytes, str | None]]) -> list[SamplePhoto]:
+    def add_person_samples(
+        self,
+        db: Session,
+        person: Person,
+        uploads: list[tuple[str, bytes, str | None]],
+        *,
+        source_gallery_photo_id: int | None = None,
+        prepared_faces: list[list[DetectedFace] | None] | None = None,
+    ) -> list[SamplePhoto]:
         if person.is_unknown:
             raise ValueError("系统未知人物不能上传样本图")
         logger.info("Start add_person_samples person_id=%s uploads=%d", person.id, len(uploads))
         sample_photos: list[SamplePhoto] = []
-        for filename, payload, content_type in uploads:
+        if prepared_faces is not None and len(prepared_faces) != len(uploads):
+            raise ValueError("预检测人脸结果与上传文件数量不一致")
+        for upload_index, (filename, payload, content_type) in enumerate(uploads):
             logger.info(
                 "Processing sample upload person_id=%s filename=%s bytes=%d content_type=%s",
                 person.id,
@@ -289,23 +394,27 @@ class PictureService:
                 height=height,
                 taken_at=taken_at,
                 status="processing",
+                source_type="gallery_face" if source_gallery_photo_id is not None else "upload",
+                source_gallery_photo_id=source_gallery_photo_id,
             )
             db.add(sample)
             db.flush()
 
-            try:
-                detected_faces = self.face_service.detect_faces(payload)
-            except Exception as exc:
-                logger.exception(
-                    "Sample face detection failed person_id=%s sample_id=%s filename=%s",
-                    person.id,
-                    sample.id,
-                    filename,
-                )
-                sample.status = "error"
-                sample.error_message = str(exc)
-                sample_photos.append(sample)
-                continue
+            detected_faces = prepared_faces[upload_index] if prepared_faces is not None else None
+            if detected_faces is None:
+                try:
+                    detected_faces = self.face_service.detect_faces(payload)
+                except Exception as exc:
+                    logger.exception(
+                        "Sample face detection failed person_id=%s sample_id=%s filename=%s",
+                        person.id,
+                        sample.id,
+                        filename,
+                    )
+                    sample.status = "error"
+                    sample.error_message = str(exc)
+                    sample_photos.append(sample)
+                    continue
 
             logger.info(
                 "Sample face detection result person_id=%s sample_id=%s filename=%s faces=%d",
@@ -327,22 +436,35 @@ class PictureService:
                 continue
 
             detected = detected_faces[0]
+            if detected.face_size < self.settings.face_sample_min_size:
+                sample.status = "low_quality"
+                sample.quality_status = "rejected"
+                sample.error_message = f"人脸尺寸过小（{detected.face_size:.0f}px，最低 {self.settings.face_sample_min_size}px）"
+                sample_photos.append(sample)
+                continue
+            warnings = self._quality_warnings(detected)
+            sample.quality_status = "warning" if warnings else "good"
+            sample.quality_warnings = json.dumps(warnings, ensure_ascii=False) if warnings else None
             face = FaceRecord(
                 workspace_id=person.workspace_id,
                 sample_photo_id=sample.id,
-                bbox_left=detected.bbox[0],
-                bbox_top=detected.bbox[1],
-                bbox_right=detected.bbox[2],
-                bbox_bottom=detected.bbox[3],
-                detection_score=detected.score,
                 matched_person_id=person.id,
                 match_score=1.0,
                 needs_review=False,
                 vector_collection="known",
+                **self._face_fields(detected),
             )
             db.add(face)
             db.flush()
-            self.vector_store.upsert_face(self.settings.qdrant_known_collection, face.id, person.id, detected.embedding)
+            self.vector_store.upsert_face(
+                self.settings.qdrant_known_collection,
+                face.id,
+                person.id,
+                detected.embedding,
+                workspace_id=person.workspace_id,
+                sample_photo_id=sample.id,
+                embedding_version=self.settings.face_embedding_version,
+            )
             logger.info(
                 "Sample indexed to known collection person_id=%s sample_id=%s face_id=%s collection=%s",
                 person.id,
@@ -352,6 +474,10 @@ class PictureService:
             )
             sample.status = "ready"
             sample_photos.append(sample)
+
+        db.flush()
+        if any(item.status == "ready" for item in sample_photos):
+            self._recompute_person_centroid(db, person.id, person.workspace_id)
 
         db.commit()
         ready_count = sum(1 for item in sample_photos if item.status == "ready")
@@ -461,30 +587,23 @@ class PictureService:
         for detected in detected_faces:
             try:
                 with db.begin_nested():
-                    matched_person_id, matched_score = self.vector_store.search(
-                        self.settings.qdrant_known_collection,
-                        detected.embedding,
-                    )
+                    match = self._match_face(detected, workspace_id)
                     matched_person = None
-                    if matched_person_id is not None:
-                        matched_person = db.scalar(select(Person).where(Person.id == matched_person_id, Person.workspace_id == workspace_id))
+                    if match.person_id is not None:
+                        matched_person = db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == workspace_id))
                     if (
-                        matched_score is not None
-                        and matched_score >= self.settings.face_recognition_threshold
+                        match.score is not None
+                        and match.score >= self.settings.face_recognition_threshold
                         and matched_person is not None
                     ):
                         face = FaceRecord(
                             workspace_id=workspace_id,
                             gallery_photo_id=photo.id,
-                            bbox_left=detected.bbox[0],
-                            bbox_top=detected.bbox[1],
-                            bbox_right=detected.bbox[2],
-                            bbox_bottom=detected.bbox[3],
-                            detection_score=detected.score,
                             matched_person_id=matched_person.id,
-                            match_score=matched_score,
+                            match_score=match.score,
                             needs_review=False,
                             vector_collection=None,
+                            **self._face_fields(detected, match),
                         )
                         db.add(face)
                         db.flush()
@@ -496,7 +615,7 @@ class PictureService:
                             photo.id,
                             face.id,
                             matched_person.id,
-                            matched_score,
+                            match.score,
                         )
                         continue
 
@@ -506,21 +625,17 @@ class PictureService:
                         "Gallery unknown face tagged photo_id=%s person_id=%s matched_score=%s",
                         photo.id,
                         person.id,
-                        f"{matched_score:.4f}" if matched_score is not None else "None",
+                        f"{match.score:.4f}" if match.score is not None else "None",
                     )
 
                     face = FaceRecord(
                         workspace_id=workspace_id,
                         gallery_photo_id=photo.id,
-                        bbox_left=detected.bbox[0],
-                        bbox_top=detected.bbox[1],
-                        bbox_right=detected.bbox[2],
-                        bbox_bottom=detected.bbox[3],
-                        detection_score=detected.score,
                         matched_person_id=person.id,
-                        match_score=matched_score,
+                        match_score=match.score,
                         needs_review=True,
                         vector_collection=None,
+                        **self._face_fields(detected, match),
                     )
                     db.add(face)
                     db.flush()
@@ -576,31 +691,30 @@ class PictureService:
         return person
 
     def delete_sample_photo(self, db: Session, sample_photo: SamplePhoto) -> None:
+        workspace_id = sample_photo.workspace_id
+        person_id = sample_photo.person_id
         face_ids = [face.id for face in sample_photo.faces if face.vector_collection == "known"]
         self.vector_store.delete_faces(self.settings.qdrant_known_collection, face_ids)
-        self.storage.remove_object(sample_photo.object_key)
+        object_key = sample_photo.object_key
+        db.delete(sample_photo)
+        db.flush()
+        self._recompute_person_centroid(db, person_id, workspace_id)
+        db.commit()
+        self.storage.remove_object(object_key)
         logger.info(
             "Delete sample photo sample_id=%s person_id=%s known_faces_deleted=%d",
             sample_photo.id,
             sample_photo.person_id,
             len(face_ids),
         )
-        db.delete(sample_photo)
-        db.commit()
 
     def delete_gallery_photos(self, db: Session, photos: list[GalleryPhoto]) -> int:
         deleted = 0
         for photo in photos:
-            known_face_ids = [face.id for face in photo.faces if face.vector_collection == "known"]
-            self.vector_store.delete_faces(self.settings.qdrant_known_collection, known_face_ids)
             self.storage.remove_object(photo.object_key)
             db.delete(photo)
             deleted += 1
-            logger.info(
-                "Delete gallery photo photo_id=%s legacy_known_vectors_deleted=%d",
-                photo.id,
-                len(known_face_ids),
-            )
+            logger.info("Delete gallery photo photo_id=%s", photo.id)
         db.commit()
         return deleted
 
@@ -612,6 +726,12 @@ class PictureService:
                 continue
             known_face_ids = [face.id for face in person.faces if face.vector_collection == "known"]
             self.vector_store.delete_faces(self.settings.qdrant_known_collection, known_face_ids)
+            self.vector_store.delete_centroid(
+                self.settings.qdrant_known_collection,
+                person.workspace_id,
+                person.id,
+                self.settings.face_embedding_version,
+            )
             for sample in person.sample_photos:
                 self.storage.remove_object(sample.object_key)
             db.delete(person)
@@ -629,12 +749,23 @@ class PictureService:
         if person.is_unknown:
             raise ValueError("不能将图库人脸确认到未知人物")
         previous_collection = face.vector_collection
+        if face.matched_person_id != person.id:
+            db.add(FaceRecognitionCorrection(
+                workspace_id=face.workspace_id,
+                gallery_photo_id=face.gallery_photo_id,
+                face_record_id=face.id,
+                predicted_person_id=face.matched_person_id,
+                predicted_score=face.match_score,
+                second_person_id=face.second_person_id,
+                second_score=face.second_match_score,
+                corrected_person_id=person.id,
+                embedding_version=face.embedding_version or self.settings.face_embedding_version,
+                promoted_to_sample=False,
+            ))
         face.vector_collection = None
         face.matched_person_id = person.id
         face.match_score = 1.0
         face.needs_review = False
-        if previous_collection == "known":
-            self.vector_store.delete_faces(self.settings.qdrant_known_collection, [face.id])
         if face.gallery_photo_id is not None:
             self._remove_unknown_person_tag_if_resolved(db, face.gallery_photo_id, face.workspace_id)
         logger.info(
@@ -644,6 +775,97 @@ class PictureService:
             person.id,
             previous_collection,
         )
+
+    @staticmethod
+    def _square_face_crop_box(face: FaceRecord, image_width: int, image_height: int, factor: float) -> tuple[int, int, int, int]:
+        face_width = max(1.0, float(face.bbox_right - face.bbox_left))
+        face_height = max(1.0, float(face.bbox_bottom - face.bbox_top))
+        side = max(1, min(int(round(max(face_width, face_height) * factor)), image_width, image_height))
+        center_x = (float(face.bbox_left) + float(face.bbox_right)) / 2
+        center_y = (float(face.bbox_top) + float(face.bbox_bottom)) / 2
+        left = min(max(0, int(round(center_x - side / 2))), image_width - side)
+        top = min(max(0, int(round(center_y - side / 2))), image_height - side)
+        return left, top, left + side, top + side
+
+    @staticmethod
+    def _apply_exif_orientation(image: Image.Image, orientation: int) -> Image.Image:
+        operations = {
+            2: Image.Transpose.FLIP_LEFT_RIGHT,
+            3: Image.Transpose.ROTATE_180,
+            4: Image.Transpose.FLIP_TOP_BOTTOM,
+            5: Image.Transpose.TRANSPOSE,
+            6: Image.Transpose.ROTATE_270,
+            7: Image.Transpose.TRANSVERSE,
+            8: Image.Transpose.ROTATE_90,
+        }
+        operation = operations.get(orientation)
+        return image.transpose(operation) if operation is not None else image
+
+    def _gallery_face_crop(self, payload: bytes, face: FaceRecord, factor: float) -> bytes:
+        source = Image.open(BytesIO(payload))
+        orientation = int(source.getexif().get(274, 1))
+        image = source.convert("RGB")
+        box = self._square_face_crop_box(face, image.width, image.height, factor)
+        crop = self._apply_exif_orientation(image.crop(box), orientation)
+        buffer = BytesIO()
+        crop.save(buffer, format="JPEG", quality=95)
+        return buffer.getvalue()
+
+    def promote_gallery_face_to_sample(self, db: Session, photo: GalleryPhoto, face: FaceRecord, person: Person) -> SamplePhoto:
+        existing = db.scalar(
+            select(SamplePhoto).where(
+                SamplePhoto.person_id == person.id,
+                SamplePhoto.source_gallery_photo_id == photo.id,
+            )
+        )
+        if existing is not None:
+            raise ValueError("该图片已经加入过此人物的样本库")
+        payload = self.storage.get_bytes(photo.object_key)
+        crop_payload: bytes | None = None
+        detected_faces: list[DetectedFace] = []
+        for factor in (2.0, 3.0):
+            candidate_payload = self._gallery_face_crop(payload, face, factor)
+            try:
+                candidate_faces = self.face_service.detect_faces(candidate_payload)
+            except Exception as exc:
+                raise ValueError(f"人脸检测失败：{exc}") from exc
+            if len(candidate_faces) == 0:
+                continue
+            if len(candidate_faces) != 1:
+                raise ValueError(f"扩大裁剪后检测到 {len(candidate_faces)} 张人脸，仅支持单人样本")
+            crop_payload = candidate_payload
+            detected_faces = candidate_faces
+            break
+        if crop_payload is None:
+            raise ValueError("按人脸区域扩大裁剪后仍未检测到人脸（已尝试约 2 倍和 3 倍范围）")
+        if detected_faces[0].face_size < self.settings.face_sample_min_size:
+            raise ValueError(
+                f"人脸尺寸过小（{detected_faces[0].face_size:.0f}px，最低 {self.settings.face_sample_min_size}px）"
+            )
+        samples = self.add_person_samples(
+            db,
+            person,
+            [(f"gallery-{photo.id}-face.jpg", crop_payload, "image/jpeg")],
+            source_gallery_photo_id=photo.id,
+            prepared_faces=[detected_faces],
+        )
+        if not samples:
+            raise ValueError("相同的人脸样本已经存在")
+        sample = samples[0]
+        if sample.status != "ready":
+            error = sample.error_message or sample.status
+            self.delete_sample_photo(db, sample)
+            raise ValueError(error)
+        correction = db.scalar(
+            select(FaceRecognitionCorrection)
+            .where(FaceRecognitionCorrection.face_record_id == face.id)
+            .order_by(FaceRecognitionCorrection.id.desc())
+        )
+        if correction is not None:
+            correction.promoted_to_sample = True
+            db.add(correction)
+            db.commit()
+        return sample
 
     def bind_person_tag(self, db: Session, person: Person, tag: Tag) -> None:
         if self.is_singleton_unknown_person(person):
@@ -744,23 +966,12 @@ class PictureService:
     def re_recognize_gallery_photo(self, db: Session, photo: GalleryPhoto) -> GalleryPhoto:
         logger.info("Start re_recognize_gallery_photo photo_id=%s", photo.id)
         payload = self.storage.get_bytes(photo.object_key)
-        old_known_face_ids = [face.id for face in photo.faces if face.vector_collection == "known"]
-        self.vector_store.delete_faces(self.settings.qdrant_known_collection, old_known_face_ids)
-        logger.info(
-            "Deleted old gallery vectors from known collection photo_id=%s known=%d",
-            photo.id,
-            len(old_known_face_ids),
-        )
-        old_person_ids = set(tag.person_id for tag in photo.person_tags)
-        for person_id in old_person_ids:
-            link = db.scalar(
-                select(GalleryPhotoPersonTag).where(
-                    GalleryPhotoPersonTag.gallery_photo_id == photo.id,
-                    GalleryPhotoPersonTag.person_id == person_id,
-                )
-            )
-            if link is not None:
-                db.delete(link)
+        detected_faces = self.face_service.detect_faces(payload)
+        recognition_plan = [(detected, self._match_face(detected, photo.workspace_id)) for detected in detected_faces]
+        manual_person_ids = {tag.person_id for tag in photo.person_tags if tag.source == "manual"}
+        old_auto_links = [tag for tag in photo.person_tags if tag.source != "manual"]
+        for link in old_auto_links:
+            db.delete(link)
         old_person_gallery_tags = db.scalars(
             select(GalleryPhotoTag).where(
                 GalleryPhotoTag.gallery_photo_id == photo.id,
@@ -772,7 +983,7 @@ class PictureService:
         logger.info(
             "Cleared old person tags photo_id=%s persons=%d inherited_tags=%d",
             photo.id,
-            len(old_person_ids),
+            len(old_auto_links),
             len(old_person_gallery_tags),
         )
         for face in photo.faces:
@@ -780,21 +991,11 @@ class PictureService:
         db.flush()
 
         summary = GalleryImportSummary()
-        try:
-            detected_faces = self.face_service.detect_faces(payload)
-        except Exception:
-            logger.exception("Re-recognize face detection failed photo_id=%s", photo.id)
-            db.commit()
-            db.refresh(photo)
-            return photo
         logger.info("Re-recognize detection result photo_id=%s faces=%d", photo.id, len(detected_faces))
-        for detected in detected_faces:
+        for detected, match in recognition_plan:
             try:
                 with db.begin_nested():
-                    matched_person_id, matched_score = self.vector_store.search(
-                        self.settings.qdrant_known_collection,
-                        detected.embedding,
-                    )
+                    matched_person_id, matched_score = match.person_id, match.score
                     matched_person = None
                     if matched_person_id is not None:
                         matched_person = db.scalar(
@@ -808,11 +1009,7 @@ class PictureService:
                         face = FaceRecord(
                             workspace_id=photo.workspace_id,
                             gallery_photo_id=photo.id,
-                            bbox_left=detected.bbox[0],
-                            bbox_top=detected.bbox[1],
-                            bbox_right=detected.bbox[2],
-                            bbox_bottom=detected.bbox[3],
-                            detection_score=detected.score,
+                            **self._face_fields(detected, match),
                             matched_person_id=matched_person.id,
                             match_score=matched_score,
                             needs_review=False,
@@ -838,11 +1035,7 @@ class PictureService:
                     face = FaceRecord(
                         workspace_id=photo.workspace_id,
                         gallery_photo_id=photo.id,
-                        bbox_left=detected.bbox[0],
-                        bbox_top=detected.bbox[1],
-                        bbox_right=detected.bbox[2],
-                        bbox_bottom=detected.bbox[3],
-                        detection_score=detected.score,
+                        **self._face_fields(detected, match),
                         matched_person_id=person.id,
                         match_score=matched_score,
                         needs_review=True,
@@ -859,8 +1052,11 @@ class PictureService:
                     )
             except Exception:
                 logger.exception("Re-recognize face process failed photo_id=%s", photo.id)
-                continue
+                raise
 
+        for person_id in manual_person_ids:
+            self.ensure_gallery_person_tag(db, photo.id, person_id, "manual")
+            self.apply_person_tags_to_gallery_photo(db, photo.id, person_id)
         db.commit()
         db.refresh(photo)
         photo.person_tags
@@ -875,6 +1071,12 @@ class PictureService:
             summary.known_matches,
             summary.unknown_faces,
         )
+        photo.recognition_summary = {
+            "faces": len(detected_faces),
+            "known": summary.known_matches,
+            "unknown": summary.unknown_faces,
+            "manual_tags_preserved": len(manual_person_ids),
+        }
         return photo
 
     def import_persons_from_zip(self, db: Session, zip_bytes: bytes, workspace_id: int | None, progress_callback=None) -> dict:
@@ -1002,30 +1204,48 @@ class PictureService:
                         continue
 
                     detected = detected_faces[0]
+                    if detected.face_size < self.settings.face_sample_min_size:
+                        sample_photo.status = "low_quality"
+                        sample_photo.quality_status = "rejected"
+                        sample_photo.error_message = (
+                            f"人脸尺寸过小（{detected.face_size:.0f}px，最低 {self.settings.face_sample_min_size}px）"
+                        )
+                        result["added_samples"] += 1
+                        processed_samples += 1
+                        if progress_callback:
+                            progress_callback(processed_samples, total_samples)
+                        continue
                     face = FaceRecord(
                         workspace_id=workspace_id,
                         sample_photo_id=sample_photo.id,
-                        bbox_left=detected.bbox[0],
-                        bbox_top=detected.bbox[1],
-                        bbox_right=detected.bbox[2],
-                        bbox_bottom=detected.bbox[3],
-                        detection_score=detected.score,
                         matched_person_id=person.id,
                         match_score=1.0,
                         needs_review=False,
                         vector_collection="known",
+                        **self._face_fields(detected),
                     )
                     db.add(face)
                     db.flush()
                     self.vector_store.upsert_face(
-                        self.settings.qdrant_known_collection, face.id, person.id, detected.embedding
+                        self.settings.qdrant_known_collection,
+                        face.id,
+                        person.id,
+                        detected.embedding,
+                        workspace_id=workspace_id,
+                        sample_photo_id=sample_photo.id,
+                        embedding_version=self.settings.face_embedding_version,
                     )
                     sample_photo.status = "ready"
+                    warnings = self._quality_warnings(detected)
+                    sample_photo.quality_warnings = json.dumps(warnings, ensure_ascii=False) if warnings else None
+                    sample_photo.quality_status = "warning" if warnings else "good"
                     result["added_samples"] += 1
                     processed_samples += 1
                     if progress_callback:
                         progress_callback(processed_samples, total_samples)
 
+                db.flush()
+                self._recompute_person_centroid(db, person.id, workspace_id)
                 db.commit()
 
         logger.info(

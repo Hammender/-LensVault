@@ -39,9 +39,46 @@ def ensure_video_seek_columns(engine: Engine) -> None:
             connection.execute(text(statement))
 
 
+def ensure_face_recognition_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    additions = {
+        "sample_photos": {
+            "quality_status": "ALTER TABLE sample_photos ADD COLUMN quality_status VARCHAR(32)",
+            "quality_warnings": "ALTER TABLE sample_photos ADD COLUMN quality_warnings TEXT",
+            "source_type": "ALTER TABLE sample_photos ADD COLUMN source_type VARCHAR(32) NOT NULL DEFAULT 'upload'",
+            "source_gallery_photo_id": "ALTER TABLE sample_photos ADD COLUMN source_gallery_photo_id INTEGER",
+        },
+        "face_records": {
+            "second_person_id": "ALTER TABLE face_records ADD COLUMN second_person_id INTEGER",
+            "second_match_score": "ALTER TABLE face_records ADD COLUMN second_match_score FLOAT",
+            "match_margin": "ALTER TABLE face_records ADD COLUMN match_margin FLOAT",
+            "embedding_version": "ALTER TABLE face_records ADD COLUMN embedding_version VARCHAR(64)",
+            "face_size": "ALTER TABLE face_records ADD COLUMN face_size FLOAT",
+            "blur_score": "ALTER TABLE face_records ADD COLUMN blur_score FLOAT",
+            "pose_yaw": "ALTER TABLE face_records ADD COLUMN pose_yaw FLOAT",
+        },
+    }
+    statements: list[str] = []
+    for table, columns in additions.items():
+        existing = {column["name"] for column in inspector.get_columns(table)}
+        statements.extend(statement for name, statement in columns.items() if name not in existing)
+    if statements:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_sample_person_source_gallery "
+                "ON sample_photos (person_id, source_gallery_photo_id)"
+            )
+        )
+
+
 def initialize_database(engine: Engine) -> None:
     Base.metadata.create_all(bind=engine)
     ensure_video_seek_columns(engine)
+    ensure_face_recognition_columns(engine)
 
 
 def initialize_runtime(

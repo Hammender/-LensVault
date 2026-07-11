@@ -128,6 +128,8 @@ import {
   renamePerson,
   replaceVideoCover,
   optimizeVideoPlayback,
+  promoteGalleryPhotoPersonSample,
+  undoGalleryPhotoPersonSample,
   reRecognizeGalleryPhoto,
   reRecognizeUnknownGalleryPhotos,
   updateGalleryPhotoRichText,
@@ -469,6 +471,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const [newPersonName, setNewPersonName] = useState("");
   const [renameValue, setRenameValue] = useState("");
   const [task, setTask] = useState<Task | null>(null);
+  const [recognitionNotice, setRecognitionNotice] = useState<{ id: number; message: string } | null>(null);
   const [pendingSampleUploads, setPendingSampleUploads] = useState<PendingSampleUpload[]>([]);
   const [pendingGalleryUploads, setPendingGalleryUploads] = useState<PendingGalleryUpload[]>([]);
   const [batchApplyPersonNames, setBatchApplyPersonNames] = useState("");
@@ -822,6 +825,14 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     setExcludeTagIds(nextExclude);
     void refreshGallery(0, selectedPersonIds, nextInclude, excludePersonIds, nextExclude);
   }
+
+  useEffect(() => {
+    if (!recognitionNotice) {
+      return;
+    }
+    const timer = window.setTimeout(() => setRecognitionNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [recognitionNotice]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -2293,8 +2304,8 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     setBusy(true);
     setError(null);
     try {
-      const detail = await addGalleryPhotoPerson(selectedPhoto.id, Number(manualPersonId));
-      setSelectedPhoto(detail);
+      const result = await addGalleryPhotoPerson(selectedPhoto.id, Number(manualPersonId));
+      setSelectedPhoto(result);
       setManualPersonId("");
       await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
     } catch (cause) {
@@ -2302,6 +2313,47 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handlePromotePhotoPerson(personId: number) {
+    if (!selectedPhoto) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await promoteGalleryPhotoPersonSample(selectedPhoto.id, personId);
+      setSelectedPhoto(result);
+      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加入人物样本库失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUndoPromotePhotoPerson(personId: number) {
+    if (!selectedPhoto || !window.confirm("确定撤销这个图库人脸样本吗？图库图片和人物标签会保留。")) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await undoGalleryPhotoPersonSample(selectedPhoto.id, personId);
+      setSelectedPhoto(result);
+      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "撤销人物样本失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleOpenSampleSource(photoId: number) {
+    setPageState("gallery");
+    setRoute("gallery");
+    await openGalleryPhoto(photoId);
+    window.setTimeout(() => galleryDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   async function handleDeletePhotoPerson(personId: number) {
@@ -2462,6 +2514,13 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     try {
       const detail = await reRecognizeGalleryPhoto(selectedPhoto.id);
       setSelectedPhoto(detail);
+      if (detail.recognition_summary) {
+        const summary = detail.recognition_summary;
+        setRecognitionNotice({
+          id: Date.now(),
+          message: `检测 ${summary.faces} 张脸，识别 ${summary.known} 张，未知 ${summary.unknown} 张，保留 ${summary.manual_tags_preserved} 个人工标签。`
+        });
+      }
       await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "重新识别失败。");
@@ -3040,13 +3099,36 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                   <label>人物标签</label>
                   <div className="micro-row wrap">
                     {selectedPhoto.persons.map((person) => (
-                      <button
-                        key={person.person_id}
-                        className={person.is_unknown ? "pill unknown action-pill" : "pill action-pill"}
-                        onClick={() => void handleDeletePhotoPerson(person.person_id)}
-                      >
-                        {person.person_name}
-                      </button>
+                      <span key={person.person_id} className="micro-row">
+                        <button
+                          className={person.is_unknown ? "pill unknown action-pill" : "pill action-pill"}
+                          onClick={() => void handleDeletePhotoPerson(person.person_id)}
+                          title="移除此人物标签"
+                        >
+                          {person.person_name}
+                        </button>
+                        {!person.is_unknown && person.promoted_sample_id === null && (
+                          <button
+                            className="ghost-button"
+                            disabled={busy || selectedPhoto.faces.length !== 1}
+                            onClick={() => void handlePromotePhotoPerson(person.person_id)}
+                          >
+                            加入样本库
+                          </button>
+                        )}
+                        {!person.is_unknown && person.promoted_sample_id !== null && (
+                          <>
+                            <button className="ghost-button" disabled>已加入样本库</button>
+                            <button
+                              className="ghost-button"
+                              disabled={busy}
+                              onClick={() => void handleUndoPromotePhotoPerson(person.person_id)}
+                            >
+                              撤销
+                            </button>
+                          </>
+                        )}
+                      </span>
                     ))}
                   </div>
                   <div className="inline-editor inline-editor-triple">
@@ -3058,11 +3140,11 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                         </option>
                       ))}
                     </select>
-                    <button disabled={busy || !manualPersonId} onClick={() => void handleAddPhotoPerson()}>
-                      添加人物
-                    </button>
+                    <button disabled={busy || !manualPersonId} onClick={() => void handleAddPhotoPerson()}>添加人物</button>
                   </div>
-                  {selectedPhoto.faces.length !== 1 && <p className="tip">多人图只改展示标签，不自动写入人物向量库。</p>}
+                  <p className="tip">
+                    添加人物只修正当前图片标签；标签添加后，可在人物名称旁单独加入样本库或撤销。
+                  </p>
                 </div>
 
                 <div className="editor-block">
@@ -3383,6 +3465,18 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                           <span>{formatDate(sample.taken_at || sample.created_at)}</span>
                           <small className={`status-pill status-${sample.status}`}>{sample.status}</small>
                           {sample.error_message && <p>{sample.error_message}</p>}
+                          {sample.source_type === "gallery_face" && (
+                            sample.source_gallery_photo_id !== null ? (
+                              <button
+                                className="ghost-button"
+                                onClick={() => void handleOpenSampleSource(sample.source_gallery_photo_id!)}
+                              >
+                                来源：展示图库 #{sample.source_gallery_photo_id}
+                              </button>
+                            ) : (
+                              <small>来源展示图已删除</small>
+                            )
+                          )}
                         </div>
                         {!selectedPersonIsSystemUnknown && (
                           <button className="ghost-button" onClick={() => void handleDeleteSample(sample.id)}>
@@ -4641,6 +4735,16 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
         </div>
       )}
 
+      {recognitionNotice && (
+        <div className="recognition-notice" role="status" aria-live="polite">
+          <div>
+            <strong>重新识别完成</strong>
+            <span>{recognitionNotice.message}</span>
+          </div>
+          <button type="button" onClick={() => setRecognitionNotice(null)}>知道了</button>
+          <i aria-hidden="true" />
+        </div>
+      )}
       {error && <div className="error-banner">{error}</div>}
     </div>
   );

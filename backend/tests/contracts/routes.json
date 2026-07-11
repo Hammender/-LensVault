@@ -348,6 +348,18 @@
     ]
   },
   {
+    "path": "/api/gallery/photos/{photo_id}/persons/{person_id}/sample",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/persons/{person_id}/sample",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
     "path": "/api/gallery/photos/{photo_id}/persons/{person_id}",
     "methods": [
       "DELETE"
