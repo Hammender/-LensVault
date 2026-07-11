@@ -2484,9 +2484,12 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     setJumpPageInput("");
   }
 
-  const availablePersonsForPhoto = selectedPhoto
-    ? persons.filter((person) => !person.is_unknown && !selectedPhoto.persons.some((tag) => tag.person_id === person.id))
-    : persons.filter((person) => !person.is_unknown);
+  const availablePersonsForPhoto = sortByPinyin(
+    selectedPhoto
+      ? persons.filter((person) => !person.is_unknown && !selectedPhoto.persons.some((tag) => tag.person_id === person.id))
+      : persons.filter((person) => !person.is_unknown),
+    (person) => person.display_name
+  );
 
   const selectedPhotoTags = selectedPhoto ? sortByPinyinName(selectedPhoto.tags) : [];
 
