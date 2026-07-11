@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException, Request
+from sqlalchemy.orm import Session
+
+from app.models import Person, User, Workspace, WorkspaceMember
+from app.services.auth import create_access_token
+from tests.support.app_loader import load_test_main
+
+
+PERMISSION_CASES = (
+    ("can_add_gallery", "POST", "/api/gallery/photos/import"),
+    ("can_delete_gallery", "DELETE", "/api/gallery/photos/1"),
+    ("can_edit_gallery", "PATCH", "/api/gallery/photos/1/rich-text"),
+    ("can_add_samples", "POST", "/api/persons/1/samples"),
+    ("can_delete_samples", "DELETE", "/api/persons/1/samples/1"),
+    ("can_edit_samples", "PATCH", "/api/persons/1"),
+    ("can_add_videos", "POST", "/api/videos/upload-sessions"),
+    ("can_delete_videos", "DELETE", "/api/videos/1"),
+    ("can_edit_videos", "PATCH", "/api/videos/1"),
+)
+
+
+def make_request(method: str, path: str) -> Request:
+    return Request({"type": "http", "method": method, "path": path, "headers": []})
+
+
+def make_member_context(module):
+    permissions = {field: False for field in module.PERMISSION_FIELDS}
+    membership = SimpleNamespace(role="member", **permissions)
+    return module.CurrentContext(
+        user=SimpleNamespace(),
+        workspace_id=1,
+        role="member",
+        workspace=SimpleNamespace(),
+        membership=membership,
+    )
+
+
+@pytest.mark.parametrize(("permission", "method", "path"), PERMISSION_CASES)
+def test_permission_matrix_keeps_existing_route_rules(permission: str, method: str, path: str) -> None:
+    module = load_test_main()
+    current = make_member_context(module)
+
+    with pytest.raises(HTTPException) as exc_info:
+        module._enforce_request_permission(make_request(method, path), current)
+    assert exc_info.value.status_code == 403
+
+    setattr(current.membership, permission, True)
+    module._enforce_request_permission(make_request(method, path), current)
+
+
+def test_read_requests_do_not_require_modify_permission() -> None:
+    module = load_test_main()
+    module._enforce_request_permission(make_request("GET", "/api/gallery/photos"), make_member_context(module))
+
+
+def test_workspace_object_lookup_rejects_cross_workspace_access(db_session: Session) -> None:
+    module = load_test_main()
+    first = Workspace(name="空间一", kind="shared")
+    second = Workspace(name="空间二", kind="shared")
+    db_session.add_all([first, second])
+    db_session.flush()
+    person = Person(workspace_id=first.id, name="测试人物", display_name="测试人物")
+    db_session.add(person)
+    db_session.commit()
+
+    assert module._get_workspace_object(db_session, Person, person.id, first.id, "person") is person
+    with pytest.raises(HTTPException) as exc_info:
+        module._get_workspace_object(db_session, Person, person.id, second.id, "person")
+    assert exc_info.value.status_code == 404
+
+
+def test_require_context_selects_authorized_workspace(db_session: Session) -> None:
+    module = load_test_main()
+    user = User(username="tester", display_name="测试用户", password_hash="unused")
+    db_session.add(user)
+    db_session.flush()
+    workspace = Workspace(name="测试空间", kind="private", owner_user_id=user.id)
+    db_session.add(workspace)
+    db_session.flush()
+    db_session.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+    db_session.commit()
+
+    token = create_access_token(user.id, module.settings.auth_secret_key, 5)
+    current = module.require_context(
+        make_request("GET", "/api/persons"),
+        authorization=f"Bearer {token}",
+        access_token=None,
+        workspace_id_query=None,
+        x_workspace_id=workspace.id,
+        db=db_session,
+    )
+
+    assert current.user.id == user.id
+    assert current.workspace_id == workspace.id
+    assert current.role == "owner"
+
+
+def test_require_context_rejects_workspace_without_membership(db_session: Session) -> None:
+    module = load_test_main()
+    user = User(username="limited", display_name="受限用户", password_hash="unused")
+    db_session.add(user)
+    db_session.flush()
+    owned = Workspace(name="有权限空间", kind="private", owner_user_id=user.id)
+    forbidden = Workspace(name="无权限空间", kind="shared")
+    db_session.add_all([owned, forbidden])
+    db_session.flush()
+    db_session.add(WorkspaceMember(workspace_id=owned.id, user_id=user.id, role="owner"))
+    db_session.commit()
+
+    token = create_access_token(user.id, module.settings.auth_secret_key, 5)
+    with pytest.raises(HTTPException) as exc_info:
+        module.require_context(
+            make_request("GET", "/api/persons"),
+            authorization=f"Bearer {token}",
+            access_token=None,
+            workspace_id_query=None,
+            x_workspace_id=forbidden.id,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 403

@@ -6,7 +6,7 @@ import {
   getTagStatistics,
   getUploadHistory,
   getUploadSummary
-} from "./api";
+} from "./api/index";
 import type {
   PersonStatistics,
   TagStatistics,

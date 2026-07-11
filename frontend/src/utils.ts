@@ -3,6 +3,7 @@ import type { WorkspacePermissionsPayload } from "./api";
 
 export const videoPartSize = 16 * 1024 * 1024;
 export const videoResumeStorageKey = "pictureshow-video-upload-session";
+export const videoUploadQueueStorageKey = "pictureshow-video-upload-queue";
 export const videoPartUploadMaxAttempts = 4;
 export const videoPartUploadRetryDelayMs = 1200;
 export const videoSeekSeconds = 10;

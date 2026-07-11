@@ -34,6 +34,10 @@ export function compareByPinyin(left: string, right: string): number {
   );
 }
 
+export function sortByPinyin<T extends { id: number }>(items: T[], getName: (item: T) => string): T[] {
+  return [...items].sort((left, right) => compareByPinyin(getName(left), getName(right)) || left.id - right.id);
+}
+
 export function sortByPinyinName<T extends { id: number; name: string }>(items: T[]): T[] {
-  return [...items].sort((left, right) => compareByPinyin(left.name, right.name) || left.id - right.id);
+  return sortByPinyin(items, (item) => item.name);
 }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 import json
 from io import BytesIO
@@ -8,15 +7,46 @@ import logging
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 from PIL import Image
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.application import create_app
 from app.core.config import get_settings
-from app.db import Base, SessionLocal, engine, get_db
+from app.db import SessionLocal, engine, get_db
+from app.dependencies.context import (
+    PERMISSION_FIELDS,
+    CurrentContext,
+    enforce_request_permission as _enforce_request_permission,
+    ensure_private_workspace as _ensure_private_workspace,
+    require_context,
+    require_workspace_owner,
+)
+from app.http.media import stream_storage_object
+from app.mappers.gallery import (
+    gallery_photo_to_detail as _gallery_photo_to_detail,
+    gallery_photo_to_list_item as _gallery_photo_to_list_item,
+)
+from app.mappers.people import person_to_read as _person_to_read, sample_photo_to_read as _sample_photo_to_read
+from app.mappers.videos import (
+    subtitle_to_read as _subtitle_to_read,
+    video_category_to_read as _video_category_to_read,
+    video_cover_url as _video_cover_url,
+    video_person_to_read as _video_person_to_read,
+    video_play_url as _video_play_url,
+    video_session_to_read as _video_session_to_read,
+    video_stream_url as _video_stream_url,
+    video_to_detail as _video_to_detail,
+    video_to_list_item as _video_to_list_item,
+)
+from app.mappers.workspaces import (
+    invitation_to_read as _invitation_to_read,
+    member_to_read as _member_to_read,
+    workspace_to_read as _workspace_read,
+    workspaces_to_read as _workspace_reads,
+)
 from app.models import (
     FaceRecord,
     GalleryPhoto,
@@ -45,15 +75,11 @@ from app.schemas import (
     AuthSession,
     BootstrapCreate,
     BootstrapStatus,
-    FaceRead,
-    GalleryPersonTagRead,
     GalleryPhotoDetail,
-    GalleryPhotoListItem,
     GalleryPhotoBatchDeleteRequest,
     GalleryPhotoRichTextUpdate,
     GalleryPhotoPersonTagCreate,
     GalleryPhotoTagCreate,
-    GalleryTagRead,
     LoginRequest,
     PaginatedGalleryPhotos,
     PersonBatchDeleteRequest,
@@ -80,7 +106,6 @@ from app.schemas import (
     VideoCategoryTagRead,
     VideoCategoryTagUpdate,
     VideoItemDetail,
-    VideoItemListItem,
     VideoMetadataUpdate,
     VideoPersonBindCreate,
     VideoPersonRead,
@@ -100,15 +125,9 @@ from app.schemas import (
     WorkspaceRead,
     WorkspaceUpdate,
 )
-from app.services.auth import create_access_token, decode_access_token, hash_password, verify_password
-from app.services.face import FaceService
-from app.services.importer import PictureService
-from app.services.ocr import OcrService
-from app.services.qdrant import QdrantVectorStore
-from app.services.storage import MinioStorage
-from app.services.subtitles import SubtitleService
-from app.services.tasks import create_task, fail_incomplete_tasks, update_task
-from app.services.videos import VideoService
+from app.services.auth import create_access_token, hash_password, verify_password
+from app.services.container import build_service_container
+from app.services.tasks import create_task, update_task
 
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -121,74 +140,21 @@ logging.getLogger("uvicorn.access").disabled = True
 logging.getLogger("uvicorn.access").propagate = False
 
 settings = get_settings()
-Base.metadata.create_all(bind=engine)
-
-
-def _ensure_video_seek_columns() -> None:
-    inspector = inspect(engine)
-    columns = {column["name"] for column in inspector.get_columns("video_items")}
-    statements: list[str] = []
-    if "seek_optimized" not in columns:
-        statements.append("ALTER TABLE video_items ADD COLUMN seek_optimized BOOLEAN NOT NULL DEFAULT 0")
-    if "seek_optimized_at" not in columns:
-        statements.append("ALTER TABLE video_items ADD COLUMN seek_optimized_at DATETIME")
-    if "seek_keyframe_interval_seconds" not in columns:
-        statements.append("ALTER TABLE video_items ADD COLUMN seek_keyframe_interval_seconds FLOAT")
-    if not statements:
-        return
-    with engine.begin() as connection:
-        for statement in statements:
-            connection.execute(text(statement))
-
-
-_ensure_video_seek_columns()
-app = FastAPI(title=settings.app_name)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+services = build_service_container(settings)
+storage = services.storage
+face_service = services.face
+vector_store = services.vector_store
+ocr_service = services.ocr
+picture_service = services.pictures
+video_service = services.videos
+subtitle_service = services.subtitles
+app = create_app(
+    settings=settings,
+    services=services,
+    engine=engine,
+    session_factory=SessionLocal,
+    logger=logger,
 )
-
-storage = MinioStorage(settings)
-face_service = FaceService(settings)
-vector_store = QdrantVectorStore(settings)
-ocr_service = OcrService()
-picture_service = PictureService(storage, face_service, vector_store, ocr_service, settings)
-video_service = VideoService(storage)
-subtitle_service = SubtitleService(storage, settings)
-
-
-@dataclass
-class CurrentContext:
-    user: User
-    workspace_id: int
-    role: str
-    workspace: Workspace
-    membership: WorkspaceMember
-
-
-PERMISSION_FIELDS = (
-    "can_add_gallery",
-    "can_delete_gallery",
-    "can_edit_gallery",
-    "can_add_samples",
-    "can_delete_samples",
-    "can_edit_samples",
-    "can_add_videos",
-    "can_delete_videos",
-    "can_edit_videos",
-)
-
-ALL_PERMISSIONS = {field: True for field in PERMISSION_FIELDS}
-NO_PERMISSIONS = {field: False for field in PERMISSION_FIELDS}
-
-
-def _permission_dict(membership: WorkspaceMember) -> dict[str, bool]:
-    if membership.role == "owner":
-        return dict(ALL_PERMISSIONS)
-    return {field: bool(getattr(membership, field)) for field in PERMISSION_FIELDS}
 
 
 def _permission_kwargs(payload: WorkspacePermissionUpdate | WorkspaceInvitationCreate) -> dict[str, bool]:
@@ -198,45 +164,6 @@ def _permission_kwargs(payload: WorkspacePermissionUpdate | WorkspaceInvitationC
 def _apply_permissions(target: WorkspaceMember | WorkspaceInvitation, permissions: dict[str, bool]) -> None:
     for field, value in permissions.items():
         setattr(target, field, bool(value))
-
-
-def _workspace_read(membership: WorkspaceMember) -> WorkspaceRead:
-    workspace = membership.workspace
-    can_leave = workspace.kind == "shared" and membership.role != "owner"
-    return WorkspaceRead(
-        id=workspace.id,
-        name=workspace.name,
-        kind=workspace.kind,
-        role=membership.role,
-        permissions=_permission_dict(membership),
-        can_leave=can_leave,
-    )
-
-
-def _workspace_reads(db: Session, user: User) -> list[WorkspaceRead]:
-    db.expire(user, ["memberships"])
-    user_memberships = db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user.id)).all()
-    memberships = sorted(
-        (membership for membership in user_memberships if membership.workspace is not None),
-        key=lambda item: (0 if item.workspace.kind == "private" else 1, item.workspace.id),
-    )
-    return [_workspace_read(membership) for membership in memberships]
-
-
-def _ensure_private_workspace(db: Session, user: User) -> Workspace:
-    workspace = db.scalar(select(Workspace).where(Workspace.kind == "private", Workspace.owner_user_id == user.id))
-    if workspace is None:
-        workspace = Workspace(name=f"{user.display_name}的私人空间", kind="private", owner_user_id=user.id)
-        db.add(workspace)
-        db.flush()
-        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
-        db.flush()
-    else:
-        membership = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user.id))
-        if membership is None:
-            db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
-            db.flush()
-    return workspace
 
 
 def _auth_session(db: Session, user: User, selected_workspace_id: int | None = None) -> AuthSession:
@@ -256,129 +183,11 @@ def _auth_session(db: Session, user: User, selected_workspace_id: int | None = N
     )
 
 
-def require_context(
-    request: Request,
-    authorization: str | None = Header(default=None),
-    access_token: str | None = Query(default=None),
-    workspace_id_query: int | None = Query(default=None, alias="workspace_id"),
-    x_workspace_id: int | None = Header(default=None),
-    db: Session = Depends(get_db),
-) -> CurrentContext:
-    token = access_token
-    if not token and authorization:
-        scheme, _, value = authorization.partition(" ")
-        if scheme.lower() == "bearer" and value:
-            token = value
-    if not token:
-        raise HTTPException(status_code=401, detail="请先登录")
-    user_id = decode_access_token(token, settings.auth_secret_key)
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
-    user = db.get(User, user_id)
-    if user is None or not user.is_active:
-        raise HTTPException(status_code=401, detail="账号不可用")
-    _ensure_private_workspace(db, user)
-    db.commit()
-    db.refresh(user)
-    memberships = list(user.memberships)
-    if not memberships:
-        raise HTTPException(status_code=403, detail="账号没有内容空间")
-    selected_workspace_id = x_workspace_id if x_workspace_id is not None else workspace_id_query
-    if selected_workspace_id is not None:
-        membership = next((item for item in memberships if item.workspace_id == selected_workspace_id), None)
-        if membership is None:
-            raise HTTPException(status_code=403, detail="无权访问该内容空间")
-    else:
-        membership = sorted(memberships, key=lambda item: (0 if item.workspace.kind == "private" else 1, item.workspace_id))[0]
-    current = CurrentContext(user=user, workspace_id=membership.workspace_id, role=membership.role, workspace=membership.workspace, membership=membership)
-    _enforce_request_permission(request, current)
-    return current
-
-
-def _has_permission(current: CurrentContext, field: str) -> bool:
-    if current.role == "owner":
-        return True
-    return bool(getattr(current.membership, field))
-
-
-def _require_permission(current: CurrentContext, field: str) -> None:
-    if not _has_permission(current, field):
-        raise HTTPException(status_code=403, detail="当前账号没有该操作权限")
-
-
-def _enforce_request_permission(request: Request, current: CurrentContext) -> None:
-    if request.method in {"GET", "HEAD", "OPTIONS"}:
-        return
-    path = request.url.path
-    if path.startswith("/api/auth/") or path.startswith("/api/workspaces") or path.startswith("/api/workspace-invitations"):
-        return
-    if path in {"/api/gallery/photos/import", "/api/gallery/rich-photos/import", "/api/gallery/photos/import-zip"}:
-        _require_permission(current, "can_add_gallery")
-        return
-    if path == "/api/gallery/photos/batch-delete" or (path.startswith("/api/gallery/photos") and request.method == "DELETE"):
-        _require_permission(current, "can_delete_gallery")
-        return
-    if path.startswith("/api/gallery/photos") or path.startswith("/api/tags"):
-        _require_permission(current, "can_edit_gallery")
-        return
-    if path == "/api/persons/import" or (path == "/api/persons" and request.method == "POST") or path.endswith("/samples"):
-        _require_permission(current, "can_add_samples")
-        return
-    if path == "/api/persons/batch-delete" or (path.startswith("/api/persons") and request.method == "DELETE"):
-        _require_permission(current, "can_delete_samples")
-        return
-    if path.startswith("/api/persons"):
-        _require_permission(current, "can_edit_samples")
-        return
-    if path.startswith("/api/videos/upload-sessions"):
-        _require_permission(current, "can_add_videos")
-        return
-    if "/subtitles" in path:
-        _require_permission(current, "can_edit_videos")
-        return
-    if path.startswith("/api/videos") and request.method == "DELETE":
-        _require_permission(current, "can_delete_videos")
-        return
-    if path.startswith("/api/videos") or path.startswith("/api/video-category-tags") or path.startswith("/api/video-people") or path.startswith("/api/subtitle-service"):
-        _require_permission(current, "can_edit_videos")
-        return
-
-
-def require_workspace_owner(current: CurrentContext = Depends(require_context)) -> CurrentContext:
-    if current.role != "owner":
-        raise HTTPException(status_code=403, detail="需要该内容空间的 owner 权限")
-    return current
-
-
 def _get_workspace_object(db: Session, model, object_id: int, workspace_id: int, label: str):
     item = db.get(model, object_id)
     if item is None or item.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail=f"{label} not found")
     return item
-
-
-def _member_to_read(membership: WorkspaceMember) -> WorkspaceMemberRead:
-    return WorkspaceMemberRead(
-        id=membership.id,
-        user=UserRead.model_validate(membership.user),
-        role=membership.role,
-        permissions=_permission_dict(membership),
-        created_at=membership.created_at,
-    )
-
-
-def _invitation_to_read(invitation: WorkspaceInvitation) -> WorkspaceInvitationRead:
-    return WorkspaceInvitationRead(
-        id=invitation.id,
-        workspace_id=invitation.workspace_id,
-        workspace_name=invitation.workspace.name,
-        inviter_username=invitation.inviter.username,
-        invitee_username=invitation.invitee.username,
-        status=invitation.status,
-        role=invitation.role,
-        permissions={field: bool(getattr(invitation, field)) for field in PERMISSION_FIELDS},
-        created_at=invitation.created_at,
-    )
 
 
 def _owner_count(db: Session, workspace_id: int) -> int:
@@ -392,321 +201,6 @@ def _require_shared_workspace_owner(current: CurrentContext) -> None:
         raise HTTPException(status_code=400, detail="私人空间不能添加或邀请其他账号")
     if current.role != "owner":
         raise HTTPException(status_code=403, detail="需要该内容空间的 owner 权限")
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    logger.info("应用启动：开始检查存储、向量库、人脸识别和 OCR 依赖")
-    storage.ensure_bucket()
-    vector_store.ensure_collections()
-    face_service.warmup()
-    ocr_status = ocr_service.engine_status()
-    logger.info(
-        "OCR 引擎状态：rapidocr_ready=%s tesseract_ready=%s rapidocr_error=%s tesseract_error=%s",
-        ocr_status["rapidocr_ready"],
-        ocr_status["tesseract_ready"],
-        ocr_status["rapidocr_error"] or "-",
-        ocr_status["tesseract_error"] or "-",
-    )
-    db = SessionLocal()
-    try:
-        for workspace in db.scalars(select(Workspace)).all():
-            picture_service.ensure_system_tags(db, workspace.id)
-        recovered = fail_incomplete_tasks(db, "gallery_import")
-        recovered += fail_incomplete_tasks(db, "gallery_rich_import")
-        recovered += fail_incomplete_tasks(db, "gallery_zip_import")
-        recovered += fail_incomplete_tasks(db, "person_import")
-        recovered += fail_incomplete_tasks(db, "video_subtitle_generation")
-        if recovered > 0:
-            logger.warning("应用启动：已恢复未完成任务 count=%d", recovered)
-    finally:
-        db.close()
-    logger.info(
-        "应用启动完成：minio_bucket=%s qdrant_sample_collection=%s",
-        settings.minio_bucket,
-        settings.qdrant_known_collection,
-    )
-
-
-def _gallery_photo_to_list_item(photo: GalleryPhoto) -> GalleryPhotoListItem:
-    persons = [
-        GalleryPersonTagRead(
-            person_id=tag.person_id,
-            person_name=tag.person.display_name,
-            is_unknown=tag.person.is_unknown,
-            source=tag.source,
-        )
-        for tag in sorted(photo.person_tags, key=lambda item: (item.person.is_unknown, item.person.display_name.lower()))
-    ]
-    tags = [
-        GalleryTagRead(id=item.tag.id, name=item.tag.name, is_system=item.tag.is_system)
-        for item in sorted(photo.tags, key=lambda link: link.tag.name.lower())
-    ]
-    return GalleryPhotoListItem(
-        id=photo.id,
-        filename=photo.filename,
-        width=photo.width,
-        height=photo.height,
-        taken_at=photo.taken_at,
-        is_rich_text=photo.is_rich_text,
-        rich_text=photo.rich_text,
-        ocr_status=photo.ocr_status,
-        persons=persons,
-        tags=tags,
-        thumbnail_url=f"/api/gallery/photos/{photo.id}/thumbnail",
-        original_url=f"/api/gallery/photos/{photo.id}/original",
-    )
-
-
-def _gallery_photo_to_detail(photo: GalleryPhoto) -> GalleryPhotoDetail:
-    item = _gallery_photo_to_list_item(photo)
-    faces = [
-        FaceRead(
-            id=face.id,
-            bbox_left=face.bbox_left,
-            bbox_top=face.bbox_top,
-            bbox_right=face.bbox_right,
-            bbox_bottom=face.bbox_bottom,
-            matched_person_id=face.matched_person_id,
-            match_score=face.match_score,
-            needs_review=face.needs_review,
-            vector_collection=face.vector_collection,
-        )
-        for face in photo.faces
-    ]
-    return GalleryPhotoDetail(
-        **item.model_dump(),
-        faces=faces,
-        created_at=photo.created_at,
-        content_type=photo.content_type,
-    )
-
-
-def _video_person_to_read(person: VideoPerson) -> VideoPersonRead:
-    return VideoPersonRead(
-        id=person.id,
-        name=person.name,
-        note=person.note,
-        avatar_url=f"/api/video-people/{person.id}/avatar" if person.avatar_object_key else None,
-        created_at=person.created_at,
-        updated_at=person.updated_at,
-    )
-
-
-def _video_category_to_read(tag: VideoCategoryTag) -> VideoCategoryTagRead:
-    return VideoCategoryTagRead.model_validate(tag)
-
-
-def _video_stream_url(video: VideoItem) -> str:
-    return f"/api/videos/{video.id}/stream"
-
-
-def _video_play_url(video: VideoItem) -> str:
-    return f"/api/videos/{video.id}/play"
-
-
-def _video_cover_url(video: VideoItem) -> str | None:
-    if not video.cover_object_key:
-        return None
-    return f"/api/videos/{video.id}/cover"
-
-
-def _subtitle_to_read(track: VideoSubtitleTrack) -> VideoSubtitleTrackRead:
-    vtt_url = None
-    srt_url = None
-    if track.status == "ready" and track.content_vtt:
-        vtt_url = f"/api/videos/{track.video_id}/subtitles/{track.id}.vtt"
-        srt_url = f"/api/videos/{track.video_id}/subtitles/{track.id}.srt"
-    return VideoSubtitleTrackRead(
-        id=track.id,
-        video_id=track.video_id,
-        language=track.language,
-        label=track.label,
-        source_language=track.source_language,
-        provider=track.provider,
-        status=track.status,
-        error_message=track.error_message,
-        task_id=track.task_id,
-        generated_at=track.generated_at,
-        created_at=track.created_at,
-        updated_at=track.updated_at,
-        vtt_url=vtt_url,
-        srt_url=srt_url,
-    )
-
-
-def _video_to_list_item(video: VideoItem) -> VideoItemListItem:
-    categories = sorted((link.tag for link in video.category_links), key=lambda item: item.name.lower())
-    people = sorted((link.person for link in video.person_links), key=lambda item: item.name.lower())
-    subtitle_tracks = sorted(video.subtitle_tracks, key=lambda item: item.created_at)
-    return VideoItemListItem(
-        id=video.id,
-        title=video.title,
-        description=video.description,
-        filename=video.filename,
-        content_type=video.content_type,
-        size_bytes=video.size_bytes,
-        duration_seconds=video.duration_seconds,
-        width=video.width,
-        height=video.height,
-        original_video_codec=video.original_video_codec,
-        original_audio_codec=video.original_audio_codec,
-        video_codec=video.video_codec,
-        audio_codec=video.audio_codec,
-        status=video.status,
-        category_tags=[_video_category_to_read(tag) for tag in categories],
-        people=[_video_person_to_read(person) for person in people],
-        stream_url=_video_stream_url(video),
-        play_url=_video_play_url(video),
-        cover_url=_video_cover_url(video),
-        faststart_applied=video.faststart_applied,
-        seek_optimized=video.seek_optimized,
-        seek_optimized_at=video.seek_optimized_at,
-        seek_keyframe_interval_seconds=video.seek_keyframe_interval_seconds,
-        processed_at=video.processed_at,
-        processing_error=video.processing_error,
-        subtitle_tracks=[_subtitle_to_read(track) for track in subtitle_tracks],
-        created_at=video.created_at,
-        updated_at=video.updated_at,
-    )
-
-
-def _video_to_detail(video: VideoItem) -> VideoItemDetail:
-    item = _video_to_list_item(video)
-    return VideoItemDetail(**item.model_dump(), sha256=video.sha256)
-
-
-def _video_session_to_read(session: VideoUploadSession) -> VideoUploadSessionRead:
-    uploaded_parts = sorted(part.part_index for part in session.parts)
-    return VideoUploadSessionRead(
-        id=session.id,
-        filename=session.filename,
-        title=session.title,
-        description=session.description,
-        content_type=session.content_type,
-        size_bytes=session.size_bytes,
-        part_size=session.part_size,
-        total_parts=session.total_parts,
-        uploaded_parts=uploaded_parts,
-        status=session.status,
-        created_at=session.created_at,
-        updated_at=session.updated_at,
-    )
-
-
-def _parse_range_header(range_header: str | None, size: int) -> tuple[int, int] | None:
-    if not range_header:
-        return None
-    unit, _, range_value = range_header.partition("=")
-    if unit.strip().lower() != "bytes" or "," in range_value:
-        raise HTTPException(status_code=416, detail="Invalid range", headers={"Content-Range": f"bytes */{size}"})
-    start_text, _, end_text = range_value.partition("-")
-    try:
-        if start_text == "":
-            suffix_length = int(end_text)
-            if suffix_length <= 0:
-                raise ValueError
-            start = max(size - suffix_length, 0)
-            end = size - 1
-        else:
-            start = int(start_text)
-            end = int(end_text) if end_text else size - 1
-    except ValueError as exc:
-        raise HTTPException(status_code=416, detail="Invalid range", headers={"Content-Range": f"bytes */{size}"}) from exc
-    if start < 0 or end < start or start >= size:
-        raise HTTPException(status_code=416, detail="Invalid range", headers={"Content-Range": f"bytes */{size}"})
-    return start, min(end, size - 1)
-
-
-def _iter_minio_response(response, chunk_size: int = 1024 * 1024):
-    try:
-        for chunk in response.stream(chunk_size):
-            yield chunk
-    finally:
-        response.close()
-        response.release_conn()
-
-
-def _content_disposition(disposition: str, filename: str) -> str:
-    original = filename or "file"
-    fallback = "".join(ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\", ";"} else "_" for ch in original)
-    fallback = fallback.strip(" ._") or "file"
-    encoded = quote(original, safe="")
-    return f'{disposition}; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
-
-
-def _stream_storage_object(
-    request: Request,
-    object_key: str,
-    filename: str,
-    content_type: str | None,
-) -> StreamingResponse:
-    stat = storage.stat_object(object_key)
-    size = stat.size
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Disposition": _content_disposition("inline", filename),
-    }
-    media_type = content_type or "application/octet-stream"
-    range_tuple = _parse_range_header(request.headers.get("range"), size)
-    if range_tuple is None:
-        response = storage.get_stream(object_key)
-        headers["Content-Length"] = str(size)
-        return StreamingResponse(_iter_minio_response(response), media_type=media_type, headers=headers)
-
-    start, end = range_tuple
-    length = end - start + 1
-    response = storage.get_stream(object_key, offset=start, length=length)
-    headers.update(
-        {
-            "Content-Range": f"bytes {start}-{end}/{size}",
-            "Content-Length": str(length),
-        }
-    )
-    return StreamingResponse(
-        _iter_minio_response(response),
-        status_code=206,
-        media_type=media_type,
-        headers=headers,
-    )
-
-
-def _sample_photo_to_read(photo: SamplePhoto) -> SamplePhotoRead:
-    return SamplePhotoRead(
-        id=photo.id,
-        filename=photo.filename,
-        width=photo.width,
-        height=photo.height,
-        taken_at=photo.taken_at,
-        status=photo.status,
-        error_message=photo.error_message,
-        thumbnail_url=f"/api/persons/{photo.person_id}/samples/{photo.id}/thumbnail",
-        original_url=f"/api/persons/{photo.person_id}/samples/{photo.id}/original",
-        created_at=photo.created_at,
-    )
-
-
-def _person_to_read(db: Session, person: Person) -> PersonRead:
-    sample_count = db.scalar(select(func.count(SamplePhoto.id)).where(SamplePhoto.person_id == person.id)) or 0
-    gallery_count = (
-        db.scalar(
-            select(func.count(func.distinct(GalleryPhotoPersonTag.gallery_photo_id))).where(
-                GalleryPhotoPersonTag.person_id == person.id
-            )
-        )
-        or 0
-    )
-    return PersonRead(
-        id=person.id,
-        name=person.name,
-        display_name=person.display_name,
-        note=person.note,
-        is_unknown=person.is_unknown,
-        unknown_serial=person.unknown_serial,
-        sample_count=sample_count,
-        gallery_photo_count=gallery_count,
-        created_at=person.created_at,
-    )
 
 
 def _parse_tag_names(raw: list[str] | None) -> list[str]:
@@ -865,8 +359,8 @@ def _process_gallery_import_task(
                         person.id,
                         person_name,
                     )
-                picture_service._ensure_gallery_person_tag(db, photo.id, person.id, "manual_upload")
-                picture_service._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
+                picture_service.ensure_gallery_person_tag(db, photo.id, person.id, "manual_upload")
+                picture_service.apply_person_tags_to_gallery_photo(db, photo.id, person.id)
             db.commit()
             total_known += summary.known_matches
             total_unknown_faces += summary.unknown_faces
@@ -1495,7 +989,7 @@ def update_person(
 ) -> PersonRead:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
     if payload.name is not None:
-        if picture_service._is_singleton_unknown_person(person):
+        if picture_service.is_singleton_unknown_person(person):
             raise HTTPException(status_code=400, detail="系统未知人物不能直接改名")
         normalized = payload.name.strip()
         duplicate = db.scalar(
@@ -1532,7 +1026,7 @@ def rename_person(
 @app.delete("/api/persons/{person_id}")
 def delete_person(person_id: int, db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)) -> dict[str, str]:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
-    if picture_service._is_singleton_unknown_person(person):
+    if picture_service.is_singleton_unknown_person(person):
         raise HTTPException(status_code=400, detail="系统未知人物不能删除")
     picture_service.delete_persons(db, [person])
     return {"status": "ok"}
@@ -1563,14 +1057,14 @@ def bind_person_tag(
     current: CurrentContext = Depends(require_context),
 ) -> list[TagRead]:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
-    if picture_service._is_singleton_unknown_person(person):
+    if picture_service.is_singleton_unknown_person(person):
         raise HTTPException(status_code=400, detail="系统未知人物不能维护普通标签")
     if payload.tag_id is not None:
         tag = db.get(Tag, payload.tag_id)
         if tag is None or tag.workspace_id != current.workspace_id:
             raise HTTPException(status_code=404, detail="Tag not found")
     else:
-        tag = picture_service._find_or_create_tag(db, payload.name or "", current.workspace_id)
+        tag = picture_service.find_or_create_tag(db, payload.name or "", current.workspace_id)
     try:
         picture_service.bind_person_tag(db, person, tag)
     except ValueError as exc:
@@ -1586,7 +1080,7 @@ def unbind_person_tag(
     current: CurrentContext = Depends(require_context),
 ) -> list[TagRead]:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
-    if picture_service._is_singleton_unknown_person(person):
+    if picture_service.is_singleton_unknown_person(person):
         raise HTTPException(status_code=400, detail="系统未知人物不能维护普通标签")
     try:
         picture_service.unbind_person_tag(db, person, tag_id)
@@ -1636,7 +1130,7 @@ def get_sample_original(
     photo = db.get(SamplePhoto, sample_photo_id)
     if photo is None or photo.workspace_id != current.workspace_id or photo.person_id != person_id:
         raise HTTPException(status_code=404, detail="Sample photo not found")
-    return _stream_storage_object(request, photo.object_key, photo.filename, photo.content_type)
+    return stream_storage_object(storage, request, photo.object_key, photo.filename, photo.content_type)
 
 
 @app.get("/api/persons/{person_id}/samples/{sample_photo_id}/thumbnail")
@@ -2013,7 +1507,7 @@ def get_gallery_original(
     current: CurrentContext = Depends(require_context),
 ) -> StreamingResponse:
     photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
-    return _stream_storage_object(request, photo.object_key, photo.filename, photo.content_type)
+    return stream_storage_object(storage, request, photo.object_key, photo.filename, photo.content_type)
 
 
 @app.get("/api/gallery/photos/{photo_id}/thumbnail")
@@ -2043,8 +1537,8 @@ def add_gallery_photo_person(
     person = _get_workspace_object(db, Person, payload.person_id, current.workspace_id, "Person")
     if person.is_unknown:
         raise HTTPException(status_code=400, detail="不能手动添加系统未知人物标签")
-    picture_service._ensure_gallery_person_tag(db, photo_id, person.id, "manual")
-    picture_service._apply_person_tags_to_gallery_photo(db, photo_id, person.id)
+    picture_service.ensure_gallery_person_tag(db, photo_id, person.id, "manual")
+    picture_service.apply_person_tags_to_gallery_photo(db, photo_id, person.id)
 
     faces = db.scalars(select(FaceRecord).where(FaceRecord.gallery_photo_id == photo_id)).all()
     if len(faces) == 1:
@@ -2072,7 +1566,7 @@ def delete_gallery_photo_person(
     )
     if link is None:
         raise HTTPException(status_code=404, detail="Person tag not found")
-    if picture_service._is_singleton_unknown_person(person):
+    if picture_service.is_singleton_unknown_person(person):
         faces = db.scalars(
             select(FaceRecord).where(
                 FaceRecord.gallery_photo_id == photo_id,
@@ -2138,8 +1632,8 @@ def add_gallery_photo_tag(
         if tag is None or tag.workspace_id != current.workspace_id:
             raise HTTPException(status_code=404, detail="Tag not found")
     else:
-        tag = picture_service._find_or_create_tag(db, payload.name or "", current.workspace_id)
-    picture_service._ensure_gallery_tag(db, photo_id, tag, source="manual")
+        tag = picture_service.find_or_create_tag(db, payload.name or "", current.workspace_id)
+    picture_service.ensure_gallery_tag(db, photo_id, tag, source="manual")
     db.commit()
     return get_gallery_photo(photo_id, db, current)
 
@@ -2811,32 +2305,14 @@ def remove_video_person(
 
 
 def _stream_video_response(video: VideoItem, request: Request) -> StreamingResponse:
-    stat = storage.stat_object(video.object_key)
-    size = stat.size
-    range_tuple = _parse_range_header(request.headers.get("range"), size)
-    filename = quote(video.filename)
-    if range_tuple is None:
-        response = storage.get_stream(video.object_key)
-        headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(size),
-            "Content-Disposition": f"inline; filename*=UTF-8''{filename}",
-        }
-        return StreamingResponse(_iter_minio_response(response), media_type=video.content_type or "video/mp4", headers=headers)
-    start, end = range_tuple
-    length = end - start + 1
-    response = storage.get_stream(video.object_key, offset=start, length=length)
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Range": f"bytes {start}-{end}/{size}",
-        "Content-Length": str(length),
-        "Content-Disposition": f"inline; filename*=UTF-8''{filename}",
-    }
-    return StreamingResponse(
-        _iter_minio_response(response),
-        status_code=206,
-        media_type=video.content_type or "video/mp4",
-        headers=headers,
+    return stream_storage_object(
+        storage,
+        request,
+        video.object_key,
+        video.filename,
+        video.content_type,
+        default_media_type="video/mp4",
+        include_ascii_filename=False,
     )
 
 
@@ -2949,7 +2425,6 @@ def get_tag_statistics(
         )
         for row in results
     ]
-
 
 @app.get("/api/statistics/upload-history", response_model=list[UploadHistoryRead])
 def get_upload_history(

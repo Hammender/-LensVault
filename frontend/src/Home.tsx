@@ -12,7 +12,7 @@ import {
   UsersRound
 } from "lucide-react";
 
-import { listPersons, listTags, listGalleryPhotos, listVideos } from "./api";
+import { listPersons, listTags, listGalleryPhotos, listVideos } from "./api/index";
 
 const quickAccess = [
   {

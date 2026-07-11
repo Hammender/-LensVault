@@ -72,7 +72,7 @@ class PictureService:
         tenant_prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""
         return f"{tenant_prefix}{prefix}/{uuid4().hex}{suffix}"
 
-    def _find_or_create_tag(self, db: Session, name: str, workspace_id: int | None) -> Tag:
+    def find_or_create_tag(self, db: Session, name: str, workspace_id: int | None) -> Tag:
         normalized = name.strip()
         tag = db.scalar(select(Tag).where(Tag.workspace_id == workspace_id, Tag.name == normalized))
         if tag is None:
@@ -94,7 +94,7 @@ class PictureService:
             db.commit()
             logger.info("Updated tag to system tag name=%s tag_id=%s", self.rich_text_tag_name, rich_tag.id)
 
-    def _ensure_gallery_person_tag(self, db: Session, gallery_photo_id: int, person_id: int, source: str) -> None:
+    def ensure_gallery_person_tag(self, db: Session, gallery_photo_id: int, person_id: int, source: str) -> None:
         existing = db.scalar(
             select(GalleryPhotoPersonTag).where(
                 GalleryPhotoPersonTag.gallery_photo_id == gallery_photo_id,
@@ -104,7 +104,7 @@ class PictureService:
         if existing is None:
             db.add(GalleryPhotoPersonTag(gallery_photo_id=gallery_photo_id, person_id=person_id, source=source))
 
-    def _ensure_gallery_tag(self, db: Session, gallery_photo_id: int, tag: Tag, source: str = "manual") -> None:
+    def ensure_gallery_tag(self, db: Session, gallery_photo_id: int, tag: Tag, source: str = "manual") -> None:
         existing = db.scalar(
             select(GalleryPhotoTag).where(
                 GalleryPhotoTag.gallery_photo_id == gallery_photo_id,
@@ -126,11 +126,11 @@ class PictureService:
         if existing is None:
             db.add(PersonTag(person_id=person_id, tag_id=tag.id))
 
-    def _apply_person_tags_to_gallery_photo(self, db: Session, gallery_photo_id: int, person_id: int) -> None:
+    def apply_person_tags_to_gallery_photo(self, db: Session, gallery_photo_id: int, person_id: int) -> None:
         links = db.scalars(select(PersonTag).where(PersonTag.person_id == person_id)).all()
         for link in links:
             link.tag
-            self._ensure_gallery_tag(db, gallery_photo_id, link.tag, source="person")
+            self.ensure_gallery_tag(db, gallery_photo_id, link.tag, source="person")
 
     def get_or_create_unknown_person(self, db: Session, workspace_id: int | None) -> Person:
         internal_name = self._unknown_person_internal_name(workspace_id)
@@ -193,7 +193,7 @@ class PictureService:
             logger.info("Normalized singleton unknown person person_id=%s workspace_id=%s", person.id, workspace_id)
         return person
 
-    def _is_singleton_unknown_person(self, person: Person) -> bool:
+    def is_singleton_unknown_person(self, person: Person) -> bool:
         return (
             person.is_unknown
             and person.display_name == self.unknown_person_name
@@ -424,9 +424,9 @@ class PictureService:
         db.flush()
 
         if is_rich_text:
-            rich_tag = self._find_or_create_tag(db, self.rich_text_tag_name, workspace_id)
+            rich_tag = self.find_or_create_tag(db, self.rich_text_tag_name, workspace_id)
             rich_tag.is_system = True
-            self._ensure_gallery_tag(db, photo.id, rich_tag, source="system")
+            self.ensure_gallery_tag(db, photo.id, rich_tag, source="system")
             if not photo.rich_text:
                 extracted = self.ocr_service.extract_text(payload)
                 photo.rich_text = extracted
@@ -441,8 +441,8 @@ class PictureService:
         for tag_name in tag_names or []:
             if not tag_name.strip():
                 continue
-            tag = self._find_or_create_tag(db, tag_name, workspace_id)
-            self._ensure_gallery_tag(db, photo.id, tag, source="manual")
+            tag = self.find_or_create_tag(db, tag_name, workspace_id)
+            self.ensure_gallery_tag(db, photo.id, tag, source="manual")
         if tag_names:
             logger.info("Gallery manual tags applied photo_id=%s tags=%d", photo.id, len(tag_names))
 
@@ -488,8 +488,8 @@ class PictureService:
                         )
                         db.add(face)
                         db.flush()
-                        self._ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
-                        self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
+                        self.ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
+                        self.apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
                         summary.known_matches += 1
                         logger.info(
                             "Gallery known face matched photo_id=%s face_id=%s person_id=%s score=%.4f",
@@ -524,7 +524,7 @@ class PictureService:
                     )
                     db.add(face)
                     db.flush()
-                    self._ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
+                    self.ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
                     logger.info(
                         "Gallery unknown face recorded photo_id=%s face_id=%s person_id=%s",
                         photo.id,
@@ -547,7 +547,7 @@ class PictureService:
         return photo, summary
 
     def rename_person(self, db: Session, person: Person, new_name: str) -> Person:
-        if self._is_singleton_unknown_person(person):
+        if self.is_singleton_unknown_person(person):
             raise ValueError("系统未知人物不能直接改名，请在图片详情中重新识别或改为已有正式人物")
         new_name = new_name.strip()
         if not new_name:
@@ -607,7 +607,7 @@ class PictureService:
     def delete_persons(self, db: Session, persons: list[Person]) -> int:
         deleted = 0
         for person in persons:
-            if self._is_singleton_unknown_person(person):
+            if self.is_singleton_unknown_person(person):
                 logger.info("Skip deleting singleton unknown person person_id=%s", person.id)
                 continue
             known_face_ids = [face.id for face in person.faces if face.vector_collection == "known"]
@@ -646,14 +646,14 @@ class PictureService:
         )
 
     def bind_person_tag(self, db: Session, person: Person, tag: Tag) -> None:
-        if self._is_singleton_unknown_person(person):
+        if self.is_singleton_unknown_person(person):
             raise ValueError("系统未知人物不能维护普通标签")
         self._ensure_person_tag(db, person.id, tag)
         photo_ids = db.scalars(
             select(GalleryPhotoPersonTag.gallery_photo_id).where(GalleryPhotoPersonTag.person_id == person.id)
         ).all()
         for photo_id in photo_ids:
-            self._ensure_gallery_tag(db, photo_id, tag, source="person")
+            self.ensure_gallery_tag(db, photo_id, tag, source="person")
         db.commit()
         logger.info(
             "Bound person tag person_id=%s tag_id=%s affected_gallery_photos=%d",
@@ -663,7 +663,7 @@ class PictureService:
         )
 
     def unbind_person_tag(self, db: Session, person: Person, tag_id: int) -> None:
-        if self._is_singleton_unknown_person(person):
+        if self.is_singleton_unknown_person(person):
             raise ValueError("系统未知人物不能维护普通标签")
         link = db.scalar(select(PersonTag).where(PersonTag.person_id == person.id, PersonTag.tag_id == tag_id))
         if link is not None:
@@ -820,8 +820,8 @@ class PictureService:
                         )
                         db.add(face)
                         db.flush()
-                        self._ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
-                        self._apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
+                        self.ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
+                        self.apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
                         summary.known_matches += 1
                         logger.info(
                             "Re-recognize known face matched photo_id=%s face_id=%s person_id=%s score=%.4f",
@@ -850,7 +850,7 @@ class PictureService:
                     )
                     db.add(face)
                     db.flush()
-                    self._ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
+                    self.ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
                     logger.info(
                         "Re-recognize unknown face tagged photo_id=%s face_id=%s person_id=%s",
                         photo.id,
@@ -909,7 +909,7 @@ class PictureService:
                     logger.info("Matched existing person name=%s person_id=%s", person_name, person.id)
 
                 for tag_name in person_data.get("tags", []):
-                    tag = self._find_or_create_tag(db, tag_name.strip(), workspace_id)
+                    tag = self.find_or_create_tag(db, tag_name.strip(), workspace_id)
                     existing_link = db.scalar(
                         select(PersonTag).where(PersonTag.person_id == person.id, PersonTag.tag_id == tag.id)
                     )
@@ -1119,19 +1119,19 @@ class PictureService:
                         photo.rich_text = str(rich_text)
                     if photo_data.get("ocr_status"):
                         photo.ocr_status = str(photo_data.get("ocr_status"))
-                    rich_tag = self._find_or_create_tag(db, self.rich_text_tag_name, workspace_id)
+                    rich_tag = self.find_or_create_tag(db, self.rich_text_tag_name, workspace_id)
                     rich_tag.is_system = True
-                    self._ensure_gallery_tag(db, photo.id, rich_tag, source="system")
+                    self.ensure_gallery_tag(db, photo.id, rich_tag, source="system")
 
                 for tag_name in tag_names:
-                    tag = self._find_or_create_tag(db, tag_name, workspace_id)
+                    tag = self.find_or_create_tag(db, tag_name, workspace_id)
                     existing_tag_link = db.scalar(
                         select(GalleryPhotoTag).where(
                             GalleryPhotoTag.gallery_photo_id == photo.id,
                             GalleryPhotoTag.tag_id == tag.id,
                         )
                     )
-                    self._ensure_gallery_tag(db, photo.id, tag, source="manual")
+                    self.ensure_gallery_tag(db, photo.id, tag, source="manual")
                     if existing_tag_link is None:
                         result["tags_added"] += 1
 
@@ -1167,9 +1167,9 @@ class PictureService:
                         )
                     )
                     source = str(person_data.get("source") or ("unknown" if person.is_unknown else "import"))
-                    self._ensure_gallery_person_tag(db, photo.id, person.id, source)
+                    self.ensure_gallery_person_tag(db, photo.id, person.id, source)
                     if not person.is_unknown:
-                        self._apply_person_tags_to_gallery_photo(db, photo.id, person.id)
+                        self.apply_person_tags_to_gallery_photo(db, photo.id, person.id)
                     if existing_person_link is None:
                         result["persons_added"] += 1
                 db.add(photo)

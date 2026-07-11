@@ -1,0 +1,620 @@
+[
+  {
+    "path": "/api/health",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/auth/bootstrap-status",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/auth/bootstrap",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/auth/login",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/auth/register",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/auth/me",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/workspaces",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/workspaces",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/workspaces/{workspace_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/workspaces/{workspace_id}/members",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/workspaces/{workspace_id}/members/{member_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/workspaces/{workspace_id}/members/{member_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/workspaces/{workspace_id}/leave",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/workspaces/{workspace_id}/invitations",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/workspace-invitations",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/workspace-invitations/{invitation_id}/accept",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/workspace-invitations/{invitation_id}/decline",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/workspaces/{workspace_id}/invitations/{invitation_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/workspaces/{workspace_id}/users",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/admin/users",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/persons",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/persons",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/persons/batch-delete",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/persons/export",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/persons/import",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/rename",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/samples",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/tags",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/tags",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/tags/{tag_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/samples",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/samples/{sample_photo_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/samples/{sample_photo_id}/original",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/persons/{person_id}/samples/{sample_photo_id}/thumbnail",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/tags",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/tags",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/tags/{tag_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/tags/{tag_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/import",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/rich-photos/import",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/export",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/import-zip",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/tasks/{task_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/subtitle-service/status",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/subtitle-service/start",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/subtitle-service/stop",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/subtitle-service/logs",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/subtitle-jobs",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/batch-delete",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/original",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/thumbnail",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/persons",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/persons/{person_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/tags",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/tags/{tag_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/rich-text",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/re-recognize",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/re-recognize-unknown",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/video-category-tags",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/video-category-tags",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/video-category-tags/{tag_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/video-category-tags/{tag_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/video-people",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/video-people",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/video-people/{person_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/video-people/{person_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/video-people/{person_id}/avatar",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/upload-sessions",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/upload-sessions/{session_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/upload-sessions/{session_id}/parts/{part_index}",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/videos/upload-sessions/{session_id}/complete",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/upload-sessions/{session_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/videos",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/optimize-playback",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/subtitles",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/subtitles/generate",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/subtitles/{track_id}/cancel",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/subtitles/{track_id}.vtt",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/subtitles/{track_id}.srt",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/subtitles/{track_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/subtitles/{track_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/cover",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/cover",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/category-tags",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/category-tags/{tag_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/people",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/people/{person_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/play",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/stream",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/playback-diagnostics",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/statistics/tags",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/statistics/upload-history",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/statistics/upload-summary",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/statistics/persons",
+    "methods": [
+      "GET"
+    ]
+  }
+]

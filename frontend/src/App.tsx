@@ -24,7 +24,51 @@ import {
 import Home from "./Home";
 import Statistics from "./Statistics";
 import BiliVideoPlayer from "./BiliVideoPlayer";
-import { sortByPinyinName } from "./sort";
+import { routeFromHash, setRoute, type PageKey } from "./routing";
+import { sortByPinyin, sortByPinyinName } from "./sort";
+import {
+  delay,
+  emptyWorkspacePermissions,
+  formatBytes,
+  formatCodecs,
+  formatDate,
+  formatDurationSeconds,
+  formatResolution,
+  getFileExtension,
+  getVideoFormatLabel,
+  isSupportedVideoFile,
+  isTextEditingTarget,
+  isVideoCodecMissing,
+  isVideoMetadataRepairPending,
+  splitCommaList,
+  subtitleAsrStatusLabel,
+  subtitleServiceStatusLabel,
+  subtitleTrackStatusLabel,
+  supportedVideoAccept,
+  supportedVideoFormatLabel,
+  toWorkspacePermissions,
+  videoLongPressDelayMs,
+  videoLongPressRate,
+  videoPartSize,
+  videoPartUploadMaxAttempts,
+  videoPartUploadRetryDelayMs,
+  videoResumeStorageKey as legacyVideoResumeStorageKey,
+  videoSeekLargeSeconds,
+  videoSeekSeconds,
+  videoStatusLabel,
+  videoUploadQueueStorageKey,
+  withImageWidth,
+  workspacePermissionFields
+} from "./utils";
+import {
+  loadStoredVideoUploadQueue,
+  makeVideoQueueItem,
+  saveStoredVideoUploadQueue,
+  videoFileFingerprint,
+  videoQueueStatusLabel,
+  type VideoUploadQueueItem,
+  type VideoUploadQueueStatus
+} from "./videoUploadQueue";
 import {
   addGalleryPhotoPerson,
   addGalleryPhotoTag,
@@ -109,7 +153,7 @@ import {
   type GalleryExportScope,
   type GalleryUploadMetadata,
   type WorkspacePermissionsPayload
-} from "./api";
+} from "./api/index";
 import type {
   AuthSession,
   GalleryPhotoDetail,
@@ -131,8 +175,6 @@ import type {
   WorkspaceMember,
 } from "./types";
 
-type PageKey = "home" | "gallery" | "people" | "upload" | "videos" | "statistics" | "video-play";
-
 type PendingSampleUpload = {
   file: File;
   previewUrl: string;
@@ -148,358 +190,13 @@ type PendingGalleryUpload = {
 
 type UploadMode = "normal" | "rich";
 
-type VideoUploadQueueStatus = "queued" | "uploading" | "completed" | "failed" | "needs_file";
-
-type VideoUploadQueueItem = {
-  id: string;
-  filename: string;
-  size: number;
-  lastModified: number;
-  contentType: string | null;
-  title: string;
-  description: string;
-  categoryTagIds: number[];
-  categoryTagNames: string[];
-  personIds: number[];
-  generateZhSubtitles: boolean;
-  sessionId: string | null;
-  partSize: number;
-  totalParts: number;
-  uploadedParts: number[];
-  progress: number;
-  status: VideoUploadQueueStatus;
-  error: string | null;
-  completedVideoId: number | null;
-};
-
 function isSystemUnknownPerson(person: Person | null | undefined): boolean {
   return Boolean(person?.is_unknown && person.display_name === systemUnknownPersonName);
 }
 
 const galleryPageSize = 20;
 const videoPageSize = 24;
-const videoPartSize = 16 * 1024 * 1024;
-const legacyVideoResumeStorageKey = "pictureshow-video-upload-session";
-const videoUploadQueueStorageKey = "pictureshow-video-upload-queue";
-const videoPartUploadMaxAttempts = 4;
-const videoPartUploadRetryDelayMs = 1200;
-const videoSeekSeconds = 10;
-const videoSeekLargeSeconds = 30;
-const videoLongPressDelayMs = 300;
-const videoLongPressRate = 3;
-const supportedVideoExtensions = [".mp4", ".mkv", ".mov", ".webm"];
-const supportedVideoAccept = "video/mp4,video/x-matroska,video/quicktime,video/webm,.mp4,.mkv,.mov,.webm";
-const supportedVideoFormatLabel = "MP4/MKV/MOV/WEBM";
 const systemUnknownPersonName = "未知人物";
-const workspacePermissionFields: Array<{ key: keyof WorkspacePermissionsPayload; label: string }> = [
-  { key: "can_add_gallery", label: "新增展示图" },
-  { key: "can_delete_gallery", label: "删除展示图" },
-  { key: "can_edit_gallery", label: "修改展示图" },
-  { key: "can_add_samples", label: "新增样本图" },
-  { key: "can_delete_samples", label: "删除样本图" },
-  { key: "can_edit_samples", label: "修改样本图" },
-  { key: "can_add_videos", label: "新增视频" },
-  { key: "can_delete_videos", label: "删除视频" },
-  { key: "can_edit_videos", label: "修改视频" }
-];
-
-const emptyWorkspacePermissions: WorkspacePermissionsPayload = Object.fromEntries(
-  workspacePermissionFields.map((item) => [item.key, false])
-) as WorkspacePermissionsPayload;
-
-function formatDate(value: string | null | undefined): string {
-  if (!value) {
-    return "未记录时间";
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) {
-    return `${value} B`;
-  }
-  if (value < 1024 * 1024) {
-    return `${(value / 1024).toFixed(1)} KB`;
-  }
-  if (value < 1024 * 1024 * 1024) {
-    return `${(value / 1024 / 1024).toFixed(1)} MB`;
-  }
-  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function formatDurationSeconds(value: number | null | undefined): string {
-  if (!value || !Number.isFinite(value)) {
-    return "时长未知";
-  }
-  const total = Math.max(0, Math.floor(value));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  }
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function formatResolution(width: number | null | undefined, height: number | null | undefined): string {
-  if (!width || !height) {
-    return "分辨率未知";
-  }
-  return `${width}x${height}`;
-}
-
-function formatCodecs(
-  videoCodec: string | null | undefined,
-  audioCodec: string | null | undefined,
-  status?: string
-): string {
-  const pending = status === "uploaded" || status === "processing";
-  const video = videoCodec || (pending ? "识别中" : "未知视频编码");
-  const audio = audioCodec || (pending ? "识别中" : "无音频/未知音频");
-  return `${video} / ${audio}`;
-}
-
-function getFileExtension(filename: string): string {
-  const match = filename.toLowerCase().match(/\.[^.]+$/);
-  return match?.[0] ?? "";
-}
-
-function getVideoFormatLabel(filename: string): string {
-  const extension = getFileExtension(filename);
-  return extension ? extension.slice(1).toUpperCase() : "VIDEO";
-}
-
-function isSupportedVideoFile(filename: string): boolean {
-  return supportedVideoExtensions.includes(getFileExtension(filename));
-}
-
-function isVideoCodecMissing(video: VideoDetail): boolean {
-  return video.status === "ready" && (!video.original_video_codec || !video.video_codec);
-}
-
-function isVideoMetadataRepairPending(video: VideoDetail): boolean {
-  return (
-    isVideoCodecMissing(video) ||
-    (
-      video.status === "processing_failed" &&
-      Boolean(video.processing_error?.includes("UNIQUE constraint failed: video_items.filename, video_items.size_bytes"))
-    )
-  );
-}
-
-function isTextEditingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
-}
-
-function videoStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    uploaded: "等待优化",
-    processing: "优化中",
-    ready: "可播放",
-    processing_failed: "优化失败"
-  };
-  return labels[status] ?? status;
-}
-
-function subtitleTrackStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    pending: "排队中",
-    running: "生成中",
-    ready: "可用",
-    failed: "失败",
-    canceled: "已取消"
-  };
-  return labels[status] ?? status;
-}
-
-function subtitleServiceStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    running: "运行中",
-    stopped: "未运行",
-    unhealthy: "异常"
-  };
-  return labels[status] ?? status;
-}
-
-function subtitleAsrStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    not_loaded: "未加载",
-    waiting: "等待中",
-    loading: "加载中",
-    transcribing: "识别中",
-    ready: "已就绪",
-    error: "异常"
-  };
-  return labels[status] ?? status;
-}
-
-function routeFromHash(): PageKey {
-  const hash = window.location.hash.replace(/^#\/?/, "");
-  if (hash.startsWith("video-play/")) {
-    return "video-play";
-  }
-  if (hash === "people" || hash === "upload" || hash === "videos" || hash === "statistics" || hash === "gallery") {
-    return hash;
-  }
-  return "home";
-}
-
-function setRoute(page: PageKey) {
-  window.location.hash = `/${page}`;
-}
-
-function splitCommaList(input: string): string[] {
-  return Array.from(
-    new Set(
-      input
-        .split(/[，,]/)
-        .map((item) => item.trim())
-        .filter(Boolean)
-    )
-  );
-}
-
-function videoFileFingerprint(file: File): string {
-  return `${file.name}::${file.size}::${file.lastModified}`;
-}
-
-function makeVideoQueueItem(
-  file: File,
-  options: {
-    title: string;
-    description: string;
-    categoryTagIds: number[];
-    categoryTagNames: string[];
-    personIds: number[];
-    generateZhSubtitles: boolean;
-  }
-): VideoUploadQueueItem {
-  return {
-    id: videoFileFingerprint(file),
-    filename: file.name,
-    size: file.size,
-    lastModified: file.lastModified,
-    contentType: file.type || null,
-    title: options.title,
-    description: options.description,
-    categoryTagIds: [...options.categoryTagIds],
-    categoryTagNames: [...options.categoryTagNames],
-    personIds: [...options.personIds],
-    generateZhSubtitles: options.generateZhSubtitles,
-    sessionId: null,
-    partSize: videoPartSize,
-    totalParts: Math.max(1, Math.ceil(file.size / videoPartSize)),
-    uploadedParts: [],
-    progress: 0,
-    status: "queued",
-    error: null,
-    completedVideoId: null
-  };
-}
-
-function normalizeVideoQueueItem(source: Partial<VideoUploadQueueItem>): VideoUploadQueueItem | null {
-  if (!source.id || !source.filename || typeof source.size !== "number" || typeof source.lastModified !== "number") {
-    return null;
-  }
-  const uploadedParts = Array.isArray(source.uploadedParts)
-    ? source.uploadedParts.filter((part): part is number => Number.isInteger(part) && part >= 0)
-    : [];
-  const totalParts = typeof source.totalParts === "number" && source.totalParts > 0 ? source.totalParts : Math.max(1, uploadedParts.length);
-  const status: VideoUploadQueueStatus =
-    source.status === "completed"
-      ? "completed"
-      : source.status === "failed"
-        ? "failed"
-        : "needs_file";
-  return {
-    id: source.id,
-    filename: source.filename,
-    size: source.size,
-    lastModified: source.lastModified,
-    contentType: source.contentType ?? null,
-    title: source.title ?? source.filename.replace(/\.[^.]+$/, ""),
-    description: source.description ?? "",
-    categoryTagIds: Array.isArray(source.categoryTagIds) ? source.categoryTagIds.filter((id): id is number => Number.isInteger(id)) : [],
-    categoryTagNames: Array.isArray(source.categoryTagNames) ? source.categoryTagNames.filter((name): name is string => typeof name === "string") : [],
-    personIds: Array.isArray(source.personIds) ? source.personIds.filter((id): id is number => Number.isInteger(id)) : [],
-    generateZhSubtitles: Boolean(source.generateZhSubtitles),
-    sessionId: source.sessionId ?? null,
-    partSize: typeof source.partSize === "number" && source.partSize > 0 ? source.partSize : videoPartSize,
-    totalParts,
-    uploadedParts,
-    progress:
-      typeof source.progress === "number"
-        ? Math.min(100, Math.max(0, source.progress))
-        : Math.round((uploadedParts.length / totalParts) * 100),
-    status,
-    error: status === "needs_file" ? "浏览器刷新已中断上传，请重新选择这个原视频文件后继续。" : source.error ?? null,
-    completedVideoId: typeof source.completedVideoId === "number" ? source.completedVideoId : null
-  };
-}
-
-function loadStoredVideoUploadQueue(): VideoUploadQueueItem[] {
-  try {
-    const raw = window.localStorage.getItem(videoUploadQueueStorageKey);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed
-      .map((item) => normalizeVideoQueueItem(item))
-      .filter((item): item is VideoUploadQueueItem => Boolean(item));
-  } catch {
-    window.localStorage.removeItem(videoUploadQueueStorageKey);
-    return [];
-  }
-}
-
-function saveStoredVideoUploadQueue(queue: VideoUploadQueueItem[]) {
-  const visibleQueue = queue.filter((item) => item.status !== "completed");
-  if (visibleQueue.length === 0) {
-    window.localStorage.removeItem(videoUploadQueueStorageKey);
-    return;
-  }
-  window.localStorage.setItem(videoUploadQueueStorageKey, JSON.stringify(visibleQueue));
-}
-
-function videoQueueStatusLabel(status: VideoUploadQueueStatus): string {
-  const labels: Record<VideoUploadQueueStatus, string> = {
-    queued: "待上传",
-    uploading: "上传中",
-    completed: "已完成",
-    failed: "失败",
-    needs_file: "需重选文件"
-  };
-  return labels[status];
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function withImageWidth(url: string, width: number): string {
-  const next = new URL(url, window.location.origin);
-  next.searchParams.set("width", String(width));
-  return next.pathname + next.search;
-}
-
-function toWorkspacePermissions(source: Record<string, boolean> | WorkspacePermissionsPayload): WorkspacePermissionsPayload {
-  return Object.fromEntries(
-    workspacePermissionFields.map((item) => [item.key, Boolean(source[item.key])])
-  ) as WorkspacePermissionsPayload;
-}
 
 type PermissionEditorProps = {
   value: WorkspacePermissionsPayload;
@@ -852,13 +549,16 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const filteredPersons = useMemo(() => {
     const keyword = personSearch.trim().toLowerCase();
     if (!keyword) {
-      return persons;
+      return sortByPinyin(persons, (person) => person.display_name);
     }
-    return persons.filter((person) => person.display_name.toLowerCase().includes(keyword));
+    return sortByPinyin(
+      persons.filter((person) => person.display_name.toLowerCase().includes(keyword)),
+      (person) => person.display_name
+    );
   }, [personSearch, persons]);
 
   const selectedFilterPersons = useMemo(
-    () => persons.filter((person) => selectedPersonIds.includes(person.id)),
+    () => sortByPinyin(persons.filter((person) => selectedPersonIds.includes(person.id)), (person) => person.display_name),
     [persons, selectedPersonIds]
   );
 
@@ -893,7 +593,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }, [tagSearch, tags]);
 
   const excludedFilterPersons = useMemo(
-    () => persons.filter((person) => excludePersonIds.includes(person.id)),
+    () => sortByPinyin(persons.filter((person) => excludePersonIds.includes(person.id)), (person) => person.display_name),
     [persons, excludePersonIds]
   );
 
@@ -903,7 +603,11 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   );
 
   const availableExcludePersons = useMemo(
-    () => persons.filter((person) => !selectedPersonIds.includes(person.id) && !excludePersonIds.includes(person.id)),
+    () =>
+      sortByPinyin(
+        persons.filter((person) => !selectedPersonIds.includes(person.id) && !excludePersonIds.includes(person.id)),
+        (person) => person.display_name
+      ),
     [persons, selectedPersonIds, excludePersonIds]
   );
 
@@ -925,9 +629,12 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const filteredPeopleInLibrary = useMemo(() => {
     const keyword = peopleSearch.trim().toLowerCase();
     if (!keyword) {
-      return persons;
+      return sortByPinyin(persons, (person) => person.display_name);
     }
-    return persons.filter((person) => person.display_name.toLowerCase().includes(keyword));
+    return sortByPinyin(
+      persons.filter((person) => person.display_name.toLowerCase().includes(keyword)),
+      (person) => person.display_name
+    );
   }, [peopleSearch, persons]);
 
   const unknownPersonCount = useMemo(() => persons.filter((person) => person.is_unknown).length, [persons]);
