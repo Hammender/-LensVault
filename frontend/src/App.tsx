@@ -14,6 +14,7 @@ import {
   LogOut,
   RotateCcw,
   Search,
+  ScanSearch,
   Settings,
   Trash2,
   UploadCloud,
@@ -22,10 +23,15 @@ import {
 } from "lucide-react";
 
 import Home from "./Home";
+import PhotoLightbox from "./PhotoLightbox";
+import SearchableSelect from "./SearchableSelect";
 import Statistics from "./Statistics";
+import SimilarityReview from "./SimilarityReview";
 import BiliVideoPlayer from "./BiliVideoPlayer";
+import { availablePhotoPersons, filterPersonMatches, resolveExistingPerson } from "./personPicker";
 import { routeFromHash, setRoute, type PageKey } from "./routing";
 import { sortByPinyin, sortByPinyinName } from "./sort";
+import { filterTagMatches, resolveExistingTag } from "./tagPicker";
 import {
   delay,
   emptyWorkspacePermissions,
@@ -455,7 +461,11 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const [showExcludeTags, setShowExcludeTags] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<GalleryPhotoDetail | null>(null);
   const [manualPersonId, setManualPersonId] = useState("");
+  const [manualPersonSearch, setManualPersonSearch] = useState("");
+  const [manualPersonNotice, setManualPersonNotice] = useState<string | null>(null);
   const [manualTagId, setManualTagId] = useState("");
+  const [manualTagSearch, setManualTagSearch] = useState("");
+  const [manualTagNotice, setManualTagNotice] = useState<string | null>(null);
   const [manualTagName, setManualTagName] = useState("");
   const [richTextDraft, setRichTextDraft] = useState("");
   const [lightboxRichTextDraft, setLightboxRichTextDraft] = useState("");
@@ -1115,7 +1125,11 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       setSelectedPhoto(detail);
       setRichTextDraft(detail.rich_text ?? "");
       setManualPersonId("");
+      setManualPersonSearch("");
+      setManualPersonNotice(null);
       setManualTagId("");
+      setManualTagSearch("");
+      setManualTagNotice(null);
       setManualTagName("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载图片详情失败。");
@@ -2298,15 +2312,27 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
   async function handleAddPhotoPerson() {
-    if (!selectedPhoto || !manualPersonId) {
+    if (!selectedPhoto || !manualPersonSearch.trim()) {
+      return;
+    }
+    const person = resolveExistingPerson(availablePersonsForPhoto, manualPersonSearch, manualPersonId);
+    if (!person) {
+      const matches = filterPersonMatches(availablePersonsForPhoto, manualPersonSearch);
+      setManualPersonNotice(
+        matches.length > 0
+          ? "请从匹配结果中选择一个具体人物。"
+          : `人物“${manualPersonSearch.trim()}”不存在，请先在人物样本页创建人物。`
+      );
       return;
     }
     setBusy(true);
     setError(null);
+    setManualPersonNotice(null);
     try {
-      const result = await addGalleryPhotoPerson(selectedPhoto.id, Number(manualPersonId));
+      const result = await addGalleryPhotoPerson(selectedPhoto.id, person.id);
       setSelectedPhoto(result);
       setManualPersonId("");
+      setManualPersonSearch("");
       await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "添加人物标签失败。");
@@ -2373,19 +2399,46 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     }
   }
 
-  async function handleAddPhotoTag() {
-    if (!selectedPhoto || (!manualTagId && !manualTagName.trim())) {
+  async function handleAddExistingPhotoTag() {
+    if (!selectedPhoto || !manualTagSearch.trim()) {
+      return;
+    }
+    const tag = resolveExistingTag(availableTagsForPhoto, manualTagSearch, manualTagId);
+    if (!tag) {
+      const matches = filterTagMatches(availableTagsForPhoto, manualTagSearch);
+      setManualTagNotice(
+        matches.length > 0
+          ? "请从匹配结果中选择一个具体标签。"
+          : `标签“${manualTagSearch.trim()}”不存在，请先在下方创建标签。`
+      );
       return;
     }
     setBusy(true);
     setError(null);
+    setManualTagNotice(null);
     try {
-      const detail = await addGalleryPhotoTag(
-        selectedPhoto.id,
-        manualTagId ? { tagId: Number(manualTagId) } : { name: manualTagName.trim() }
-      );
+      const detail = await addGalleryPhotoTag(selectedPhoto.id, { tagId: tag.id });
       setSelectedPhoto(detail);
       setManualTagId("");
+      setManualTagSearch("");
+      await Promise.all([refreshTags(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "添加标签失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateAndAddPhotoTag() {
+    if (!selectedPhoto || !manualTagName.trim()) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setManualTagNotice(null);
+    try {
+      const detail = await addGalleryPhotoTag(selectedPhoto.id, { name: manualTagName.trim() });
+      setSelectedPhoto(detail);
       setManualTagName("");
       await Promise.all([refreshTags(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
     } catch (cause) {
@@ -2543,18 +2596,16 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     setJumpPageInput("");
   }
 
-  const availablePersonsForPhoto = sortByPinyin(
-    selectedPhoto
-      ? persons.filter((person) => !person.is_unknown && !selectedPhoto.persons.some((tag) => tag.person_id === person.id))
-      : persons.filter((person) => !person.is_unknown),
-    (person) => person.display_name
-  );
+  const availablePersonsForPhoto = availablePhotoPersons(persons, selectedPhoto?.persons ?? []);
+  const matchingPersonsForPhoto = filterPersonMatches(availablePersonsForPhoto, manualPersonSearch);
 
   const selectedPhotoTags = selectedPhoto ? sortByPinyinName(selectedPhoto.tags) : [];
 
   const availableTagsForPhoto = selectedPhoto
     ? sortByPinyinName(tags.filter((tag) => !tag.is_system && !selectedPhoto.tags.some((item) => item.id === tag.id)))
     : sortByPinyinName(tags.filter((tag) => !tag.is_system));
+
+  const matchingTagsForPhoto = filterTagMatches(availableTagsForPhoto, manualTagSearch);
 
   const lightboxIndex = lightboxPhotoId === null ? -1 : galleryPhotos.findIndex((photo) => photo.id === lightboxPhotoId);
   const lightboxPhoto = lightboxIndex >= 0 ? galleryPhotos[lightboxIndex] : null;
@@ -2571,6 +2622,47 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
   const canGoPrev = lightboxIndex > 0 || hasPrevPage;
   const canGoNext = lightboxIndex >= 0 && (!isLastOfPage || hasNextPage);
+
+  const lightboxMeta = lightboxPhoto ? (
+    <>
+      <div className="lightbox-meta-head">
+        <span>#{lightboxPhoto.id}</span>
+        <strong>{lightboxIndex >= 0 ? `${galleryOffset + lightboxIndex + 1} / ${galleryTotal}` : "图片信息"}</strong>
+      </div>
+      <div className="lightbox-meta-section">
+        <span>人物标签</span>
+        <div className="lightbox-meta-chips">
+          {lightboxPhoto.persons.length > 0 ? (
+            lightboxPhoto.persons.map((person) => (
+              <small key={`rail-p-${lightboxPhoto.id}-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
+                {person.person_name}
+              </small>
+            ))
+          ) : (
+            <small className="lightbox-meta-empty">无人物标签</small>
+          )}
+        </div>
+      </div>
+      <div className="lightbox-meta-section">
+        <span>普通标签</span>
+        <div className="lightbox-meta-chips">
+          {lightboxPhoto.tags.length > 0 ? (
+            sortByPinyinName(lightboxPhoto.tags).map((tag) => (
+              <small key={`rail-t-${lightboxPhoto.id}-${tag.id}`} className="pill muted">
+                #{tag.name}
+              </small>
+            ))
+          ) : (
+            <small className="lightbox-meta-empty">无普通标签</small>
+          )}
+        </div>
+      </div>
+      <button className="lightbox-detail-button" disabled={busy} onClick={() => void openLightboxPhotoDetail()}>
+        <Info size={16} aria-hidden="true" />
+        查看详情
+      </button>
+    </>
+  ) : null;
 
   async function goPrevLightbox() {
     if (lightboxIndex > 0) {
@@ -2617,26 +2709,6 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       }
     }
   }
-
-  useEffect(() => {
-    if (!lightboxPhoto) {
-      return undefined;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (busy) return;
-      if (lightboxEditMode) return;
-      if (event.key === "Escape") {
-        closeGalleryLightbox();
-      } else if (event.key === "ArrowLeft") {
-        void goPrevLightbox();
-      } else if (event.key === "ArrowRight") {
-        void goNextLightbox();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [lightboxPhoto, lightboxIndex, canGoPrev, canGoNext, hasPrevPage, hasNextPage, galleryOffset, busy, lightboxEditMode]);
-
 
   const GalleryPageComponent = () => {
     return (
@@ -3131,17 +3203,34 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                       </span>
                     ))}
                   </div>
-                  <div className="inline-editor inline-editor-triple">
-                    <select value={manualPersonId} onChange={(event) => setManualPersonId(event.target.value)}>
-                      <option value="">选择人物添加到当前图片</option>
-                      {availablePersonsForPhoto.map((person) => (
-                        <option key={person.id} value={person.id}>
-                          {person.display_name}
-                        </option>
-                      ))}
-                    </select>
-                    <button disabled={busy || !manualPersonId} onClick={() => void handleAddPhotoPerson()}>添加人物</button>
+                  <div className="searchable-picker-row">
+                    <SearchableSelect
+                      id="photo-person-picker"
+                      value={manualPersonId}
+                      query={manualPersonSearch}
+                      options={matchingPersonsForPhoto.map((person) => ({
+                        value: String(person.id),
+                        label: person.display_name,
+                        meta: `${person.gallery_photo_count} 张图库图片`
+                      }))}
+                      placeholder="搜索人物名称、拼音或首字母"
+                      emptyText="没有匹配的人物"
+                      disabled={busy}
+                      onQueryChange={(query) => {
+                        setManualPersonSearch(query);
+                        setManualPersonId("");
+                        setManualPersonNotice(null);
+                      }}
+                      onSelect={(option) => {
+                        setManualPersonId(option.value);
+                        setManualPersonSearch(option.label);
+                        setManualPersonNotice(null);
+                      }}
+                      onEnter={() => void handleAddPhotoPerson()}
+                    />
+                    <button disabled={busy || !manualPersonSearch.trim()} onClick={() => void handleAddPhotoPerson()}>添加人物</button>
                   </div>
+                  {manualPersonNotice && <p className="searchable-picker-notice" role="alert">{manualPersonNotice}</p>}
                   <p className="tip">
                     添加人物只修正当前图片标签；标签添加后，可在人物名称旁单独加入样本库或撤销。
                   </p>
@@ -3163,26 +3252,43 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                     ))}
                   </div>
                   <div className="stack-editor">
-                    <div className="inline-editor">
-                      <select value={manualTagId} onChange={(event) => setManualTagId(event.target.value)}>
-                        <option value="">选择已有标签</option>
-                        {availableTagsForPhoto.map((tag) => (
-                          <option key={tag.id} value={tag.id}>
-                            #{tag.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button disabled={busy || !manualTagId} onClick={() => void handleAddPhotoTag()}>
+                    <div className="searchable-picker-row">
+                      <SearchableSelect
+                        id="photo-tag-picker"
+                        value={manualTagId}
+                        query={manualTagSearch}
+                        options={matchingTagsForPhoto.map((tag) => ({
+                          value: String(tag.id),
+                          label: `#${tag.name}`
+                        }))}
+                        placeholder="搜索已有标签"
+                        emptyText="没有匹配的已有标签"
+                        disabled={busy}
+                        onQueryChange={(query) => {
+                          setManualTagSearch(query.replace(/^#/, ""));
+                          setManualTagId("");
+                          setManualTagNotice(null);
+                        }}
+                        onSelect={(option) => {
+                          const tag = availableTagsForPhoto.find((item) => String(item.id) === option.value);
+                          setManualTagId(option.value);
+                          setManualTagSearch(tag?.name ?? option.label.replace(/^#/, ""));
+                          setManualTagNotice(null);
+                        }}
+                        onEnter={() => void handleAddExistingPhotoTag()}
+                      />
+                      <button disabled={busy || !manualTagSearch.trim()} onClick={() => void handleAddExistingPhotoTag()}>
                         添加已有标签
                       </button>
                     </div>
+                    {manualTagNotice && <p className="searchable-picker-notice" role="alert">{manualTagNotice}</p>}
                     <div className="inline-editor">
                       <input
                         value={manualTagName}
                         onChange={(event) => setManualTagName(event.target.value)}
                         placeholder="输入新标签名称"
                       />
-                      <button disabled={busy || !manualTagName.trim()} onClick={() => void handleAddPhotoTag()}>
+                      <button disabled={busy || !manualTagName.trim()} onClick={() => void handleCreateAndAddPhotoTag()}>
                         新建并添加
                       </button>
                     </div>
@@ -4091,6 +4197,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const navItems = [
     { key: "home", label: "首页", Icon: HomeIcon },
     { key: "gallery", label: "展示图库", Icon: GalleryHorizontalEnd },
+    { key: "similarity", label: "相似整理", Icon: ScanSearch },
     { key: "people", label: "人物样本", Icon: UsersRound },
     { key: "upload", label: "上传", Icon: UploadCloud },
     { key: "videos", label: "视频库", Icon: Clapperboard },
@@ -4345,6 +4452,14 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       {page === "home" && <Home />}
 
       {page === "gallery" && GalleryPageComponent()}
+
+      {page === "similarity" && (
+        <SimilarityReview
+          persons={persons}
+          canEdit={authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_edit_gallery)}
+          canDelete={authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_delete_gallery)}
+        />
+      )}
 
       {page === "people" && PeoplePageComponent()}
 
@@ -4610,20 +4725,19 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       )}
 
       {lightboxPhoto && (
-        <div className="lightbox-backdrop" onClick={() => closeGalleryLightbox()}>
-          <div className={lightboxPhoto.is_rich_text ? "lightbox-shell rich-lightbox" : "lightbox-shell"} onClick={(event) => event.stopPropagation()}>
-            <button className="lightbox-close" onClick={() => closeGalleryLightbox()}>
-              关闭
-            </button>
-            <button className="lightbox-arrow left" disabled={!canGoPrev || busy} onClick={() => void goPrevLightbox()}>
-              {isFirstOfPage && hasPrevPage ? (
-                <>
-                  ‹ <span>上一页</span>
-                </>
-              ) : (
-                "‹"
-              )}
-            </button>
+        <PhotoLightbox
+          shellClassName={lightboxPhoto.is_rich_text ? "rich-lightbox" : ""}
+          meta={lightboxMeta}
+          busy={busy}
+          keyboardEnabled={!lightboxEditMode}
+          canGoPrevious={canGoPrev}
+          canGoNext={canGoNext}
+          previousLabel={isFirstOfPage && hasPrevPage ? "上一页" : undefined}
+          nextLabel={isLastOfPage && hasNextPage ? "下一页" : undefined}
+          onClose={closeGalleryLightbox}
+          onPrevious={goPrevLightbox}
+          onNext={goNextLightbox}
+        >
             {lightboxPhoto.is_rich_text ? (
               <div className="rich-lightbox-layout">
                 <div className="rich-lightbox-image-wrap">
@@ -4684,55 +4798,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
             ) : (
               <img className="lightbox-image" src={lightboxPhoto.original_url} alt="大图预览" />
             )}
-            <button className="lightbox-arrow right" disabled={!canGoNext || busy} onClick={() => void goNextLightbox()}>
-              {isLastOfPage && hasNextPage ? (
-                <>
-                  <span>下一页</span> ›
-                </>
-              ) : (
-                "›"
-              )}
-            </button>
-          </div>
-          <aside className="lightbox-meta-rail" onClick={(event) => event.stopPropagation()}>
-            <div className="lightbox-meta-head">
-              <span>#{lightboxPhoto.id}</span>
-              <strong>{lightboxIndex >= 0 ? `${galleryOffset + lightboxIndex + 1} / ${galleryTotal}` : "图片信息"}</strong>
-            </div>
-            <div className="lightbox-meta-section">
-              <span>人物标签</span>
-              <div className="lightbox-meta-chips">
-                {lightboxPhoto.persons.length > 0 ? (
-                  lightboxPhoto.persons.map((person) => (
-                    <small key={`rail-p-${lightboxPhoto.id}-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
-                      {person.person_name}
-                    </small>
-                  ))
-                ) : (
-                  <small className="lightbox-meta-empty">无人物标签</small>
-                )}
-              </div>
-            </div>
-            <div className="lightbox-meta-section">
-              <span>普通标签</span>
-              <div className="lightbox-meta-chips">
-                {lightboxPhoto.tags.length > 0 ? (
-                  sortByPinyinName(lightboxPhoto.tags).map((tag) => (
-                    <small key={`rail-t-${lightboxPhoto.id}-${tag.id}`} className="pill muted">
-                      #{tag.name}
-                    </small>
-                  ))
-                ) : (
-                  <small className="lightbox-meta-empty">无普通标签</small>
-                )}
-              </div>
-            </div>
-            <button className="lightbox-detail-button" disabled={busy} onClick={() => void openLightboxPhotoDetail()}>
-              <Info size={16} aria-hidden="true" />
-              查看详情
-            </button>
-          </aside>
-        </div>
+        </PhotoLightbox>
       )}
 
       {recognitionNotice && (

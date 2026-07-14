@@ -80,6 +80,9 @@ def enforce_request_permission(request: Request, current: CurrentContext) -> Non
     if path in {"/api/gallery/photos/import", "/api/gallery/rich-photos/import", "/api/gallery/photos/import-zip"}:
         require_permission(current, "can_add_gallery")
         return
+    if path == "/api/gallery/similarity-scans" and request.method == "POST":
+        require_permission(current, "can_edit_gallery")
+        return
     if path == "/api/gallery/photos/batch-delete" or (path.startswith("/api/gallery/photos") and request.method == "DELETE"):
         require_permission(current, "can_delete_gallery")
         return

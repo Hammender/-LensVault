@@ -22,8 +22,8 @@ def _dotenv_keys(path: Path) -> set[str]:
 
 class Settings(BaseSettings):
     app_name: str = "PictureShow"
-    database_url: str = "sqlite:///E:/dockerVolums/picture-show/sqllite/app.db"
-    data_dir: Path = Path("E:/dockerVolums/picture-show/sqllite")
+    database_url: str
+    data_dir: Path
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     auth_secret_key: str = "pictureshow-local-dev-secret-change-me"
     access_token_expire_minutes: int = 7 * 24 * 60
@@ -78,6 +78,15 @@ class Settings(BaseSettings):
     qdrant_prefer_grpc: bool = True
     qdrant_known_collection: str = "pictureshow_known_faces"
     qdrant_vector_dimension: int = 512
+
+    gallery_similarity_model_path: Path = Path("E:/AI-MODELS/vision/dinov2-base")
+    gallery_similarity_model_version: str = "dinov2-base-v1"
+    gallery_similarity_device: str = "cuda"
+    gallery_similarity_batch_size: int = 32
+    gallery_similarity_vector_dimension: int = 768
+    gallery_similarity_qdrant_collection: str = "pictureshow_gallery_similarity_dinov2_base_v1"
+    gallery_similarity_near_threshold: float = 0.92
+    gallery_similarity_scene_threshold: float = 0.88
 
     face_model_name: str = "buffalo_l"
     face_embedding_version: str = "buffalo_l-v2-exif"

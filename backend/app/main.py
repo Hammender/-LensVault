@@ -52,6 +52,8 @@ from app.models import (
     GalleryPhoto,
     GalleryPhotoPersonTag,
     GalleryPhotoTag,
+    GallerySimilarityGroup,
+    GallerySimilarityScan,
     Person,
     PersonTag,
     SamplePhoto,
@@ -80,8 +82,14 @@ from app.schemas import (
     GalleryPhotoRichTextUpdate,
     GalleryPhotoPersonTagCreate,
     GalleryPhotoTagCreate,
+    GallerySimilarityGroupRead,
+    GallerySimilarityMemberRead,
+    GallerySimilarityScanOverview,
+    GallerySimilarityScanCreate,
+    GallerySimilarityScanRead,
     LoginRequest,
     PaginatedGalleryPhotos,
+    PaginatedGallerySimilarityGroups,
     PersonBatchDeleteRequest,
     PersonCreate,
     PersonRead,
@@ -129,6 +137,7 @@ from app.services.auth import create_access_token, hash_password, verify_passwor
 from app.services.container import build_service_container
 from app.services.face_index import build_face_index_health
 from app.services.tasks import create_task, update_task
+from app.services.similarity import load_similarity_scan_overview, mark_similarity_scans_stale
 
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -149,6 +158,7 @@ ocr_service = services.ocr
 picture_service = services.pictures
 video_service = services.videos
 subtitle_service = services.subtitles
+similarity_service = services.similarity
 app = create_app(
     settings=settings,
     services=services,
@@ -390,6 +400,9 @@ def _process_gallery_import_task(
             f"导入完成：识别 {total_known} 个已知人物，标记 {total_unknown_faces} 张未知人脸，"
             f"重复跳过 {total_duplicated} 张"
         )
+        if total - total_duplicated > 0:
+            mark_similarity_scans_stale(db, workspace_id)
+            db.commit()
         update_task(db, task_id, status="completed", progress=1.0, message=final_message)
         # 记录上传历史
         try:
@@ -501,6 +514,9 @@ def _process_gallery_zip_import_task(task_id: str, zip_bytes: bytes, workspace_i
             )
 
         result = picture_service.import_gallery_from_zip(db, zip_bytes, workspace_id, progress_callback)
+        if result["added_photos"] or result["persons_added"]:
+            mark_similarity_scans_stale(db, workspace_id)
+            db.commit()
         message = (
             f"导入完成：新增 {result['added_photos']} 张，"
             f"更新 {result['updated_existing']} 张已有图，"
@@ -527,6 +543,51 @@ def _process_gallery_zip_import_task(task_id: str, zip_bytes: bytes, workspace_i
     finally:
         db.close()
         logger.debug("Gallery zip import task db session closed task_id=%s", task_id)
+
+
+def _process_gallery_similarity_scan_task(scan_id: str, task_id: str) -> None:
+    db = SessionLocal()
+    try:
+        scan = db.get(GallerySimilarityScan, scan_id)
+        if scan is None:
+            raise RuntimeError("相似图片扫描记录不存在")
+        scan.status = "running"
+        db.add(scan)
+        db.commit()
+        update_task(db, task_id, status="running", progress=0.02, message="正在准备相似图片扫描")
+
+        def progress_callback(progress: float, message: str) -> None:
+            update_task(db, task_id, status="running", progress=min(progress, 0.99), message=message)
+
+        similarity_service.run_scan(db, scan, progress_callback)
+        scan.status = "completed"
+        scan.is_stale = False
+        scan.completed_at = datetime.utcnow()
+        db.add(scan)
+        db.commit()
+        update_task(
+            db,
+            task_id,
+            status="completed",
+            progress=1.0,
+            message=f"扫描完成：比较 {scan.candidate_pair_count} 对图片，生成 {scan.group_count} 个相似组",
+        )
+    except Exception as exc:
+        logger.exception("Gallery similarity scan failed scan_id=%s task_id=%s", scan_id, task_id)
+        db.rollback()
+        user_message = "相似图片扫描失败，请稍后重新扫描；详细原因已记录。"
+        scan = db.get(GallerySimilarityScan, scan_id)
+        if scan is not None:
+            scan.status = "failed"
+            scan.error_message = user_message
+            db.add(scan)
+            db.commit()
+        try:
+            update_task(db, task_id, status="failed", message=user_message)
+        except Exception:
+            logger.exception("Failed to update gallery similarity task task_id=%s", task_id)
+    finally:
+        db.close()
 
 
 @app.get("/api/health")
@@ -1429,6 +1490,171 @@ def list_subtitle_jobs(
     return jobs
 
 
+def _gallery_similarity_scan_read(db: Session, scan: GallerySimilarityScan) -> GallerySimilarityScanRead:
+    task = db.get(Task, scan.task_id) if scan.task_id else None
+    return GallerySimilarityScanRead(
+        id=scan.id,
+        task_id=scan.task_id,
+        person_id=scan.person_id,
+        include_cross_type=scan.include_cross_type,
+        status=scan.status,
+        is_stale=scan.is_stale,
+        feature_version=scan.feature_version,
+        photo_count=scan.photo_count,
+        candidate_pair_count=scan.candidate_pair_count,
+        group_count=scan.group_count,
+        error_message=scan.error_message,
+        created_at=scan.created_at,
+        completed_at=scan.completed_at,
+        task=TaskRead.model_validate(task) if task is not None else None,
+    )
+
+
+def _gallery_similarity_group_read(db: Session, group: GallerySimilarityGroup) -> GallerySimilarityGroupRead:
+    person_ids = [link.person_id for link in group.people]
+    people = db.scalars(select(Person).where(Person.id.in_(person_ids)).order_by(Person.display_name.asc())).all()
+    members: list[GallerySimilarityMemberRead] = []
+    for member in sorted(group.members, key=lambda item: (-item.quality_score, item.gallery_photo_id)):
+        photo = member.gallery_photo
+        for link in photo.person_tags:
+            link.person
+        for link in photo.tags:
+            link.tag
+        members.append(
+            GallerySimilarityMemberRead(
+                photo=_gallery_photo_to_list_item(photo),
+                score_to_representative=member.score_to_representative,
+                quality_score=member.quality_score,
+                recommended_keep=member.recommended_keep,
+            )
+        )
+    return GallerySimilarityGroupRead(
+        id=group.id,
+        ordinal=group.ordinal,
+        tier=group.tier,
+        min_score=group.min_score,
+        average_score=group.average_score,
+        people=[_person_to_read(db, person) for person in people],
+        members=members,
+    )
+
+
+@app.post("/api/gallery/similarity-scans", response_model=GallerySimilarityScanRead)
+def create_gallery_similarity_scan(
+    payload: GallerySimilarityScanCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GallerySimilarityScanRead:
+    if payload.person_id is not None:
+        _get_workspace_object(db, Person, payload.person_id, current.workspace_id, "Person")
+    running = db.scalar(
+        select(GallerySimilarityScan).where(
+            GallerySimilarityScan.workspace_id == current.workspace_id,
+            GallerySimilarityScan.status.in_(("pending", "running")),
+        )
+    )
+    if running is not None:
+        raise HTTPException(status_code=409, detail="当前 workspace 已有相似图片扫描正在运行")
+    task = create_task(db, "gallery_similarity_scan", "相似图片扫描已排队", current.workspace_id)
+    scan = GallerySimilarityScan(
+        id=task.id,
+        workspace_id=current.workspace_id,
+        task_id=task.id,
+        person_id=payload.person_id,
+        include_cross_type=payload.include_cross_type,
+        status="pending",
+        feature_version=settings.gallery_similarity_model_version,
+    )
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+    background_tasks.add_task(_process_gallery_similarity_scan_task, scan.id, task.id)
+    return _gallery_similarity_scan_read(db, scan)
+
+
+@app.get("/api/gallery/similarity-scans/latest", response_model=GallerySimilarityScanRead | None)
+def get_latest_gallery_similarity_scan(
+    person_id: int | None = None,
+    include_cross_type: bool = False,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GallerySimilarityScanRead | None:
+    query = select(GallerySimilarityScan).where(
+        GallerySimilarityScan.workspace_id == current.workspace_id,
+        GallerySimilarityScan.include_cross_type == include_cross_type,
+    )
+    query = query.where(
+        GallerySimilarityScan.person_id.is_(None)
+        if person_id is None
+        else GallerySimilarityScan.person_id == person_id
+    )
+    scan = db.scalar(query.order_by(GallerySimilarityScan.created_at.desc()).limit(1))
+    return _gallery_similarity_scan_read(db, scan) if scan is not None else None
+
+
+@app.get("/api/gallery/similarity-scans/overview", response_model=GallerySimilarityScanOverview)
+def get_gallery_similarity_scan_overview(
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GallerySimilarityScanOverview:
+    active, results = load_similarity_scan_overview(db, current.workspace_id)
+    return GallerySimilarityScanOverview(
+        active=_gallery_similarity_scan_read(db, active) if active is not None else None,
+        results=[_gallery_similarity_scan_read(db, scan) for scan in results],
+    )
+
+
+@app.get(
+    "/api/gallery/similarity-scans/{scan_id}/groups",
+    response_model=PaginatedGallerySimilarityGroups,
+)
+def list_gallery_similarity_groups(
+    scan_id: str,
+    tier: str = Query(default="near_duplicate", pattern="^(near_duplicate|same_scene)$"),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> PaginatedGallerySimilarityGroups:
+    scan = db.get(GallerySimilarityScan, scan_id)
+    if scan is None or scan.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Similarity scan not found")
+    condition = (GallerySimilarityGroup.scan_id == scan_id, GallerySimilarityGroup.tier == tier)
+    total = db.scalar(select(func.count(GallerySimilarityGroup.id)).where(*condition)) or 0
+    groups = db.scalars(
+        select(GallerySimilarityGroup)
+        .where(*condition)
+        .order_by(GallerySimilarityGroup.ordinal.asc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    items = [_gallery_similarity_group_read(db, group) for group in groups]
+    return PaginatedGallerySimilarityGroups(items=items, total=total, offset=offset, limit=limit)
+
+
+@app.get(
+    "/api/gallery/similarity-scans/{scan_id}/groups/{group_id}",
+    response_model=GallerySimilarityGroupRead | None,
+)
+def get_gallery_similarity_group(
+    scan_id: str,
+    group_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GallerySimilarityGroupRead | None:
+    scan = db.get(GallerySimilarityScan, scan_id)
+    if scan is None or scan.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Similarity scan not found")
+    group = db.scalar(
+        select(GallerySimilarityGroup).where(
+            GallerySimilarityGroup.id == group_id,
+            GallerySimilarityGroup.scan_id == scan_id,
+        )
+    )
+    return _gallery_similarity_group_read(db, group) if group is not None else None
+
+
 @app.get("/api/gallery/photos", response_model=PaginatedGalleryPhotos)
 def list_gallery_photos(
     person_ids: list[int] = Query(default=[]),
@@ -1550,6 +1776,7 @@ def add_gallery_photo_person(
     if len(faces) == 1:
         picture_service.move_gallery_face_to_known(db, faces[0], person)
 
+    mark_similarity_scans_stale(db, current.workspace_id, {person.id})
     db.commit()
     return get_gallery_photo(photo_id, db, current)
 
@@ -1634,6 +1861,7 @@ def delete_gallery_photo_person(
             face.vector_collection = None
             db.add(face)
         db.delete(link)
+        mark_similarity_scans_stale(db, current.workspace_id, {person.id})
         db.commit()
         return get_gallery_photo(photo_id, db, current)
     
@@ -1669,6 +1897,7 @@ def delete_gallery_photo_person(
         if still_required == 0:
             db.delete(gallery_tag)
     
+    mark_similarity_scans_stale(db, current.workspace_id, {person.id})
     db.commit()
     return get_gallery_photo(photo_id, db, current)
 

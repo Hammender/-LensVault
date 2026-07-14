@@ -105,6 +105,81 @@ class QdrantVectorStore:
                 f"expected size={self.settings.qdrant_vector_dimension} distance=Cosine"
             )
 
+    def ensure_gallery_similarity_collection(self) -> None:
+        collection_name = self.settings.gallery_similarity_qdrant_collection
+        dimension = self.settings.gallery_similarity_vector_dimension
+        client = self._get_client()
+        if not client.collection_exists(collection_name=collection_name):
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
+            )
+            return
+        info = client.get_collection(collection_name=collection_name)
+        vector_size, distance = self._vector_schema(info)
+        if vector_size != dimension or distance != "Cosine":
+            raise RuntimeError(
+                "Qdrant gallery similarity collection schema mismatch: "
+                f"collection={collection_name} size={vector_size} distance={distance}; "
+                f"expected size={dimension} distance=Cosine"
+            )
+
+    @staticmethod
+    def gallery_similarity_point_id(workspace_id: int | None, photo_id: int, feature_version: str) -> str:
+        return str(uuid5(NAMESPACE_URL, f"pictureshow:{workspace_id}:{photo_id}:{feature_version}:gallery-similarity"))
+
+    def upsert_gallery_similarity_vector(
+        self,
+        *,
+        workspace_id: int | None,
+        photo_id: int,
+        sha256: str,
+        is_rich_text: bool,
+        feature_version: str,
+        vector: np.ndarray,
+    ) -> str:
+        self.ensure_gallery_similarity_collection()
+        point_id = self.gallery_similarity_point_id(workspace_id, photo_id, feature_version)
+        self._get_client().upsert(
+            collection_name=self.settings.gallery_similarity_qdrant_collection,
+            points=[
+                models.PointStruct(
+                    id=point_id,
+                    vector=np.asarray(vector, dtype=np.float32).tolist(),
+                    payload={
+                        "workspace_id": workspace_id,
+                        "gallery_photo_id": photo_id,
+                        "sha256": sha256,
+                        "is_rich_text": is_rich_text,
+                        "feature_version": feature_version,
+                    },
+                )
+            ],
+        )
+        return point_id
+
+    def get_gallery_similarity_vectors(self, point_ids: list[str]) -> dict[str, np.ndarray]:
+        if not point_ids:
+            return {}
+        points = self._get_client().retrieve(
+            collection_name=self.settings.gallery_similarity_qdrant_collection,
+            ids=point_ids,
+            with_vectors=True,
+            with_payload=False,
+        )
+        return {
+            str(point.id): np.asarray(point.vector, dtype=np.float32)
+            for point in points
+            if point.vector is not None
+        }
+
+    def delete_gallery_similarity_vectors(self, point_ids: list[str]) -> None:
+        if not point_ids:
+            return
+        if not self.collection_exists(self.settings.gallery_similarity_qdrant_collection):
+            return
+        self.delete_faces(self.settings.gallery_similarity_qdrant_collection, point_ids)
+
     def recreate_collection(self, collection_name: str) -> None:
         client = self._get_client()
         if client.collection_exists(collection_name=collection_name):

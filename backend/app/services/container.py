@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from app.services.ocr import OcrService
     from app.services.qdrant import QdrantVectorStore
     from app.services.storage import MinioStorage
+    from app.services.similarity import GallerySimilarityScanner
     from app.services.subtitles import SubtitleService
     from app.services.videos import VideoService
 
@@ -24,6 +25,7 @@ class ServiceContainer:
     pictures: PictureService
     videos: VideoService
     subtitles: SubtitleService
+    similarity: GallerySimilarityScanner
 
 
 def build_service_container(settings: Settings) -> ServiceContainer:
@@ -32,6 +34,7 @@ def build_service_container(settings: Settings) -> ServiceContainer:
     from app.services.ocr import OcrService
     from app.services.qdrant import QdrantVectorStore
     from app.services.storage import MinioStorage
+    from app.services.similarity import GallerySimilarityScanner
     from app.services.subtitles import SubtitleService
     from app.services.videos import VideoService
 
@@ -47,4 +50,5 @@ def build_service_container(settings: Settings) -> ServiceContainer:
         pictures=PictureService(storage, face, vector_store, ocr, settings),
         videos=VideoService(storage),
         subtitles=SubtitleService(storage, settings),
+        similarity=GallerySimilarityScanner(storage, vector_store, settings),
     )

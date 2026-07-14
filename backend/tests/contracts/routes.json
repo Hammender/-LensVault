@@ -306,6 +306,30 @@
     ]
   },
   {
+    "path": "/api/gallery/similarity-scans",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/similarity-scans/latest",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/similarity-scans/overview",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/similarity-scans/{scan_id}/groups",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/gallery/photos",
     "methods": [
       "GET"

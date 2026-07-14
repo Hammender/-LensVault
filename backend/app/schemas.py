@@ -417,6 +417,57 @@ class VideoSubtitleTrackRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class GallerySimilarityScanCreate(BaseModel):
+    person_id: int | None = None
+    include_cross_type: bool = False
+
+
+class GallerySimilarityScanRead(BaseModel):
+    id: str
+    task_id: str | None
+    person_id: int | None
+    include_cross_type: bool
+    status: str
+    is_stale: bool
+    feature_version: str
+    photo_count: int
+    candidate_pair_count: int
+    group_count: int
+    error_message: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    task: TaskRead | None = None
+
+
+class GallerySimilarityScanOverview(BaseModel):
+    active: GallerySimilarityScanRead | None = None
+    results: list[GallerySimilarityScanRead]
+
+
+class GallerySimilarityMemberRead(BaseModel):
+    photo: GalleryPhotoListItem
+    score_to_representative: float
+    quality_score: float
+    recommended_keep: bool
+
+
+class GallerySimilarityGroupRead(BaseModel):
+    id: int
+    ordinal: int
+    tier: str
+    min_score: float
+    average_score: float
+    people: list[PersonRead]
+    members: list[GallerySimilarityMemberRead]
+
+
+class PaginatedGallerySimilarityGroups(BaseModel):
+    items: list[GallerySimilarityGroupRead]
+    total: int
+    offset: int
+    limit: int
+
+
 class SubtitleAsrStatus(BaseModel):
     status: str
     loaded: bool

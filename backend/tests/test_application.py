@@ -97,5 +97,6 @@ def test_create_app_uses_injected_lifecycle_dependencies(tmp_path, monkeypatch) 
         "gallery_zip_import",
         "person_import",
         "video_subtitle_generation",
+        "gallery_similarity_scan",
     ]
     engine.dispose()

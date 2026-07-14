@@ -2,6 +2,10 @@ import type {
   AuthSession,
   BootstrapStatus,
   GalleryPhotoDetail,
+  GallerySimilarityGroup,
+  GallerySimilarityScan,
+  GallerySimilarityScanOverview,
+  PaginatedGallerySimilarityGroups,
   PaginatedGalleryPhotos,
   Person,
   SamplePhoto,
@@ -341,6 +345,55 @@ export async function addGalleryPhotoPerson(
       headers: jsonHeaders,
       body: JSON.stringify({ person_id: personId })
     })
+  );
+}
+
+export async function createGallerySimilarityScan(payload: {
+  person_id: number | null;
+  include_cross_type: boolean;
+}): Promise<GallerySimilarityScan> {
+  return parse<GallerySimilarityScan>(
+    await fetch("/api/gallery/similarity-scans", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    })
+  );
+}
+
+export async function getLatestGallerySimilarityScan(
+  personId: number | null,
+  includeCrossType: boolean
+): Promise<GallerySimilarityScan | null> {
+  const url = new URL("/api/gallery/similarity-scans/latest", window.location.origin);
+  if (personId !== null) url.searchParams.set("person_id", String(personId));
+  url.searchParams.set("include_cross_type", String(includeCrossType));
+  return parse<GallerySimilarityScan | null>(await fetch(url.pathname + url.search));
+}
+
+export async function getGallerySimilarityScanOverview(): Promise<GallerySimilarityScanOverview> {
+  return parse<GallerySimilarityScanOverview>(await fetch("/api/gallery/similarity-scans/overview"));
+}
+
+export async function listGallerySimilarityGroups(
+  scanId: string,
+  tier: "near_duplicate" | "same_scene",
+  offset: number,
+  limit: number
+): Promise<PaginatedGallerySimilarityGroups> {
+  const url = new URL(`/api/gallery/similarity-scans/${scanId}/groups`, window.location.origin);
+  url.searchParams.set("tier", tier);
+  url.searchParams.set("offset", String(offset));
+  url.searchParams.set("limit", String(limit));
+  return parse<PaginatedGallerySimilarityGroups>(await fetch(url.pathname + url.search));
+}
+
+export async function getGallerySimilarityGroup(
+  scanId: string,
+  groupId: number
+): Promise<GallerySimilarityGroup | null> {
+  return parse<GallerySimilarityGroup | null>(
+    await fetch(`/api/gallery/similarity-scans/${scanId}/groups/${groupId}`)
   );
 }
 

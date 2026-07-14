@@ -1,0 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchvision==0.22.1+cu128
+
+# 安装本文件后再安装 requirements.txt。模型权重不放入仓库，按 README 下载到 .env 指定目录。

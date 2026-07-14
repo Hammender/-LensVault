@@ -167,7 +167,9 @@ class SamplePhoto(Base):
 
 class GalleryPhoto(Base):
     __tablename__ = "gallery_photos"
-    __table_args__ = (UniqueConstraint("workspace_id", "sha256", name="uq_gallery_photos_workspace_sha256"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "sha256", "is_rich_text", name="uq_gallery_photos_workspace_sha256_rich_text"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -198,6 +200,123 @@ class GalleryPhoto(Base):
     promoted_samples: Mapped[list[SamplePhoto]] = relationship(
         back_populates="source_gallery_photo", foreign_keys=[SamplePhoto.source_gallery_photo_id], passive_deletes=True
     )
+    similarity_feature: Mapped[GallerySimilarityFeature | None] = relationship(
+        back_populates="gallery_photo", cascade="all, delete-orphan", uselist=False
+    )
+    similarity_memberships: Mapped[list[GallerySimilarityGroupMember]] = relationship(
+        back_populates="gallery_photo", cascade="all, delete-orphan"
+    )
+
+
+class GallerySimilarityFeature(Base):
+    __tablename__ = "gallery_similarity_features"
+
+    gallery_photo_id: Mapped[int] = mapped_column(
+        ForeignKey("gallery_photos.id", ondelete="CASCADE"), primary_key=True
+    )
+    workspace_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    feature_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    phash: Mapped[str] = mapped_column(String(64), nullable=False)
+    dhash: Mapped[str] = mapped_column(String(64), nullable=False)
+    blur_score: Mapped[float] = mapped_column(Float, nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False)
+    vector_point_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    vector_ready: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    gallery_photo: Mapped[GalleryPhoto] = relationship(back_populates="similarity_feature")
+
+
+class GallerySimilarityScan(Base):
+    __tablename__ = "gallery_similarity_scans"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("persons.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    include_cross_type: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    is_stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    feature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    photo_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    candidate_pair_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    group_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    groups: Mapped[list[GallerySimilarityGroup]] = relationship(
+        back_populates="scan", cascade="all, delete-orphan"
+    )
+
+
+class GallerySimilarityGroup(Base):
+    __tablename__ = "gallery_similarity_groups"
+    __table_args__ = (UniqueConstraint("scan_id", "ordinal", name="uq_gallery_similarity_group_ordinal"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_id: Mapped[str] = mapped_column(
+        ForeignKey("gallery_similarity_scans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    tier: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    min_score: Mapped[float] = mapped_column(Float, nullable=False)
+    average_score: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    scan: Mapped[GallerySimilarityScan] = relationship(back_populates="groups")
+    members: Mapped[list[GallerySimilarityGroupMember]] = relationship(
+        back_populates="group", cascade="all, delete-orphan"
+    )
+    people: Mapped[list[GallerySimilarityGroupPerson]] = relationship(
+        back_populates="group", cascade="all, delete-orphan"
+    )
+
+
+class GallerySimilarityGroupMember(Base):
+    __tablename__ = "gallery_similarity_group_members"
+    __table_args__ = (UniqueConstraint("group_id", "gallery_photo_id", name="uq_gallery_similarity_group_member"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("gallery_similarity_groups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    gallery_photo_id: Mapped[int] = mapped_column(
+        ForeignKey("gallery_photos.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    score_to_representative: Mapped[float] = mapped_column(Float, nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False)
+    recommended_keep: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    group: Mapped[GallerySimilarityGroup] = relationship(back_populates="members")
+    gallery_photo: Mapped[GalleryPhoto] = relationship(back_populates="similarity_memberships")
+
+
+class GallerySimilarityGroupPerson(Base):
+    __tablename__ = "gallery_similarity_group_people"
+    __table_args__ = (UniqueConstraint("group_id", "person_id", name="uq_gallery_similarity_group_person"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("gallery_similarity_groups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    person_id: Mapped[int] = mapped_column(
+        ForeignKey("persons.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    group: Mapped[GallerySimilarityGroup] = relationship(back_populates="people")
 
 
 class FaceRecord(Base):

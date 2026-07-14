@@ -510,14 +510,19 @@ class PictureService:
         )
         sha256 = hashlib.sha256(payload).hexdigest()
         existing = db.scalar(
-            select(GalleryPhoto).where(GalleryPhoto.workspace_id == workspace_id, GalleryPhoto.sha256 == sha256)
+            select(GalleryPhoto).where(
+                GalleryPhoto.workspace_id == workspace_id,
+                GalleryPhoto.sha256 == sha256,
+                GalleryPhoto.is_rich_text == is_rich_text,
+            )
         )
         if existing is not None:
             summary.duplicated = 1
             logger.info(
-                "Gallery duplicate skipped filename=%s sha256=%s existing_photo_id=%s",
+                "Gallery duplicate skipped filename=%s sha256=%s rich_text=%s existing_photo_id=%s",
                 filename,
                 sha256,
+                is_rich_text,
                 existing.id,
             )
             return existing, summary
@@ -709,7 +714,14 @@ class PictureService:
         )
 
     def delete_gallery_photos(self, db: Session, photos: list[GalleryPhoto]) -> int:
+        from app.services.similarity import cleanup_deleted_similarity_photos, mark_similarity_scans_stale
+
         deleted = 0
+        photo_ids = [photo.id for photo in photos]
+        workspace_ids = {int(photo.workspace_id) for photo in photos if photo.workspace_id is not None}
+        cleanup_deleted_similarity_photos(db, self.vector_store, photo_ids)
+        for workspace_id in workspace_ids:
+            mark_similarity_scans_stale(db, workspace_id)
         for photo in photos:
             self.storage.remove_object(photo.object_key)
             db.delete(photo)
@@ -968,6 +980,7 @@ class PictureService:
         payload = self.storage.get_bytes(photo.object_key)
         detected_faces = self.face_service.detect_faces(payload)
         recognition_plan = [(detected, self._match_face(detected, photo.workspace_id)) for detected in detected_faces]
+        old_person_ids = {tag.person_id for tag in photo.person_tags}
         manual_person_ids = {tag.person_id for tag in photo.person_tags if tag.source == "manual"}
         old_auto_links = [tag for tag in photo.person_tags if tag.source != "manual"]
         for link in old_auto_links:
@@ -1057,6 +1070,19 @@ class PictureService:
         for person_id in manual_person_ids:
             self.ensure_gallery_person_tag(db, photo.id, person_id, "manual")
             self.apply_person_tags_to_gallery_photo(db, photo.id, person_id)
+        db.flush()
+        new_person_ids = set(
+            db.scalars(
+                select(GalleryPhotoPersonTag.person_id).where(
+                    GalleryPhotoPersonTag.gallery_photo_id == photo.id
+                )
+            ).all()
+        )
+        changed_person_ids = old_person_ids.symmetric_difference(new_person_ids)
+        if changed_person_ids and photo.workspace_id is not None:
+            from app.services.similarity import mark_similarity_scans_stale
+
+            mark_similarity_scans_stale(db, int(photo.workspace_id), changed_person_ids)
         db.commit()
         db.refresh(photo)
         photo.person_tags
@@ -1303,8 +1329,13 @@ class PictureService:
                     continue
 
                 sha256 = photo_data.get("sha256") or hashlib.sha256(payload).hexdigest()
+                is_rich_text = bool(photo_data.get("is_rich_text"))
                 photo = db.scalar(
-                    select(GalleryPhoto).where(GalleryPhoto.workspace_id == workspace_id, GalleryPhoto.sha256 == sha256)
+                    select(GalleryPhoto).where(
+                        GalleryPhoto.workspace_id == workspace_id,
+                        GalleryPhoto.sha256 == sha256,
+                        GalleryPhoto.is_rich_text == is_rich_text,
+                    )
                 )
                 is_existing = photo is not None
                 tag_names = [
@@ -1321,7 +1352,7 @@ class PictureService:
                         payload,
                         photo_data.get("content_type"),
                         tag_names,
-                        bool(photo_data.get("is_rich_text")),
+                        is_rich_text,
                         photo_data.get("rich_text"),
                         workspace_id,
                     )
@@ -1332,7 +1363,7 @@ class PictureService:
                 else:
                     result["updated_existing"] += 1
 
-                if photo_data.get("is_rich_text"):
+                if is_rich_text:
                     photo.is_rich_text = True
                     rich_text = photo_data.get("rich_text")
                     if rich_text is not None:

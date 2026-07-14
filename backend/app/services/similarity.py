@@ -1,0 +1,657 @@
+from __future__ import annotations
+
+from collections import OrderedDict
+from collections.abc import Iterable
+from dataclasses import dataclass
+from io import BytesIO
+import math
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from PIL import Image, ImageOps
+
+from app.core.config import Settings
+from app.models import (
+    GalleryPhoto,
+    GalleryPhotoPersonTag,
+    GallerySimilarityFeature,
+    GallerySimilarityGroup,
+    GallerySimilarityGroupMember,
+    GallerySimilarityGroupPerson,
+    GallerySimilarityScan,
+    Person,
+)
+from app.services.qdrant import QdrantVectorStore
+from app.services.storage import MinioStorage
+from sqlalchemy import delete, func, insert, literal, select, text, update
+from sqlalchemy.orm import Session
+
+
+@dataclass(frozen=True)
+class PerceptualFeatures:
+    phash: str
+    dhash: str
+    blur_score: float
+    quality_score: float
+
+
+@dataclass(frozen=True)
+class SimilarityCandidate:
+    left_id: int
+    right_id: int
+    score: float
+
+
+def load_similarity_scan_overview(
+    db: Session,
+    workspace_id: int,
+) -> tuple[GallerySimilarityScan | None, list[GallerySimilarityScan]]:
+    active = db.scalar(
+        select(GallerySimilarityScan)
+        .where(
+            GallerySimilarityScan.workspace_id == workspace_id,
+            GallerySimilarityScan.status.in_(("pending", "running")),
+        )
+        .order_by(GallerySimilarityScan.created_at.desc())
+        .limit(1)
+    )
+    completed = db.scalars(
+        select(GallerySimilarityScan)
+        .where(
+            GallerySimilarityScan.workspace_id == workspace_id,
+            GallerySimilarityScan.status == "completed",
+        )
+        .order_by(
+            GallerySimilarityScan.completed_at.desc(),
+            GallerySimilarityScan.created_at.desc(),
+        )
+    ).all()
+    latest_by_scope: dict[tuple[int | None, bool], GallerySimilarityScan] = {}
+    for scan in completed:
+        latest_by_scope.setdefault((scan.person_id, scan.include_cross_type), scan)
+    return active, list(latest_by_scope.values())
+
+
+@dataclass(frozen=True)
+class SimilarityCluster:
+    member_ids: tuple[int, ...]
+    min_score: float
+    average_score: float
+
+
+@dataclass(frozen=True)
+class OrbFeatures:
+    keypoint_count: int
+    descriptors: np.ndarray | None
+
+
+def open_normalized_image(payload: bytes, max_edge: int | None = None) -> Image.Image:
+    with Image.open(BytesIO(payload)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+    if max_edge is not None and max(image.size) > max_edge:
+        image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+    return image
+
+
+def compute_perceptual_features(payload: bytes) -> PerceptualFeatures:
+    try:
+        import cv2
+        import imagehash
+    except ImportError as exc:
+        raise RuntimeError("相似图片依赖缺失，请安装 requirements.txt") from exc
+
+    image = open_normalized_image(payload)
+    pixels = max(image.width * image.height, 1)
+    phash = str(imagehash.phash(image))
+    dhash = str(imagehash.dhash(image))
+    if max(image.size) > 1024:
+        image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+    gray = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+    blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    image.close()
+    quality_score = math.log2(pixels) + math.log1p(max(blur_score, 0.0))
+    return PerceptualFeatures(
+        phash=phash,
+        dhash=dhash,
+        blur_score=blur_score,
+        quality_score=quality_score,
+    )
+
+
+def hash_similarity(left: str, right: str) -> float:
+    if len(left) != len(right) or not left:
+        return 0.0
+    bit_count = len(left) * 4
+    distance = (int(left, 16) ^ int(right, 16)).bit_count()
+    return max(0.0, 1.0 - distance / bit_count)
+
+
+def compute_orb_features(payload: bytes) -> OrbFeatures:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("OpenCV 未安装，无法执行近重复确认") from exc
+    image = open_normalized_image(payload, max_edge=1024)
+    gray = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+    image.close()
+    orb = cv2.ORB_create(nfeatures=800)
+    keypoints, descriptors = orb.detectAndCompute(gray, None)
+    return OrbFeatures(keypoint_count=len(keypoints), descriptors=descriptors)
+
+
+def orb_feature_similarity(left: OrbFeatures, right: OrbFeatures) -> float:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("OpenCV 未安装，无法执行近重复确认") from exc
+    if left.descriptors is None or right.descriptors is None or not left.keypoint_count or not right.keypoint_count:
+        return 0.0
+    matches = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(left.descriptors, right.descriptors)
+    good = [match for match in matches if match.distance <= 48]
+    denominator = max(1, min(left.keypoint_count, right.keypoint_count))
+    return min(1.0, len(good) / denominator)
+
+
+def orb_similarity(left_payload: bytes, right_payload: bytes) -> float:
+    return orb_feature_similarity(compute_orb_features(left_payload), compute_orb_features(right_payload))
+
+
+def cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
+    left = np.asarray(left, dtype=np.float32)
+    right = np.asarray(right, dtype=np.float32)
+    denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
+    return float(np.dot(left, right) / denominator) if denominator else 0.0
+
+
+class DinoV2FeatureExtractor:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self._model: Any | None = None
+        self._processor: Any | None = None
+        self._torch: Any | None = None
+        self._device = "cpu"
+
+    @property
+    def device(self) -> str:
+        self._ensure_loaded()
+        return self._device
+
+    def _ensure_loaded(self) -> None:
+        if self._model is not None:
+            return
+        model_path = Path(self.settings.gallery_similarity_model_path)
+        if not model_path.is_dir():
+            raise RuntimeError(f"DINOv2 本地模型目录不存在：{model_path}")
+        required_files = ("config.json", "preprocessor_config.json")
+        missing_files = [filename for filename in required_files if not (model_path / filename).is_file()]
+        has_weights = (model_path / "model.safetensors").is_file() or (model_path / "pytorch_model.bin").is_file()
+        if missing_files or not has_weights:
+            missing_description = "、".join(missing_files + ([] if has_weights else ["模型权重文件"]))
+            raise RuntimeError(f"DINOv2 本地模型文件不完整，缺少：{missing_description}")
+        try:
+            import torch
+            from transformers import AutoImageProcessor, AutoModel
+        except ImportError as exc:
+            raise RuntimeError("DINOv2 推理依赖缺失，请安装 CUDA 和 Transformers 依赖") from exc
+        requested_device = self.settings.gallery_similarity_device.lower()
+        self._device = "cuda" if requested_device.startswith("cuda") and torch.cuda.is_available() else "cpu"
+        self._processor = AutoImageProcessor.from_pretrained(model_path, local_files_only=True)
+        self._model = AutoModel.from_pretrained(model_path, local_files_only=True).eval().to(self._device)
+        self._torch = torch
+
+    def encode(self, images: list[Image.Image]) -> list[np.ndarray]:
+        if not images:
+            return []
+        self._ensure_loaded()
+        assert self._processor is not None and self._model is not None and self._torch is not None
+        batch_size = max(1, self.settings.gallery_similarity_batch_size)
+        output: list[np.ndarray] = []
+        offset = 0
+        while offset < len(images):
+            current_size = min(batch_size, len(images) - offset)
+            while True:
+                try:
+                    batch = self._processor(images=images[offset : offset + current_size], return_tensors="pt")
+                    batch = {key: value.to(self._device) for key, value in batch.items()}
+                    with self._torch.inference_mode():
+                        autocast_enabled = self._device == "cuda"
+                        with self._torch.autocast(device_type=self._device, dtype=self._torch.float16, enabled=autocast_enabled):
+                            vectors = self._model(**batch).last_hidden_state[:, 0, :]
+                        vectors = self._torch.nn.functional.normalize(vectors.float(), dim=1).cpu().numpy()
+                    if vectors.shape[1] != self.settings.gallery_similarity_vector_dimension:
+                        raise RuntimeError(
+                            f"DINOv2 输出维度为 {vectors.shape[1]}，预期 "
+                            f"{self.settings.gallery_similarity_vector_dimension}"
+                        )
+                    output.extend(np.asarray(vector, dtype=np.float32) for vector in vectors)
+                    offset += current_size
+                    break
+                except self._torch.cuda.OutOfMemoryError:
+                    if self._device != "cuda" or current_size == 1:
+                        raise
+                    self._torch.cuda.empty_cache()
+                    current_size = max(1, current_size // 2)
+        return output
+
+
+def complete_link_clusters(
+    member_ids: Iterable[int], candidates: Iterable[SimilarityCandidate], threshold: float
+) -> list[SimilarityCluster]:
+    scores: dict[tuple[int, int], float] = {}
+    for candidate in candidates:
+        pair = tuple(sorted((candidate.left_id, candidate.right_id)))
+        scores[pair] = max(scores.get(pair, 0.0), candidate.score)
+
+    ordered_ids = sorted(set(member_ids))
+    clusters: list[list[int]] = []
+    for member_id in ordered_ids:
+        eligible: list[tuple[float, list[int]]] = []
+        for cluster in clusters:
+            member_scores = [scores.get(tuple(sorted((member_id, other_id))), 0.0) for other_id in cluster]
+            if member_scores and min(member_scores) >= threshold:
+                eligible.append((sum(member_scores) / len(member_scores), cluster))
+        if not eligible:
+            clusters.append([member_id])
+        else:
+            max(eligible, key=lambda item: item[0])[1].append(member_id)
+
+    result: list[SimilarityCluster] = []
+    for cluster in clusters:
+        if len(cluster) < 2:
+            continue
+        pair_scores = [
+            scores[tuple(sorted((cluster[left], cluster[right])))]
+            for left in range(len(cluster))
+            for right in range(left + 1, len(cluster))
+        ]
+        result.append(
+            SimilarityCluster(
+                member_ids=tuple(cluster),
+                min_score=min(pair_scores),
+                average_score=sum(pair_scores) / len(pair_scores),
+            )
+        )
+    return result
+
+
+class GallerySimilarityScanner:
+    def __init__(
+        self,
+        storage: MinioStorage,
+        vector_store: QdrantVectorStore,
+        settings: Settings,
+        extractor: DinoV2FeatureExtractor | None = None,
+    ) -> None:
+        self.storage = storage
+        self.vector_store = vector_store
+        self.settings = settings
+        self.extractor = extractor or DinoV2FeatureExtractor(settings)
+
+    def _load_scope(
+        self, db: Session, workspace_id: int, person_id: int | None
+    ) -> tuple[dict[int, GalleryPhoto], dict[int, set[int]]]:
+        query = (
+            select(GalleryPhoto, GalleryPhotoPersonTag.person_id)
+            .join(GalleryPhotoPersonTag, GalleryPhotoPersonTag.gallery_photo_id == GalleryPhoto.id)
+            .where(GalleryPhoto.workspace_id == workspace_id)
+        )
+        if person_id is not None:
+            query = query.where(GalleryPhotoPersonTag.person_id == person_id)
+        photos: dict[int, GalleryPhoto] = {}
+        people_by_photo: dict[int, set[int]] = {}
+        for photo, linked_person_id in db.execute(query).all():
+            photos[photo.id] = photo
+            people_by_photo.setdefault(photo.id, set()).add(int(linked_person_id))
+        return photos, people_by_photo
+
+    def _ensure_features(
+        self,
+        db: Session,
+        photos: dict[int, GalleryPhoto],
+        progress: Any | None = None,
+    ) -> tuple[dict[int, GallerySimilarityFeature], dict[int, np.ndarray]]:
+        version = self.settings.gallery_similarity_model_version
+        cached = {
+            feature.gallery_photo_id: feature
+            for feature in db.scalars(
+                select(GallerySimilarityFeature).where(GallerySimilarityFeature.gallery_photo_id.in_(photos))
+            ).all()
+        }
+        features: dict[int, GallerySimilarityFeature] = {}
+        vectors: dict[int, np.ndarray] = {}
+        vector_ids: list[str] = []
+        for photo_id, photo in photos.items():
+            feature = cached.get(photo_id)
+            if feature is None or feature.sha256 != photo.sha256 or feature.feature_version != version:
+                payload = self.storage.get_bytes(photo.object_key)
+                perceptual = compute_perceptual_features(payload)
+                if feature is None:
+                    feature = GallerySimilarityFeature(gallery_photo_id=photo_id)
+                feature.workspace_id = photo.workspace_id
+                feature.sha256 = photo.sha256
+                feature.feature_version = version
+                feature.phash = perceptual.phash
+                feature.dhash = perceptual.dhash
+                feature.blur_score = perceptual.blur_score
+                feature.quality_score = perceptual.quality_score
+                feature.vector_point_id = None
+                feature.vector_ready = False
+                db.add(feature)
+            features[photo_id] = feature
+            if feature.vector_ready and feature.vector_point_id:
+                vector_ids.append(feature.vector_point_id)
+        db.flush()
+        if photos:
+            self.vector_store.ensure_gallery_similarity_collection()
+        existing_vectors = self.vector_store.get_gallery_similarity_vectors(vector_ids)
+        missing_ids: list[int] = []
+        for photo_id, photo in photos.items():
+            feature = features[photo_id]
+            if feature.vector_point_id and feature.vector_point_id in existing_vectors:
+                vectors[photo_id] = existing_vectors[feature.vector_point_id]
+                continue
+            missing_ids.append(photo_id)
+        if missing_ids:
+            device = self.extractor.device
+            if progress is not None:
+                message = "CUDA 不可用，已回退 CPU，扫描速度会明显降低" if device == "cpu" else "正在使用 CUDA 生成视觉特征"
+                progress(0.08, message)
+        batch_size = max(1, self.settings.gallery_similarity_batch_size)
+        processed = 0
+        for offset in range(0, len(missing_ids), batch_size):
+            batch_ids = missing_ids[offset : offset + batch_size]
+            images = [
+                open_normalized_image(self.storage.get_bytes(photos[photo_id].object_key), max_edge=1024)
+                for photo_id in batch_ids
+            ]
+            try:
+                batch_vectors = self.extractor.encode(images)
+            finally:
+                for image in images:
+                    image.close()
+            for photo_id, vector in zip(batch_ids, batch_vectors, strict=True):
+                photo = photos[photo_id]
+                point_id = self.vector_store.upsert_gallery_similarity_vector(
+                    workspace_id=photo.workspace_id,
+                    photo_id=photo.id,
+                    sha256=photo.sha256,
+                    is_rich_text=photo.is_rich_text,
+                    feature_version=version,
+                    vector=vector,
+                )
+                feature = features[photo_id]
+                feature.vector_point_id = point_id
+                feature.vector_ready = True
+                vectors[photo_id] = vector
+                db.add(feature)
+                processed += 1
+            if progress is not None:
+                progress(0.1 + 0.45 * (processed / len(missing_ids)), f"正在生成视觉特征 {processed}/{len(missing_ids)}")
+        db.flush()
+        return features, vectors
+
+    def _candidate_pairs(
+        self,
+        photos: dict[int, GalleryPhoto],
+        people_by_photo: dict[int, set[int]],
+        include_cross_type: bool,
+    ) -> dict[int, set[tuple[int, int]]]:
+        photos_by_person: dict[int, list[int]] = {}
+        for photo_id, person_ids in people_by_photo.items():
+            for person_id in person_ids:
+                photos_by_person.setdefault(person_id, []).append(photo_id)
+        result: dict[int, set[tuple[int, int]]] = {}
+        for person_id, photo_ids in photos_by_person.items():
+            pairs: set[tuple[int, int]] = set()
+            for left_index, left_id in enumerate(sorted(set(photo_ids))):
+                for right_id in sorted(set(photo_ids))[left_index + 1 :]:
+                    if not include_cross_type and photos[left_id].is_rich_text != photos[right_id].is_rich_text:
+                        continue
+                    pairs.add((left_id, right_id))
+            result[person_id] = pairs
+        return result
+
+    def _score_pairs(
+        self,
+        pairs_by_person: dict[int, set[tuple[int, int]]],
+        features: dict[int, GallerySimilarityFeature],
+        vectors: dict[int, np.ndarray],
+        photos: dict[int, GalleryPhoto],
+        progress: Any | None,
+    ) -> tuple[dict[tuple[int, int], float], dict[tuple[int, int], float]]:
+        unique_pairs = sorted(set().union(*pairs_by_person.values()) if pairs_by_person else set())
+        near_scores: dict[tuple[int, int], float] = {}
+        scene_scores: dict[tuple[int, int], float] = {}
+        orb_cache: OrderedDict[int, OrbFeatures] = OrderedDict()
+
+        def get_orb_features(photo_id: int) -> OrbFeatures:
+            cached = orb_cache.pop(photo_id, None)
+            if cached is not None:
+                orb_cache[photo_id] = cached
+                return cached
+            feature = compute_orb_features(self.storage.get_bytes(photos[photo_id].object_key))
+            orb_cache[photo_id] = feature
+            if len(orb_cache) > 256:
+                orb_cache.popitem(last=False)
+            return feature
+
+        for index, pair in enumerate(unique_pairs):
+            left_id, right_id = pair
+            left = features[left_id]
+            right = features[right_id]
+            perceptual = (hash_similarity(left.phash, right.phash) + hash_similarity(left.dhash, right.dhash)) / 2
+            near_score = perceptual
+            if perceptual >= 0.82:
+                local_score = orb_feature_similarity(get_orb_features(left_id), get_orb_features(right_id))
+                near_score = max(perceptual, min(1.0, 0.85 + local_score * 0.15))
+            if near_score >= self.settings.gallery_similarity_near_threshold:
+                near_scores[pair] = near_score
+            else:
+                scene_score = cosine_similarity(vectors[left_id], vectors[right_id])
+                if scene_score >= self.settings.gallery_similarity_scene_threshold:
+                    scene_scores[pair] = scene_score
+            if progress is not None and unique_pairs and (index % 100 == 0 or index + 1 == len(unique_pairs)):
+                progress(0.55 + 0.35 * ((index + 1) / len(unique_pairs)), f"正在匹配候选 {index + 1}/{len(unique_pairs)}")
+        return near_scores, scene_scores
+
+    def run_scan(self, db: Session, scan: GallerySimilarityScan, progress: Any | None = None) -> None:
+        photos, people_by_photo = self._load_scope(db, int(scan.workspace_id), scan.person_id)
+        scan.photo_count = len(photos)
+        if progress is not None:
+            progress(0.05, f"找到 {len(photos)} 张带人物标签的图片")
+        features, vectors = self._ensure_features(db, photos, progress)
+        pairs_by_person = self._candidate_pairs(photos, people_by_photo, scan.include_cross_type)
+        unique_pairs = set().union(*pairs_by_person.values()) if pairs_by_person else set()
+        scan.candidate_pair_count = len(unique_pairs)
+        near_scores, scene_scores = self._score_pairs(
+            pairs_by_person, features, vectors, photos, progress
+        )
+
+        group_specs: dict[tuple[str, tuple[int, ...]], tuple[SimilarityCluster, set[int]]] = {}
+        for tier, scores, threshold in (
+            ("near_duplicate", near_scores, self.settings.gallery_similarity_near_threshold),
+            ("same_scene", scene_scores, self.settings.gallery_similarity_scene_threshold),
+        ):
+            for person_id, pairs in pairs_by_person.items():
+                candidates = [
+                    SimilarityCandidate(left, right, scores[(left, right)])
+                    for left, right in pairs
+                    if (left, right) in scores
+                ]
+                if not candidates:
+                    continue
+                member_ids = {item.left_id for item in candidates} | {item.right_id for item in candidates}
+                for cluster in complete_link_clusters(member_ids, candidates, threshold):
+                    key = (tier, cluster.member_ids)
+                    if key in group_specs:
+                        group_specs[key][1].add(person_id)
+                    else:
+                        group_specs[key] = (cluster, {person_id})
+
+        if progress is not None:
+            progress(0.91, f"正在发布 {len(group_specs)} 个相似组")
+
+        # 特征计算阶段可能耗时数分钟。发布前先结束此前的读取事务，再用很短的
+        # SQLite 写事务锁住“重新校验 -> 写入结果”窗口，避免已删除图片触发外键失败。
+        if db.in_transaction():
+            db.commit()
+        if db.bind is not None and db.bind.dialect.name == "sqlite":
+            db.execute(text("BEGIN IMMEDIATE"))
+
+        scoped_photo_ids = set(photos)
+        live_photo_ids = set(
+            db.scalars(
+                select(GalleryPhoto.id).where(
+                    GalleryPhoto.workspace_id == scan.workspace_id,
+                    GalleryPhoto.id.in_(scoped_photo_ids),
+                )
+            ).all()
+        )
+        live_person_ids = set(
+            db.scalars(
+                select(Person.id).where(
+                    Person.workspace_id == scan.workspace_id,
+                    Person.id.in_({person_id for _, person_ids in group_specs.values() for person_id in person_ids}),
+                )
+            ).all()
+        )
+        scan.photo_count = len(live_photo_ids)
+        scan.candidate_pair_count = sum(
+            left_id in live_photo_ids and right_id in live_photo_ids
+            for left_id, right_id in unique_pairs
+        )
+
+        old_scans = db.scalars(
+            select(GallerySimilarityScan).where(
+                GallerySimilarityScan.workspace_id == scan.workspace_id,
+                GallerySimilarityScan.person_id.is_(None) if scan.person_id is None else GallerySimilarityScan.person_id == scan.person_id,
+                GallerySimilarityScan.include_cross_type == scan.include_cross_type,
+                GallerySimilarityScan.status == "completed",
+                GallerySimilarityScan.id != scan.id,
+            )
+        ).all()
+        for old_scan in old_scans:
+            db.delete(old_scan)
+        db.execute(delete(GallerySimilarityGroup).where(GallerySimilarityGroup.scan_id == scan.id))
+        published_group_count = 0
+        for (tier, member_ids), (cluster, person_ids) in sorted(
+            group_specs.items(), key=lambda item: (item[0][0], -len(item[0][1]), item[0][1])
+        ):
+            live_member_ids = tuple(photo_id for photo_id in member_ids if photo_id in live_photo_ids)
+            live_group_person_ids = sorted(person_id for person_id in person_ids if person_id in live_person_ids)
+            if len(live_member_ids) < 2 or not live_group_person_ids:
+                continue
+            group = GallerySimilarityGroup(
+                scan_id=scan.id,
+                ordinal=published_group_count + 1,
+                tier=tier,
+                min_score=cluster.min_score,
+                average_score=cluster.average_score,
+            )
+            db.add(group)
+            db.flush()
+            recommended_id = max(live_member_ids, key=lambda photo_id: features[photo_id].quality_score)
+            representative_id = recommended_id
+            score_map = near_scores if tier == "near_duplicate" else scene_scores
+            for photo_id in live_member_ids:
+                score = 1.0 if photo_id == representative_id else score_map.get(tuple(sorted((photo_id, representative_id))), cluster.min_score)
+                db.execute(
+                    insert(GallerySimilarityGroupMember).from_select(
+                        [
+                            "group_id",
+                            "gallery_photo_id",
+                            "score_to_representative",
+                            "quality_score",
+                            "recommended_keep",
+                        ],
+                        select(
+                            literal(group.id),
+                            GalleryPhoto.id,
+                            literal(score),
+                            literal(features[photo_id].quality_score),
+                            literal(photo_id == recommended_id),
+                        ).where(
+                            GalleryPhoto.id == photo_id,
+                            GalleryPhoto.workspace_id == scan.workspace_id,
+                        ),
+                    )
+                )
+            for person_id in live_group_person_ids:
+                db.add(GallerySimilarityGroupPerson(group_id=group.id, person_id=person_id))
+            published_group_count += 1
+        scan.group_count = published_group_count
+        db.add(scan)
+        db.flush()
+
+
+def mark_similarity_scans_stale(db: Session, workspace_id: int, person_ids: set[int] | None = None) -> int:
+    condition = [
+        GallerySimilarityScan.workspace_id == workspace_id,
+        GallerySimilarityScan.status == "completed",
+        GallerySimilarityScan.is_stale.is_(False),
+    ]
+    if person_ids:
+        condition.append(
+            (GallerySimilarityScan.person_id.is_(None)) | (GallerySimilarityScan.person_id.in_(person_ids))
+        )
+    result = db.execute(update(GallerySimilarityScan).where(*condition).values(is_stale=True))
+    return int(result.rowcount or 0)
+
+
+def cleanup_deleted_similarity_photos(
+    db: Session, vector_store: QdrantVectorStore, photo_ids: list[int]
+) -> None:
+    if not photo_ids:
+        return
+    point_ids = [
+        point_id
+        for point_id in db.scalars(
+            select(GallerySimilarityFeature.vector_point_id).where(
+                GallerySimilarityFeature.gallery_photo_id.in_(photo_ids)
+            )
+        ).all()
+        if point_id
+    ]
+    vector_store.delete_gallery_similarity_vectors(point_ids)
+    group_ids = set(
+        db.scalars(
+            select(GallerySimilarityGroupMember.group_id).where(
+                GallerySimilarityGroupMember.gallery_photo_id.in_(photo_ids)
+            )
+        ).all()
+    )
+    affected_scan_ids = set(
+        db.scalars(
+            select(GallerySimilarityGroup.scan_id).where(GallerySimilarityGroup.id.in_(group_ids))
+        ).all()
+    )
+    db.execute(
+        delete(GallerySimilarityGroupMember).where(GallerySimilarityGroupMember.gallery_photo_id.in_(photo_ids))
+    )
+    for group_id in group_ids:
+        members = db.scalars(
+            select(GallerySimilarityGroupMember)
+            .where(GallerySimilarityGroupMember.group_id == group_id)
+            .order_by(GallerySimilarityGroupMember.quality_score.desc())
+        ).all()
+        if len(members) < 2:
+            db.execute(delete(GallerySimilarityGroup).where(GallerySimilarityGroup.id == group_id))
+            continue
+        for index, member in enumerate(members):
+            member.recommended_keep = index == 0
+            db.add(member)
+    db.flush()
+    for scan_id in affected_scan_ids:
+        scan = db.get(GallerySimilarityScan, scan_id)
+        if scan is None:
+            continue
+        scan.group_count = int(
+            db.scalar(
+                select(func.count(GallerySimilarityGroup.id)).where(
+                    GallerySimilarityGroup.scan_id == scan_id
+                )
+            )
+            or 0
+        )
+        db.add(scan)

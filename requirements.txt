@@ -16,3 +16,7 @@ rapidocr_onnxruntime==1.2.3; python_version < "3.13"
 pytesseract==0.3.13
 qdrant-client==1.17.1
 setuptools==80.9.0
+transformers==4.53.2
+safetensors==0.5.3
+ImageHash==4.3.2
+opencv-python-headless==4.13.0.92

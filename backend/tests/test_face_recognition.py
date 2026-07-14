@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from io import BytesIO
+from zipfile import ZipFile
 
 import numpy as np
 import pytest
 from PIL import Image
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.db import Base
+from app.lifecycle import ensure_gallery_photo_type_unique_constraint
 from app.models import FaceRecord, GalleryPhoto, Person, SamplePhoto
 from app.services.face import DetectedFace, FaceService
 from app.services.face_index import build_face_index_health
@@ -41,6 +45,47 @@ class FakeInspectionStore:
 
     def inspect_collection(self, *_args: object, **_kwargs: object) -> FaceIndexInspection:
         return self.inspection
+
+
+class FakeStorage:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def put_bytes(self, object_key: str, payload: bytes, _content_type: str | None = None) -> None:
+        self.objects[object_key] = payload
+
+    def get_bytes(self, object_key: str) -> bytes:
+        return self.objects[object_key]
+
+    def remove_object(self, object_key: str) -> None:
+        self.objects.pop(object_key, None)
+
+
+class NoopFaceService:
+    def detect_faces(self, _payload: bytes) -> list[DetectedFace]:
+        return []
+
+
+class NoopOcrService:
+    def extract_text(self, _payload: bytes) -> str:
+        return ""
+
+
+def make_image_bytes(color: str = "white") -> bytes:
+    image = Image.new("RGB", (16, 16), color)
+    source = BytesIO()
+    image.save(source, format="JPEG")
+    return source.getvalue()
+
+
+def make_picture_service() -> PictureService:
+    return PictureService(  # type: ignore[arg-type]
+        FakeStorage(),
+        NoopFaceService(),
+        FakeVectorStore([]),
+        NoopOcrService(),
+        Settings(),
+    )
 
 
 def test_face_detection_applies_exif_orientation_before_model_input() -> None:
@@ -134,6 +179,204 @@ def test_sample_quality_has_human_readable_warnings() -> None:
     assert any("尺寸" in warning for warning in warnings)
     assert any("模糊" in warning for warning in warnings)
     assert any("侧脸" in warning for warning in warnings)
+
+
+def test_gallery_import_allows_same_sha_across_normal_and_rich_types() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    payload = make_image_bytes()
+    service = make_picture_service()
+
+    with Session(engine) as db:
+        normal, normal_summary = service.import_gallery_photo(
+            db,
+            "same.jpg",
+            payload,
+            "image/jpeg",
+            [],
+            False,
+            None,
+            None,
+        )
+        rich, rich_summary = service.import_gallery_photo(
+            db,
+            "same.jpg",
+            payload,
+            "image/jpeg",
+            [],
+            True,
+            "图文内容",
+            None,
+        )
+
+        photos = db.scalars(select(GalleryPhoto)).all()
+
+    assert normal.id != rich.id
+    assert normal.sha256 == rich.sha256
+    assert normal.is_rich_text is False
+    assert rich.is_rich_text is True
+    assert normal_summary.duplicated == 0
+    assert rich_summary.duplicated == 0
+    assert len(photos) == 2
+
+
+def test_gallery_import_still_skips_same_type_duplicate() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    payload = make_image_bytes()
+    service = make_picture_service()
+
+    with Session(engine) as db:
+        first, first_summary = service.import_gallery_photo(
+            db,
+            "first.jpg",
+            payload,
+            "image/jpeg",
+            [],
+            False,
+            None,
+            None,
+        )
+        second, second_summary = service.import_gallery_photo(
+            db,
+            "second.jpg",
+            payload,
+            "image/jpeg",
+            [],
+            False,
+            None,
+            None,
+        )
+        photos = db.scalars(select(GalleryPhoto)).all()
+
+    assert first.id == second.id
+    assert first_summary.duplicated == 0
+    assert second_summary.duplicated == 1
+    assert len(photos) == 1
+
+
+def test_gallery_zip_import_matches_duplicates_by_rich_type() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    payload = make_image_bytes()
+    sha256 = hashlib.sha256(payload).hexdigest()
+    service = make_picture_service()
+    zip_source = BytesIO()
+    with ZipFile(zip_source, "w") as zf:
+        zf.writestr("gallery/same.jpg", payload)
+        zf.writestr(
+            "metadata.json",
+            json.dumps(
+                {
+                    "photos": [
+                        {
+                            "filename": "same.jpg",
+                            "content_type": "image/jpeg",
+                            "sha256": sha256,
+                            "is_rich_text": True,
+                            "rich_text": "ZIP 图文内容",
+                            "ocr_status": "manual",
+                            "tags": [],
+                            "persons": [],
+                            "paths": ["gallery/same.jpg"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    with Session(engine) as db:
+        service.import_gallery_photo(db, "same.jpg", payload, "image/jpeg", [], False, None, None)
+        result = service.import_gallery_from_zip(db, zip_source.getvalue(), None)
+        photos = db.scalars(select(GalleryPhoto).order_by(GalleryPhoto.is_rich_text)).all()
+
+    assert result["added_photos"] == 1
+    assert result["updated_existing"] == 0
+    assert len(photos) == 2
+    assert photos[0].is_rich_text is False
+    assert photos[1].is_rich_text is True
+    assert photos[1].rich_text == "ZIP 图文内容"
+
+
+def test_gallery_photo_unique_constraint_migrates_from_sha_to_sha_and_rich_type() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE workspaces (
+                    id INTEGER NOT NULL,
+                    name VARCHAR(128) NOT NULL,
+                    description TEXT,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    PRIMARY KEY (id)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE gallery_photos (
+                    id INTEGER NOT NULL,
+                    workspace_id INTEGER,
+                    filename VARCHAR(512) NOT NULL,
+                    content_type VARCHAR(128),
+                    sha256 VARCHAR(64) NOT NULL,
+                    object_key VARCHAR(512) NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    taken_at DATETIME,
+                    is_rich_text BOOLEAN NOT NULL DEFAULT 0,
+                    rich_text TEXT,
+                    ocr_status VARCHAR(32),
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    PRIMARY KEY (id),
+                    CONSTRAINT uq_gallery_photos_workspace_sha256 UNIQUE (workspace_id, sha256),
+                    UNIQUE (object_key)
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO workspaces (id, name, created_at, updated_at)
+                VALUES (1, '测试空间', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+
+    ensure_gallery_photo_type_unique_constraint(engine)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO gallery_photos (
+                    workspace_id, filename, sha256, object_key, is_rich_text, created_at, updated_at
+                )
+                VALUES (1, 'normal.jpg', 'same-sha', 'gallery/normal.jpg', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO gallery_photos (
+                    workspace_id, filename, sha256, object_key, is_rich_text, created_at, updated_at
+                )
+                VALUES (1, 'rich.jpg', 'same-sha', 'gallery/rich.jpg', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+
+        count = connection.scalar(text("SELECT COUNT(*) FROM gallery_photos"))
+
+    assert count == 2
 
 
 def test_gallery_sample_promotion_rejects_same_person_photo_twice() -> None:

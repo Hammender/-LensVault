@@ -7,6 +7,7 @@ LensVault 是一个本地优先的智能媒体库，用来管理图片、图文�
 ## 主要功能
 
 - 图片图库：批量导入展示图，按人物、普通标签、排除条件分页筛选，支持 ZIP 导入导出。
+- 相似图片整理：按同一人物标签扫描近重复图片和同场景图片，支持普通图库与图文图库分开或跨类型比较，并由用户勾选后复用图库批量删除流程。
 - 人物样本库：维护人物与样本照，使用 InsightFace 提取人脸特征并写入 Qdrant。
 - 未知人物归并：未命中样本库的人脸统一标记为“未知人物”，不写入向量库，可在图库详情中重新识别或改为正式人物。
 - 图文 OCR：支持图文图片导入，自动提取文字，也可以手动编辑图文内容。
@@ -20,7 +21,7 @@ LensVault 是一个本地优先的智能媒体库，用来管理图片、图文�
 
 - 后端：FastAPI、SQLAlchemy、SQLite、MinIO、Qdrant、InsightFace、Pillow、FFmpeg。
 - 前端：React 18、Vite、TypeScript、lucide-react。
-- AI 能力：InsightFace 人脸识别，RapidOCR 或 pytesseract OCR，faster-whisper ASR，本地 llama-server/Hy-MT2 翻译。
+- AI 能力：InsightFace 人脸识别，DINOv2 Base 768 维图片特征，RapidOCR 或 pytesseract OCR，faster-whisper ASR，本地 llama-server/Hy-MT2 翻译。
 
 ## 目录结构
 
@@ -49,6 +50,7 @@ docker-compose.yml       本地 MinIO 与 Qdrant 依赖服务
 - Node.js 与 npm。
 - Docker Desktop，用于启动 MinIO 和 Qdrant。
 - FFmpeg 与 FFprobe，并确保命令在 `PATH` 中，或在 `.env` 中配置绝对路径。
+- 可选：支持 CUDA 的 NVIDIA 显卡；相似图片扫描默认使用 DINOv2 Base，CUDA 不可用时会回退 CPU。
 - 可选：Tesseract OCR、本地 faster-whisper 模型、本地 Hy-MT2 GGUF 模型和 llama-server。
 
 ## 快速开始
@@ -65,6 +67,7 @@ Copy-Item .env.example .env
 
 - `DATABASE_URL` 和 `DATA_DIR` 默认是开发者本机路径，开源部署时应改成自己的数据目录。
 - `SUBTITLE_ASR_MODEL_PATH`、`SUBTITLE_TRANSLATION_MODEL_PATH`、`SUBTITLE_LLAMA_SERVER_PATH` 只有在使用字幕功能时才需要配置。
+- `GALLERY_SIMILARITY_MODEL_PATH` 需要指向完整的本地 DINOv2 Base 模型目录；安装与下载命令见 `docs/gallery-similarity.md`。
 - `AUTH_SECRET_KEY` 发布或长期使用前必须改成随机强密钥。
 - `CORS_ORIGINS` 需要包含实际前端地址。
 
@@ -126,31 +129,16 @@ cmd /c npm.cmd run dev
 
 当前实现默认使用本地 `llama-server` 加载 Hy-MT2 GGUF 模型。配置项集中在 `.env.example` 的 `SUBTITLE_*` 段。未配置模型时，图片、视频管理等核心功能仍可使用，但字幕生成会失败。
 
-## 向量库与旧 Milvus 清理
+## 相似图片整理
 
-当前版本使用 Qdrant 保存人物样本库向量，集合名默认是 `pictureshow_known_faces`。展示图人脸识别结果只写入 SQLite，不再把展示图人脸或未知人物写入向量库。
+进入“相似图片整理”页面后，可以选择单个人物或全部人物发起扫描。系统只在同一人物标签范围内生成候选，先使用 pHash/dHash 和 ORB 判断近重复图片，再使用本地 DINOv2 Base 的 768 维向量识别同场景图片。默认不跨普通图库与图文图库比较，可在发起扫描时主动开启跨类型比较。
 
-Qdrant 中的参考点带有工作区、向量版本和来源类型；正常业务只写入有效样本向量及其人物中心向量。人脸图片会先按 EXIF 方向旋转到实际显示方向，再交给 InsightFace。修改模型或预处理版本后，应先离线重建到新集合，核对计数后再手工修改 `.env` 并重启服务：
+扫描完成后按“近重复”和“同场景”分页展示相似组，同时给出基于分辨率与清晰度的保留建议。建议仅供参考，系统不会自动删除图片；用户勾选图片并确认后，才会调用现有图库批量删除流程。图库导入、删除或人物标签变化后，已有结果会标记为过期，需要重新扫描。
 
-```powershell
-cd backend
-python -m app.tools.rebuild_face_index --embedding-version buffalo_l-v2-exif
-```
+模型安装、显存策略和配置项说明见 [相似图片整理：本地模型配置](docs/gallery-similarity.md)。
 
-命令禁止覆盖 `.env` 当前配置的活动集合，默认创建类似 `pictureshow_known_faces_buffalo_l_v2_exif` 的独立集合。如果目标集合已经存在，只有显式添加 `--replace` 才会重建该目标集合。输出中的 `ready_for_activation` 必须为 `true`，并且需要检查：
 
-- `indexed`、`skipped` 和 `skip_details` 是否符合预期。
-- `missing_person_ids` 必须为空，确保每个有可用样本的人物都进入索引。
-- `inspection` 中维度为 512、距离为 `Cosine`、无缺失载荷和异常向量。
-
-验证通过后，把命令输出的两个值写入 `.env`：
-
-```dotenv
-QDRANT_KNOWN_COLLECTION=pictureshow_known_faces_buffalo_l_v2_exif
-FACE_EMBEDDING_VERSION=buffalo_l-v2-exif
-```
-
-然后由操作人员手动重启服务。程序不会自动重新识别图库；服务恢复后可在人物样本库使用现有的“一键重新识别所有未知人物”。旧集合应暂时保留，若新索引结果异常，只需把 `.env` 恢复为原集合和原 embedding 版本并手动重启，即可回退。
+## 人脸识别准确度
 
 针对某一张低分展示图，可以在切换前对新集合执行只读诊断：
 
@@ -169,23 +157,6 @@ python -m app.tools.evaluate_face_recognition --output ../data/face-evaluation
 ```
 
 样本质量门槛、搜索候选数、模型名、检测尺寸及可选翻转增强均在 `.env.example` 的 `FACE_*` 配置中。翻转增强默认关闭，评估样本不足时工具不会建议自动调整生产阈值。
-
-如果已经完成旧 Milvus 到 Qdrant 的迁移，并确认前端样本库、图库重新识别和未知人物筛选都正常，旧 Milvus 相关容器可以停止并删除。旧 Milvus standalone 部署通常包含三个容器：
-
-- `pictureshow-milvus`：Milvus 主服务，保存向量库索引和查询服务。
-- `pictureshow-milvus-etcd`：Milvus 的元数据与协调服务。
-- `pictureshow-milvus-minio`：Milvus 内部使用的对象存储，只服务于 Milvus 向量库，不是本项目保存图片/视频的 MinIO。
-
-不要删除 `pictureshow-minio`。它是当前应用的对象存储，保存图库原图、样本图、视频、封面和分片。清理旧 Milvus 时只需要处理 `pictureshow-milvus`、`pictureshow-milvus-etcd`、`pictureshow-milvus-minio` 以及它们绑定的旧数据卷。
-
-建议先停止旧 Milvus 容器，确认应用运行正常后再删除：
-
-```powershell
-docker stop pictureshow-milvus pictureshow-milvus-etcd pictureshow-milvus-minio
-docker rm pictureshow-milvus pictureshow-milvus-etcd pictureshow-milvus-minio
-```
-
-如果旧 Milvus 的数据目录是单独挂载的本地目录，也可以在确认不再回滚后手动删除对应目录。不要删除 `E:\dockerVolums\picture-show\minio` 和 `E:\dockerVolums\picture-show\Qdrant`。
 
 ## 数据与隐私
 
@@ -206,7 +177,7 @@ cmd /c npm.cmd run build
 python -m uvicorn app.main:app --reload --app-dir backend
 ```
 
-目前仓库没有完整自动化测试套件。提交后端改动时，至少检查 `/api/health` 和受影响接口；提交前端改动时，至少运行 `cmd /c npm.cmd run build`。
+后端测试位于 `backend/tests/`。提交后端改动时应运行完整测试并检查 `/api/health` 和受影响接口；提交前端改动时至少运行 `cmd /c npm.cmd run build`。
 
 ## 开源发布前建议
 

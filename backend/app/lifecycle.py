@@ -19,6 +19,7 @@ INCOMPLETE_TASK_TYPES = (
     "gallery_zip_import",
     "person_import",
     "video_subtitle_generation",
+    "gallery_similarity_scan",
 )
 
 
@@ -75,8 +76,100 @@ def ensure_face_recognition_columns(engine: Engine) -> None:
         )
 
 
+def _sqlite_index_columns(connection, index_name: str) -> list[str]:
+    safe_index_name = index_name.replace("'", "''")
+    rows = connection.execute(text(f"PRAGMA index_info('{safe_index_name}')")).mappings().all()
+    return [str(row["name"]) for row in rows]
+
+
+def _sqlite_gallery_unique_indexes(connection) -> list[list[str]]:
+    rows = connection.execute(text("PRAGMA index_list('gallery_photos')")).mappings().all()
+    indexes: list[list[str]] = []
+    for row in rows:
+        if int(row["unique"]) != 1:
+            continue
+        indexes.append(_sqlite_index_columns(connection, str(row["name"])))
+    return indexes
+
+
+def ensure_gallery_photo_type_unique_constraint(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "gallery_photos" not in inspector.get_table_names():
+        return
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        unique_indexes = _sqlite_gallery_unique_indexes(connection)
+        has_new_unique = ["workspace_id", "sha256", "is_rich_text"] in unique_indexes
+        has_old_unique = ["workspace_id", "sha256"] in unique_indexes
+        if has_new_unique and not has_old_unique:
+            return
+        if not has_old_unique:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_gallery_photos_workspace_sha256_rich_text "
+                    "ON gallery_photos (workspace_id, sha256, is_rich_text)"
+                )
+            )
+            return
+
+        try:
+            connection.execute(text("PRAGMA foreign_keys=OFF"))
+            connection.execute(text("DROP TABLE IF EXISTS gallery_photos_new"))
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE gallery_photos_new (
+                        id INTEGER NOT NULL,
+                        workspace_id INTEGER,
+                        filename VARCHAR(512) NOT NULL,
+                        content_type VARCHAR(128),
+                        sha256 VARCHAR(64) NOT NULL,
+                        object_key VARCHAR(512) NOT NULL,
+                        width INTEGER,
+                        height INTEGER,
+                        taken_at DATETIME,
+                        is_rich_text BOOLEAN NOT NULL,
+                        rich_text TEXT,
+                        ocr_status VARCHAR(32),
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
+                        PRIMARY KEY (id),
+                        FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE,
+                        CONSTRAINT uq_gallery_photos_workspace_sha256_rich_text
+                            UNIQUE (workspace_id, sha256, is_rich_text),
+                        UNIQUE (object_key)
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO gallery_photos_new (
+                        id, workspace_id, filename, content_type, sha256, object_key,
+                        width, height, taken_at, is_rich_text, rich_text, ocr_status,
+                        created_at, updated_at
+                    )
+                    SELECT
+                        id, workspace_id, filename, content_type, sha256, object_key,
+                        width, height, taken_at, is_rich_text, rich_text, ocr_status,
+                        created_at, updated_at
+                    FROM gallery_photos
+                    """
+                )
+            )
+            connection.execute(text("DROP TABLE gallery_photos"))
+            connection.execute(text("ALTER TABLE gallery_photos_new RENAME TO gallery_photos"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_gallery_photos_workspace_id ON gallery_photos (workspace_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_gallery_photos_sha256 ON gallery_photos (sha256)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_gallery_photos_is_rich_text ON gallery_photos (is_rich_text)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_gallery_photos_ocr_status ON gallery_photos (ocr_status)"))
+        finally:
+            connection.execute(text("PRAGMA foreign_keys=ON"))
+
+
 def initialize_database(engine: Engine) -> None:
     Base.metadata.create_all(bind=engine)
+    ensure_gallery_photo_type_unique_constraint(engine)
     ensure_video_seek_columns(engine)
     ensure_face_recognition_columns(engine)
 
