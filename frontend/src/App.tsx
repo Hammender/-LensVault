@@ -28,6 +28,7 @@ import SearchableSelect from "./SearchableSelect";
 import Statistics from "./Statistics";
 import SimilarityReview from "./SimilarityReview";
 import BiliVideoPlayer from "./BiliVideoPlayer";
+import { useConfirm } from "./ConfirmDialog";
 import { availablePhotoPersons, filterPersonMatches, resolveExistingPerson } from "./personPicker";
 import { routeFromHash, setRoute, type PageKey } from "./routing";
 import { sortByPinyin, sortByPinyinName } from "./sort";
@@ -434,6 +435,7 @@ type MainAppProps = {
 };
 
 function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
+  const confirm = useConfirm();
   const [page, setPageState] = useState<PageKey>(() => routeFromHash());
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [playVideoId, setPlayVideoId] = useState<string | null>(null);
@@ -1285,7 +1287,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       setError("系统未知人物不能删除。");
       return;
     }
-    if (!window.confirm(`确认删除选中的 ${deletableIds.length} 个人物吗？这会删除其样本图、关联向量与对象存储文件。`)) {
+    if (!await confirm({ title: "删除人物", message: `确认删除选中的 ${deletableIds.length} 个人物吗？这会删除其样本图、关联向量与对象存储文件。`, confirmLabel: "删除", tone: "danger" })) {
       return;
     }
     setBusy(true);
@@ -1310,7 +1312,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       setError("系统未知人物不能删除。");
       return;
     }
-    if (!window.confirm(`确认删除人物「${selectedPerson.display_name}」吗？`)) {
+    if (!await confirm({ title: "删除人物", message: `确认删除人物「${selectedPerson.display_name}」吗？`, confirmLabel: "删除", tone: "danger" })) {
       return;
     }
     setBusy(true);
@@ -1328,7 +1330,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
   async function handleReRecognizeAllUnknownPhotos() {
     if (
-      !window.confirm("确认重新识别所有带未知人物标签的图片吗？识别后的新人物标签会覆盖旧标签。")
+      !await confirm({ title: "重新识别未知人物", message: "确认重新识别所有带未知人物标签的图片吗？识别后的新人物标签会覆盖旧标签。", confirmLabel: "开始识别" })
     ) {
       return;
     }
@@ -1723,12 +1725,12 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
 
-  async function handleDeleteCurrentVideo() {
+  async function handleDeleteCurrentVideo(): Promise<boolean> {
     if (!selectedVideo) {
-      return;
+      return false;
     }
-    if (!window.confirm(`确认删除视频「${selectedVideo.title}」吗？`)) {
-      return;
+    if (!await confirm({ title: "删除视频", message: `确认删除视频「${selectedVideo.title}」吗？`, confirmLabel: "删除", tone: "danger" })) {
+      return false;
     }
     setBusy(true);
     setError(null);
@@ -1737,8 +1739,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       setSelectedVideo(null);
       setVideoPlayerUrl("");
       await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "删除视频失败。");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1781,7 +1785,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     if (!selectedVideo) {
       return;
     }
-    if (!window.confirm("会覆盖当前 MinIO 中的视频对象，并重新编码为更适合拖动进度条的 MP4。继续吗？")) {
+    if (!await confirm({ title: "优化视频播放", message: "会覆盖当前 MinIO 中的视频对象，并重新编码为更适合拖动进度条的 MP4。继续吗？", confirmLabel: "开始优化" })) {
       return;
     }
     setBusy(true);
@@ -1883,7 +1887,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
   async function handleDeleteManageCategory(tagId: number) {
-    if (!window.confirm("确认删除此分区吗？")) return;
+    if (!await confirm({ title: "删除分区", message: "确认删除此分区吗？", confirmLabel: "删除", tone: "danger" })) return;
     setBusy(true);
     setError(null);
     try {
@@ -1932,7 +1936,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
   async function handleDeleteManagePerson(personId: number) {
-    if (!window.confirm("确认删除此UP主吗？")) return;
+    if (!await confirm({ title: "删除UP主", message: "确认删除此UP主吗？", confirmLabel: "删除", tone: "danger" })) return;
     setBusy(true);
     setError(null);
     try {
@@ -2179,7 +2183,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       setVideoFiles([]);
       return;
     }
-    if (!window.confirm("确认清理当前视频上传队列和未完成的续传会话吗？")) {
+    if (!await confirm({ title: "清理上传队列", message: "确认清理当前视频上传队列和未完成的续传会话吗？", confirmLabel: "清理", tone: "danger" })) {
       return;
     }
     setVideoUploadBusy(true);
@@ -2245,7 +2249,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
       activeSubtitleJobs.length > 0
         ? `当前有 ${activeSubtitleJobs.length} 个字幕任务正在执行。关闭翻译服务会取消这些任务，确定继续吗？`
         : "确定关闭翻译服务吗？";
-    if (!window.confirm(message)) {
+    if (!await confirm({ title: "关闭翻译服务", message, confirmLabel: "关闭服务", tone: "danger" })) {
       return;
     }
     setSubtitleServiceBusy(true);
@@ -2292,7 +2296,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
   async function handleCancelSubtitleJob(job: SubtitleJob) {
-    if (!window.confirm(`确定取消《${job.video_title}》的中文字幕生成吗？`)) {
+    if (!await confirm({ title: "取消字幕生成", message: `确定取消《${job.video_title}》的中文字幕生成吗？`, confirmLabel: "取消任务", tone: "danger" })) {
       return;
     }
     setSubtitleServiceBusy(true);
@@ -2359,7 +2363,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   }
 
   async function handleUndoPromotePhotoPerson(personId: number) {
-    if (!selectedPhoto || !window.confirm("确定撤销这个图库人脸样本吗？图库图片和人物标签会保留。")) {
+    if (!selectedPhoto || !await confirm({ title: "撤销人物样本", message: "确定撤销这个图库人脸样本吗？图库图片和人物标签会保留。", confirmLabel: "撤销", tone: "danger" })) {
       return;
     }
     setBusy(true);
@@ -2517,7 +2521,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     if (selectedGalleryPhotoIds.length === 0) {
       return;
     }
-    if (!window.confirm(`确认删除选中的 ${selectedGalleryPhotoIds.length} 张图库图片吗？这会删除图片文件、识别记录和向量数据。`)) {
+    if (!await confirm({ title: "删除图库图片", message: `确认删除选中的 ${selectedGalleryPhotoIds.length} 张图库图片吗？这会删除图片文件、识别记录和向量数据。`, confirmLabel: "删除", tone: "danger" })) {
       return;
     }
     setBusy(true);
@@ -2541,7 +2545,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     if (!selectedPhoto) {
       return;
     }
-    if (!window.confirm(`确认删除当前图片（ID: ${selectedPhoto.id}）吗？`)) {
+    if (!await confirm({ title: "删除图库图片", message: `确认删除当前图片（ID: ${selectedPhoto.id}）吗？`, confirmLabel: "删除", tone: "danger" })) {
       return;
     }
     setBusy(true);
@@ -4434,11 +4438,9 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                   className="danger-button full-width-action" 
                   disabled={busy} 
                   onClick={() => {
-                    if (confirm("确定要删除此视频吗？")) {
-                      void handleDeleteCurrentVideo().then(() => {
-                        window.close(); // Optional: close tab on delete
-                      });
-                    }
+                    void handleDeleteCurrentVideo().then((deleted) => {
+                      if (deleted) window.close();
+                    });
                   }}
                 >
                   删除视频

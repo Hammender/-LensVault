@@ -436,6 +436,74 @@ input:focus, select:focus, textarea:focus {
   background: rgba(20, 20, 20, 0.72);
 }
 
+.confirm-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(36, 29, 25, 0.58);
+  backdrop-filter: blur(4px);
+}
+
+.confirm-dialog {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  width: min(500px, 100%);
+  padding: 26px;
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  box-shadow: 9px 9px 0 var(--panel-border);
+  animation: confirm-dialog-enter 150ms ease-out;
+}
+
+.confirm-dialog-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  margin: 2px 17px 0 0;
+  color: var(--unknown);
+  background: var(--unknown-soft);
+  border: 1px solid currentColor;
+}
+
+.confirm-dialog--danger .confirm-dialog-icon {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.confirm-dialog-copy .eyebrow { margin: 0 0 4px; }
+
+.confirm-dialog-copy h2 {
+  font-size: 1.9rem;
+  line-height: 1.05;
+}
+
+.confirm-dialog-copy > p:last-child {
+  margin: 12px 0 0;
+  color: var(--muted);
+  line-height: 1.65;
+  white-space: pre-line;
+}
+
+.confirm-dialog-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--panel-border);
+}
+
+@keyframes confirm-dialog-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .export-modal {
   position: relative;
   width: min(980px, 100%);
@@ -2328,6 +2396,14 @@ input:focus, select:focus, textarea:focus {
   .nav-tab { padding: 7px 9px; }
   .section-head { flex-direction: column; align-items: stretch; }
   .modal-backdrop { padding: 16px; }
+  .confirm-dialog-backdrop { padding: 16px; }
+  .confirm-dialog {
+    grid-template-columns: 1fr;
+    padding: 22px;
+  }
+  .confirm-dialog-icon { margin: 0 0 14px; }
+  .confirm-dialog-actions { justify-content: stretch; }
+  .confirm-dialog-actions button { flex: 1 1 0; }
   .export-modal { padding: 20px; max-height: calc(100vh - 32px); }
   .export-chip-cloud,
   .export-chip-cloud.compact { max-height: 220px; }

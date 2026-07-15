@@ -10,6 +10,7 @@ import {
   listGallerySimilarityGroups
 } from "./api";
 import PhotoLightbox from "./PhotoLightbox";
+import { useConfirm } from "./ConfirmDialog";
 import SearchableSelect from "./SearchableSelect";
 import { filterPersonMatches, matchesPersonSearch } from "./personPicker";
 import { chooseRecoveredScan, findScanForScope } from "./similarityScanState";
@@ -25,6 +26,7 @@ type SimilarityReviewProps = {
 const pageSize = 12;
 
 export default function SimilarityReview({ persons, canEdit, canDelete }: SimilarityReviewProps) {
+  const confirm = useConfirm();
   const [personId, setPersonId] = useState<number | null>(null);
   const [personSearch, setPersonSearch] = useState("全部人物");
   const [includeCrossType, setIncludeCrossType] = useState(false);
@@ -217,9 +219,11 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     const matchMode = includeCrossType
       ? "允许普通图库与图文图库跨类型匹配"
       : "普通图库与图文图库分别匹配";
-    const confirmed = window.confirm(
-      `确认开始相似图片扫描吗？\n\n扫描人物：${personLabel(personId)}\n匹配方式：${matchMode}\n\n扫描耗时较长，完成前会继续保留当前成功结果。`
-    );
+    const confirmed = await confirm({
+      title: "开始相似图片扫描",
+      message: `确认开始相似图片扫描吗？\n\n扫描人物：${personLabel(personId)}\n匹配方式：${matchMode}\n\n扫描耗时较长，完成前会继续保留当前成功结果。`,
+      confirmLabel: "开始扫描"
+    });
     if (!confirmed) return;
 
     setBusy(true);
@@ -236,7 +240,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
   }
 
   async function deleteSelected() {
-    if (!selectedIds.length || !window.confirm(`确认删除选中的 ${selectedIds.length} 张图片？原图也会被删除。`)) return;
+    if (!selectedIds.length || !await confirm({ title: "删除相似图片", message: `确认删除选中的 ${selectedIds.length} 张图片？原图也会被删除。`, confirmLabel: "删除", tone: "danger" })) return;
     setBusy(true);
     try {
       const deleted = await batchDeleteGalleryPhotos(selectedIds);
@@ -255,9 +259,12 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       .filter((member) => selectedIds.includes(member.photo.id))
       .map((member) => member.photo.id);
     if (!groupPhotoIds.length) return;
-    const confirmed = window.confirm(
-      `确认删除第 ${group.ordinal} 组已选中的 ${groupPhotoIds.length} 张图片吗？\n\n原图也会被删除，此操作不可撤销。`
-    );
+    const confirmed = await confirm({
+      title: `删除第 ${group.ordinal} 组图片`,
+      message: `确认删除第 ${group.ordinal} 组已选中的 ${groupPhotoIds.length} 张图片吗？\n\n原图也会被删除，此操作不可撤销。`,
+      confirmLabel: "删除",
+      tone: "danger"
+    });
     if (!confirmed) return;
 
     setDeletingGroupIds((current) => [...current, group.id]);
