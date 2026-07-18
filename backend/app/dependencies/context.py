@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import Depends, Header, HTTPException, Query, Request
+from fastapi import Cookie, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.services.auth import decode_access_token
 
 
 settings = get_settings()
+AUTH_COOKIE_NAME = "pictureshow_session"
 
 PERMISSION_FIELDS = (
     "can_add_gallery",
@@ -83,6 +84,9 @@ def enforce_request_permission(request: Request, current: CurrentContext) -> Non
     if path == "/api/gallery/similarity-scans" and request.method == "POST":
         require_permission(current, "can_edit_gallery")
         return
+    if path.startswith("/api/gallery/similarity-scans/"):
+        require_permission(current, "can_edit_gallery")
+        return
     if path == "/api/gallery/photos/batch-delete" or (path.startswith("/api/gallery/photos") and request.method == "DELETE"):
         require_permission(current, "can_delete_gallery")
         return
@@ -119,16 +123,18 @@ def enforce_request_permission(request: Request, current: CurrentContext) -> Non
 def require_context(
     request: Request,
     authorization: str | None = Header(default=None),
-    access_token: str | None = Query(default=None),
+    session_token: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
     workspace_id_query: int | None = Query(default=None, alias="workspace_id"),
     x_workspace_id: int | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> CurrentContext:
-    token = access_token
-    if not token and authorization:
+    token = None
+    if authorization:
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() == "bearer" and value:
             token = value
+    if token is None and request.method in {"GET", "HEAD"}:
+        token = session_token
     if not token:
         raise HTTPException(status_code=401, detail="请先登录")
     user_id = decode_access_token(token, settings.auth_secret_key)

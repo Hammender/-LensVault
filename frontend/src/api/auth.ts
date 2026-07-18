@@ -1,2 +1,1 @@
-export { bootstrapAdmin, getBootstrapStatus, getCurrentSession, login, registerAccount } from "../api";
-
+export { bootstrapAdmin, getBootstrapStatus, getCurrentSession, login, logout, registerAccount } from "../api";

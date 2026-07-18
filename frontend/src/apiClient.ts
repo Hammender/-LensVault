@@ -28,13 +28,11 @@ export function clearSelectedWorkspaceId(): void {
   window.localStorage.removeItem(workspaceStorageKey);
 }
 
-export function withAccessToken(path: string): string {
-  const token = getAuthToken();
-  if (!token) return path;
-  const url = new URL(path, window.location.origin);
-  url.searchParams.set("access_token", token);
+export function withWorkspaceContext(path: string): string {
   const workspaceId = getSelectedWorkspaceId();
-  if (workspaceId) url.searchParams.set("workspace_id", String(workspaceId));
+  if (!workspaceId) return path;
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("workspace_id", String(workspaceId));
   return url.pathname + url.search;
 }
 
@@ -44,7 +42,7 @@ export function decorateMediaUrls<T>(value: T): T {
   const record = value as Record<string, unknown>;
   Object.entries(record).forEach(([key, item]) => {
     if (typeof item === "string" && key.endsWith("_url") && item.startsWith("/api/")) {
-      record[key] = withAccessToken(item);
+      record[key] = withWorkspaceContext(item);
     } else if (item && typeof item === "object") {
       record[key] = decorateMediaUrls(item);
     }
@@ -58,7 +56,7 @@ export function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Pro
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const workspaceId = getSelectedWorkspaceId();
   if (workspaceId) headers.set("X-Workspace-Id", String(workspaceId));
-  return window.fetch(input, { ...init, headers });
+  return window.fetch(input, { ...init, headers, credentials: init.credentials ?? "include" });
 }
 
 export async function parseResponse<T>(response: Response): Promise<T> {

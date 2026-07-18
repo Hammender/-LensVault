@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -32,6 +33,7 @@ from app.services.similarity import (
     load_similarity_scan_overview,
     mark_similarity_scans_stale,
 )
+from tests.support.app_loader import load_test_main
 
 
 def image_bytes(color: tuple[int, int, int], image_format: str = "PNG") -> bytes:
@@ -270,6 +272,71 @@ def test_scan_overview_returns_active_and_latest_completed_per_scope(db_session:
     assert [scan.id for scan in results] == ["latest-same-scope", "person-result"]
     assert results[0].is_stale is True
     assert all(scan.workspace_id == workspace.id for scan in results)
+
+
+def test_dismissed_similarity_group_is_filtered_from_scan_results(db_session: Session) -> None:
+    module = load_test_main()
+    workspace, person, _ = create_scope(db_session, photo_count=1)
+    scan = GallerySimilarityScan(
+        id="scan-review-status",
+        workspace_id=workspace.id,
+        person_id=person.id,
+        status="completed",
+        feature_version="v1",
+    )
+    db_session.add(scan)
+    db_session.flush()
+    pending_group = GallerySimilarityGroup(
+        scan_id=scan.id,
+        ordinal=1,
+        tier="near_duplicate",
+        min_score=0.95,
+        average_score=0.97,
+    )
+    dismissed_group = GallerySimilarityGroup(
+        scan_id=scan.id,
+        ordinal=2,
+        tier="near_duplicate",
+        review_status="dismissed",
+        min_score=0.94,
+        average_score=0.96,
+    )
+    db_session.add_all([pending_group, dismissed_group])
+    db_session.commit()
+    current = SimpleNamespace(workspace_id=workspace.id)
+
+    result = module.list_gallery_similarity_groups(
+        scan_id=scan.id,
+        tier="near_duplicate",
+        offset=0,
+        limit=20,
+        db=db_session,
+        current=current,
+    )
+
+    assert result.total == 1
+    assert [group.id for group in result.items] == [pending_group.id]
+    assert result.items[0].review_status == "pending"
+
+    updated = module.update_gallery_similarity_group(
+        scan_id=scan.id,
+        group_id=pending_group.id,
+        payload=module.GallerySimilarityGroupUpdate(review_status="dismissed"),
+        db=db_session,
+        current=current,
+    )
+    refreshed = module.list_gallery_similarity_groups(
+        scan_id=scan.id,
+        tier="near_duplicate",
+        offset=0,
+        limit=20,
+        db=db_session,
+        current=current,
+    )
+
+    assert updated.review_status == "dismissed"
+    assert refreshed.total == 0
+    assert refreshed.items == []
 
 
 def test_cleanup_deleted_photo_recommends_best_remaining_member(db_session: Session) -> None:

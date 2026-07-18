@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from app.models import Person, User, Workspace, WorkspaceMember
@@ -15,6 +15,7 @@ PERMISSION_CASES = (
     ("can_add_gallery", "POST", "/api/gallery/photos/import"),
     ("can_delete_gallery", "DELETE", "/api/gallery/photos/1"),
     ("can_edit_gallery", "PATCH", "/api/gallery/photos/1/rich-text"),
+    ("can_edit_gallery", "PATCH", "/api/gallery/similarity-scans/scan-1/groups/1"),
     ("can_add_samples", "POST", "/api/persons/1/samples"),
     ("can_delete_samples", "DELETE", "/api/persons/1/samples/1"),
     ("can_edit_samples", "PATCH", "/api/persons/1"),
@@ -89,7 +90,7 @@ def test_require_context_selects_authorized_workspace(db_session: Session) -> No
     current = module.require_context(
         make_request("GET", "/api/persons"),
         authorization=f"Bearer {token}",
-        access_token=None,
+        session_token=None,
         workspace_id_query=None,
         x_workspace_id=workspace.id,
         db=db_session,
@@ -117,9 +118,79 @@ def test_require_context_rejects_workspace_without_membership(db_session: Sessio
         module.require_context(
             make_request("GET", "/api/persons"),
             authorization=f"Bearer {token}",
-            access_token=None,
+            session_token=None,
             workspace_id_query=None,
             x_workspace_id=forbidden.id,
             db=db_session,
         )
     assert exc_info.value.status_code == 403
+
+
+def test_require_context_accepts_session_cookie_for_read_requests(db_session: Session) -> None:
+    module = load_test_main()
+    user = User(username="cookie-reader", display_name="Cookie 用户", password_hash="unused")
+    db_session.add(user)
+    db_session.flush()
+    workspace = Workspace(name="Cookie 空间", kind="private", owner_user_id=user.id)
+    db_session.add(workspace)
+    db_session.flush()
+    db_session.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+    db_session.commit()
+
+    token = create_access_token(user.id, module.settings.auth_secret_key, 5)
+    current = module.require_context(
+        make_request("GET", "/api/gallery/photos/1/original"),
+        authorization=None,
+        session_token=token,
+        workspace_id_query=workspace.id,
+        x_workspace_id=None,
+        db=db_session,
+    )
+
+    assert current.user.id == user.id
+    assert current.workspace_id == workspace.id
+
+
+def test_require_context_rejects_session_cookie_for_write_requests(db_session: Session) -> None:
+    module = load_test_main()
+    user = User(username="cookie-writer", display_name="Cookie 写入用户", password_hash="unused")
+    db_session.add(user)
+    db_session.flush()
+    workspace = Workspace(name="Cookie 写入空间", kind="private", owner_user_id=user.id)
+    db_session.add(workspace)
+    db_session.flush()
+    db_session.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
+    db_session.commit()
+
+    token = create_access_token(user.id, module.settings.auth_secret_key, 5)
+    with pytest.raises(HTTPException) as exc_info:
+        module.require_context(
+            make_request("DELETE", "/api/gallery/photos/1"),
+            authorization=None,
+            session_token=token,
+            workspace_id_query=workspace.id,
+            x_workspace_id=None,
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 401
+
+
+def test_auth_cookie_is_http_only_and_query_token_is_not_documented() -> None:
+    module = load_test_main()
+    response = Response()
+
+    module._set_auth_cookie(response, "test-token")
+
+    cookie = response.headers["set-cookie"]
+    assert f"{module.AUTH_COOKIE_NAME}=test-token" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=lax" in cookie
+    assert "Path=/api" in cookie
+
+    schema = module.app.openapi()
+    assert "/api/auth/logout" in schema["paths"]
+    for path in schema["paths"].values():
+        for operation in path.values():
+            parameters = operation.get("parameters", [])
+            assert all(parameter.get("name") != "access_token" for parameter in parameters)

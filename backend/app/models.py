@@ -272,6 +272,7 @@ class GallerySimilarityGroup(Base):
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     tier: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    review_status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     min_score: Mapped[float] = mapped_column(Float, nullable=False)
     average_score: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

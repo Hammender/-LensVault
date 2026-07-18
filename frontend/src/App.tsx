@@ -131,6 +131,7 @@ import {
   listWorkspaceInvitations,
   listWorkspaceMembers,
   login,
+  logout,
   registerAccount,
   renamePerson,
   replaceVideoCover,
@@ -561,16 +562,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
   const normalTags = useMemo(() => sortByPinyinName(tags.filter((tag) => !tag.is_system)), [tags]);
   const selectedPersonIsSystemUnknown = isSystemUnknownPerson(selectedPerson);
 
-  const filteredPersons = useMemo(() => {
-    const keyword = personSearch.trim().toLowerCase();
-    if (!keyword) {
-      return sortByPinyin(persons, (person) => person.display_name);
-    }
-    return sortByPinyin(
-      persons.filter((person) => person.display_name.toLowerCase().includes(keyword)),
-      (person) => person.display_name
-    );
-  }, [personSearch, persons]);
+  const filteredPersons = useMemo(
+    () => filterPersonMatches(persons, personSearch),
+    [personSearch, persons]
+  );
 
   const selectedFilterPersons = useMemo(
     () => sortByPinyin(persons.filter((person) => selectedPersonIds.includes(person.id)), (person) => person.display_name),
@@ -641,16 +636,10 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     [tags, selectedTagIds, excludeTagIds]
   );
 
-  const filteredPeopleInLibrary = useMemo(() => {
-    const keyword = peopleSearch.trim().toLowerCase();
-    if (!keyword) {
-      return sortByPinyin(persons, (person) => person.display_name);
-    }
-    return sortByPinyin(
-      persons.filter((person) => person.display_name.toLowerCase().includes(keyword)),
-      (person) => person.display_name
-    );
-  }, [peopleSearch, persons]);
+  const filteredPeopleInLibrary = useMemo(
+    () => filterPersonMatches(persons, peopleSearch),
+    [peopleSearch, persons]
+  );
 
   const unknownPersonCount = useMemo(() => persons.filter((person) => person.is_unknown).length, [persons]);
   const selectedPersonDeleteCount = useMemo(
@@ -2732,7 +2721,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                 className="search-input subtle"
                 value={personSearch}
                 onChange={(event) => setPersonSearch(event.target.value)}
-                placeholder="搜索人物名"
+                placeholder="搜索人物名称、拼音或首字母"
               />
               <div className="filter-stack">
                 {selectedFilterPersons.length > 0 && (
@@ -3418,7 +3407,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                 className="search-input subtle"
                 value={peopleSearch}
                 onChange={(event) => setPeopleSearch(event.target.value)}
-                placeholder="搜索人物（样本库）"
+                placeholder="搜索人物名称、拼音或首字母"
               />
             </label>
 
@@ -4932,6 +4921,7 @@ export default function App() {
       try {
         const session = await getCurrentSession();
         if (!cancelled) {
+          setAuthToken(session.access_token);
           setSelectedWorkspaceId(session.workspace.id);
           setAuthSession(session);
           setBootstrapRequired(false);
@@ -5005,10 +4995,12 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    clearAuthToken();
-    clearSelectedWorkspaceId();
-    setAuthSession(null);
-    setAuthError(null);
+    void logout().finally(() => {
+      clearAuthToken();
+      clearSelectedWorkspaceId();
+      setAuthSession(null);
+      setAuthError(null);
+    });
   };
 
   const handleSessionChange = (session: AuthSession) => {

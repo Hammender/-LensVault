@@ -40,7 +40,7 @@ import {
   parseResponse as parse,
   setAuthToken,
   setSelectedWorkspaceId,
-  withAccessToken
+  withWorkspaceContext
 } from "./apiClient";
 
 export {
@@ -99,6 +99,14 @@ export async function registerAccount(payload: {
 
 export async function getCurrentSession(): Promise<AuthSession> {
   return parse<AuthSession>(await authFetch("/api/auth/me"));
+}
+
+export async function logout(): Promise<void> {
+  await parse<{ status: string }>(
+    await authFetch("/api/auth/logout", {
+      method: "POST"
+    })
+  );
 }
 
 export type WorkspacePermissionsPayload = {
@@ -397,6 +405,20 @@ export async function getGallerySimilarityGroup(
   );
 }
 
+export async function updateGallerySimilarityGroup(
+  scanId: string,
+  groupId: number,
+  reviewStatus: "pending" | "dismissed"
+): Promise<GallerySimilarityGroup> {
+  return parse<GallerySimilarityGroup>(
+    await fetch(`/api/gallery/similarity-scans/${scanId}/groups/${groupId}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify({ review_status: reviewStatus })
+    })
+  );
+}
+
 export async function promoteGalleryPhotoPersonSample(
   photoId: number,
   personId: number
@@ -489,7 +511,7 @@ export function getGalleryExportUrl(options: GalleryExportOptions): string {
   options.tagIds?.forEach((id) => url.searchParams.append("tag_ids", String(id)));
   options.excludePersonIds?.forEach((id) => url.searchParams.append("exclude_person_ids", String(id)));
   options.excludeTagIds?.forEach((id) => url.searchParams.append("exclude_tag_ids", String(id)));
-  return withAccessToken(url.pathname + url.search);
+  return withWorkspaceContext(url.pathname + url.search);
 }
 
 export async function importGalleryExportZip(file: File): Promise<Task> {
@@ -600,7 +622,7 @@ export async function getUploadSummary(): Promise<UploadSummary> {
 }
 
 export function getPersonExportUrl(): string {
-  return withAccessToken("/api/persons/export");
+  return withWorkspaceContext("/api/persons/export");
 }
 
 export async function importPersonSamples(file: File): Promise<Task> {

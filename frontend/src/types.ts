@@ -260,6 +260,7 @@ export type GallerySimilarityGroup = {
   id: number;
   ordinal: number;
   tier: "near_duplicate" | "same_scene";
+  review_status: "pending" | "dismissed";
   min_score: number;
   average_score: number;
   people: Person[];

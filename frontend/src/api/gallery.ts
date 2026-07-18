@@ -16,6 +16,7 @@ export {
   importGalleryRichPhotos,
   listGalleryPhotos,
   listGallerySimilarityGroups,
+  updateGallerySimilarityGroup,
   promoteGalleryPhotoPersonSample,
   undoGalleryPhotoPersonSample,
   reRecognizeGalleryPhoto,

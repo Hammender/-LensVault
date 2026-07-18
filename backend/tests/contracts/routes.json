@@ -36,6 +36,12 @@
     ]
   },
   {
+    "path": "/api/auth/logout",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/workspaces",
     "methods": [
       "GET"
@@ -327,6 +333,18 @@
     "path": "/api/gallery/similarity-scans/{scan_id}/groups",
     "methods": [
       "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/similarity-scans/{scan_id}/groups/{group_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/gallery/similarity-scans/{scan_id}/groups/{group_id}",
+    "methods": [
+      "PATCH"
     ]
   },
   {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -455,10 +456,15 @@ class GallerySimilarityGroupRead(BaseModel):
     id: int
     ordinal: int
     tier: str
+    review_status: Literal["pending", "dismissed"]
     min_score: float
     average_score: float
     people: list[PersonRead]
     members: list[GallerySimilarityMemberRead]
+
+
+class GallerySimilarityGroupUpdate(BaseModel):
+    review_status: Literal["pending", "dismissed"]
 
 
 class PaginatedGallerySimilarityGroups(BaseModel):

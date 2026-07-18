@@ -76,20 +76,233 @@ def ensure_face_recognition_columns(engine: Engine) -> None:
         )
 
 
+def ensure_gallery_similarity_group_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "gallery_similarity_groups" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("gallery_similarity_groups")}
+    with engine.begin() as connection:
+        if "review_status" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE gallery_similarity_groups "
+                    "ADD COLUMN review_status VARCHAR(32) NOT NULL DEFAULT 'pending'"
+                )
+            )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_gallery_similarity_groups_review_status "
+                "ON gallery_similarity_groups (review_status)"
+            )
+        )
+
+
 def _sqlite_index_columns(connection, index_name: str) -> list[str]:
     safe_index_name = index_name.replace("'", "''")
     rows = connection.execute(text(f"PRAGMA index_info('{safe_index_name}')")).mappings().all()
     return [str(row["name"]) for row in rows]
 
 
+def _sqlite_unique_index_columns(connection, table_name: str) -> list[list[str]]:
+    safe_table_name = table_name.replace("'", "''")
+    rows = connection.execute(text(f"PRAGMA index_list('{safe_table_name}')")).mappings().all()
+    return [
+        _sqlite_index_columns(connection, str(row["name"]))
+        for row in rows
+        if int(row["unique"]) == 1
+    ]
+
+
 def _sqlite_gallery_unique_indexes(connection) -> list[list[str]]:
-    rows = connection.execute(text("PRAGMA index_list('gallery_photos')")).mappings().all()
-    indexes: list[list[str]] = []
-    for row in rows:
-        if int(row["unique"]) != 1:
-            continue
-        indexes.append(_sqlite_index_columns(connection, str(row["name"])))
-    return indexes
+    return _sqlite_unique_index_columns(connection, "gallery_photos")
+
+
+def _ensure_no_workspace_name_duplicates(connection, table_name: str) -> None:
+    duplicate = connection.execute(
+        text(
+            f"SELECT workspace_id, name, COUNT(*) AS duplicate_count "
+            f"FROM {table_name} "
+            "GROUP BY workspace_id, name "
+            "HAVING COUNT(*) > 1 "
+            "LIMIT 1"
+        )
+    ).mappings().first()
+    if duplicate is None:
+        return
+    raise RuntimeError(
+        "数据库迁移失败："
+        f"{table_name} 中工作区 {duplicate['workspace_id']} 存在重复名称 "
+        f"{duplicate['name']!r}（{duplicate['duplicate_count']} 条），请先人工处理"
+    )
+
+
+def _rebuild_persons_table(connection) -> None:
+    connection.execute(text("DROP TABLE IF EXISTS persons_new"))
+    connection.execute(
+        text(
+            """
+            CREATE TABLE persons_new (
+                id INTEGER NOT NULL,
+                workspace_id INTEGER,
+                name VARCHAR(256) NOT NULL,
+                display_name VARCHAR(256) NOT NULL,
+                note TEXT,
+                is_unknown BOOLEAN NOT NULL,
+                unknown_serial INTEGER,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                PRIMARY KEY (id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE,
+                CONSTRAINT uq_persons_workspace_name UNIQUE (workspace_id, name),
+                CONSTRAINT uq_persons_workspace_unknown_serial UNIQUE (workspace_id, unknown_serial)
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO persons_new (
+                id, workspace_id, name, display_name, note, is_unknown,
+                unknown_serial, created_at, updated_at
+            )
+            SELECT
+                id, workspace_id, name, display_name, note, is_unknown,
+                unknown_serial, created_at, updated_at
+            FROM persons
+            """
+        )
+    )
+    connection.execute(text("DROP TABLE persons"))
+    connection.execute(text("ALTER TABLE persons_new RENAME TO persons"))
+    connection.execute(text("CREATE INDEX ix_persons_workspace_id ON persons (workspace_id)"))
+    connection.execute(text("CREATE INDEX ix_persons_name ON persons (name)"))
+    connection.execute(text("CREATE INDEX ix_persons_display_name ON persons (display_name)"))
+    connection.execute(text("CREATE INDEX ix_persons_is_unknown ON persons (is_unknown)"))
+
+
+def _rebuild_video_category_tags_table(connection) -> None:
+    connection.execute(text("DROP TABLE IF EXISTS video_category_tags_new"))
+    connection.execute(
+        text(
+            """
+            CREATE TABLE video_category_tags_new (
+                id INTEGER NOT NULL,
+                workspace_id INTEGER,
+                name VARCHAR(128) NOT NULL,
+                created_at DATETIME NOT NULL,
+                PRIMARY KEY (id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE,
+                CONSTRAINT uq_video_category_tags_workspace_name UNIQUE (workspace_id, name)
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO video_category_tags_new (id, workspace_id, name, created_at)
+            SELECT id, workspace_id, name, created_at
+            FROM video_category_tags
+            """
+        )
+    )
+    connection.execute(text("DROP TABLE video_category_tags"))
+    connection.execute(text("ALTER TABLE video_category_tags_new RENAME TO video_category_tags"))
+    connection.execute(text("CREATE INDEX ix_video_category_tags_workspace_id ON video_category_tags (workspace_id)"))
+    connection.execute(text("CREATE INDEX ix_video_category_tags_name ON video_category_tags (name)"))
+
+
+def _rebuild_video_people_table(connection) -> None:
+    connection.execute(text("DROP TABLE IF EXISTS video_people_new"))
+    connection.execute(
+        text(
+            """
+            CREATE TABLE video_people_new (
+                id INTEGER NOT NULL,
+                workspace_id INTEGER,
+                name VARCHAR(256) NOT NULL,
+                note TEXT,
+                avatar_object_key VARCHAR(512),
+                avatar_content_type VARCHAR(128),
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                PRIMARY KEY (id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE,
+                CONSTRAINT uq_video_people_workspace_name UNIQUE (workspace_id, name),
+                UNIQUE (avatar_object_key)
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            INSERT INTO video_people_new (
+                id, workspace_id, name, note, avatar_object_key,
+                avatar_content_type, created_at, updated_at
+            )
+            SELECT
+                id, workspace_id, name, note, avatar_object_key,
+                avatar_content_type, created_at, updated_at
+            FROM video_people
+            """
+        )
+    )
+    connection.execute(text("DROP TABLE video_people"))
+    connection.execute(text("ALTER TABLE video_people_new RENAME TO video_people"))
+    connection.execute(text("CREATE INDEX ix_video_people_workspace_id ON video_people (workspace_id)"))
+    connection.execute(text("CREATE INDEX ix_video_people_name ON video_people (name)"))
+
+
+def ensure_workspace_scoped_name_constraints(engine: Engine) -> None:
+    expected_unique_indexes = {
+        "persons": (["workspace_id", "name"], ["workspace_id", "unknown_serial"]),
+        "video_category_tags": (["workspace_id", "name"],),
+        "video_people": (["workspace_id", "name"],),
+    }
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        tables_to_rebuild = []
+        for table_name, expected_indexes in expected_unique_indexes.items():
+            if table_name not in existing_tables:
+                continue
+            unique_indexes = _sqlite_unique_index_columns(connection, table_name)
+            has_missing_workspace_unique = any(
+                list(expected_columns) not in unique_indexes
+                for expected_columns in expected_indexes
+            )
+            has_legacy_global_unique = ["name"] in unique_indexes or (
+                table_name == "persons" and ["unknown_serial"] in unique_indexes
+            )
+            if has_missing_workspace_unique or has_legacy_global_unique:
+                tables_to_rebuild.append(table_name)
+        if not tables_to_rebuild:
+            return
+
+        for table_name in tables_to_rebuild:
+            _ensure_no_workspace_name_duplicates(connection, table_name)
+
+        connection.execute(text("PRAGMA foreign_keys=OFF"))
+        connection.execute(text("BEGIN IMMEDIATE"))
+        try:
+            if "persons" in tables_to_rebuild:
+                _rebuild_persons_table(connection)
+            if "video_category_tags" in tables_to_rebuild:
+                _rebuild_video_category_tags_table(connection)
+            if "video_people" in tables_to_rebuild:
+                _rebuild_video_people_table(connection)
+            connection.execute(text("COMMIT"))
+        except Exception:
+            connection.execute(text("ROLLBACK"))
+            raise
+        finally:
+            connection.execute(text("PRAGMA foreign_keys=ON"))
+
+        foreign_key_error = connection.execute(text("PRAGMA foreign_key_check")).mappings().first()
+        if foreign_key_error is not None:
+            raise RuntimeError(f"数据库迁移后外键检查失败：{dict(foreign_key_error)}")
 
 
 def ensure_gallery_photo_type_unique_constraint(engine: Engine) -> None:
@@ -99,10 +312,13 @@ def ensure_gallery_photo_type_unique_constraint(engine: Engine) -> None:
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
         unique_indexes = _sqlite_gallery_unique_indexes(connection)
         has_new_unique = ["workspace_id", "sha256", "is_rich_text"] in unique_indexes
-        has_old_unique = ["workspace_id", "sha256"] in unique_indexes
-        if has_new_unique and not has_old_unique:
+        has_legacy_sha_unique = any(
+            columns in (["sha256"], ["workspace_id", "sha256"])
+            for columns in unique_indexes
+        )
+        if has_new_unique and not has_legacy_sha_unique:
             return
-        if not has_old_unique:
+        if not has_legacy_sha_unique:
             connection.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_gallery_photos_workspace_sha256_rich_text "
@@ -169,9 +385,11 @@ def ensure_gallery_photo_type_unique_constraint(engine: Engine) -> None:
 
 def initialize_database(engine: Engine) -> None:
     Base.metadata.create_all(bind=engine)
+    ensure_workspace_scoped_name_constraints(engine)
     ensure_gallery_photo_type_unique_constraint(engine)
     ensure_video_seek_columns(engine)
     ensure_face_recognition_columns(engine)
+    ensure_gallery_similarity_group_columns(engine)
 
 
 def initialize_runtime(

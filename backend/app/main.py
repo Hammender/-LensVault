@@ -11,12 +11,14 @@ from fastapi import BackgroundTasks, Depends, File, Form, HTTPException, Query, 
 from fastapi.responses import RedirectResponse, StreamingResponse
 from PIL import Image
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.application import create_app
 from app.core.config import get_settings
 from app.db import SessionLocal, engine, get_db
 from app.dependencies.context import (
+    AUTH_COOKIE_NAME,
     PERMISSION_FIELDS,
     CurrentContext,
     enforce_request_permission as _enforce_request_permission,
@@ -83,6 +85,7 @@ from app.schemas import (
     GalleryPhotoPersonTagCreate,
     GalleryPhotoTagCreate,
     GallerySimilarityGroupRead,
+    GallerySimilarityGroupUpdate,
     GallerySimilarityMemberRead,
     GallerySimilarityScanOverview,
     GallerySimilarityScanCreate,
@@ -192,6 +195,29 @@ def _auth_session(db: Session, user: User, selected_workspace_id: int | None = N
         workspace=selected,
         workspaces=workspaces,
     )
+
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        max_age=settings.access_token_expire_minutes * 60,
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite="lax",
+        path="/api",
+    )
+
+
+def _auth_session_with_cookie(
+    response: Response,
+    db: Session,
+    user: User,
+    selected_workspace_id: int | None = None,
+) -> AuthSession:
+    session = _auth_session(db, user, selected_workspace_id)
+    _set_auth_cookie(response, session.access_token)
+    return session
 
 
 def _get_workspace_object(db: Session, model, object_id: int, workspace_id: int, label: str):
@@ -605,7 +631,7 @@ def get_bootstrap_status(db: Session = Depends(get_db)) -> BootstrapStatus:
 
 
 @app.post("/api/auth/bootstrap", response_model=AuthSession)
-def bootstrap_admin(payload: BootstrapCreate, db: Session = Depends(get_db)) -> AuthSession:
+def bootstrap_admin(payload: BootstrapCreate, response: Response, db: Session = Depends(get_db)) -> AuthSession:
     if db.scalar(select(func.count(User.id))) > 0:
         raise HTTPException(status_code=409, detail="系统已初始化")
     username = payload.username.strip()
@@ -621,21 +647,21 @@ def bootstrap_admin(payload: BootstrapCreate, db: Session = Depends(get_db)) -> 
     db.refresh(user)
     picture_service.ensure_system_tags(db, workspace.id)
     db.refresh(user)
-    return _auth_session(db, user)
+    return _auth_session_with_cookie(response, db, user)
 
 
 @app.post("/api/auth/login", response_model=AuthSession)
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> AuthSession:
+def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> AuthSession:
     user = db.scalar(select(User).where(User.username == payload.username.strip()))
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="用户名或密码不正确")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="账号已停用")
-    return _auth_session(db, user)
+    return _auth_session_with_cookie(response, db, user)
 
 
 @app.post("/api/auth/register", response_model=AuthSession)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> AuthSession:
+def register(payload: RegisterRequest, response: Response, db: Session = Depends(get_db)) -> AuthSession:
     if db.scalar(select(func.count(User.id))) == 0:
         raise HTTPException(status_code=409, detail="系统尚未初始化，请先创建管理员")
     username = payload.username.strip()
@@ -655,13 +681,29 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> AuthSes
     db.refresh(user)
     picture_service.ensure_system_tags(db, private_workspace.id)
     db.refresh(user)
-    return _auth_session(db, user)
+    return _auth_session_with_cookie(response, db, user)
 
 
 @app.get("/api/auth/me", response_model=AuthSession)
-def get_current_session(current: CurrentContext = Depends(require_context), db: Session = Depends(get_db)) -> AuthSession:
+def get_current_session(
+    response: Response,
+    current: CurrentContext = Depends(require_context),
+    db: Session = Depends(get_db),
+) -> AuthSession:
     db.refresh(current.user)
-    return _auth_session(db, current.user, current.workspace_id)
+    return _auth_session_with_cookie(response, db, current.user, current.workspace_id)
+
+
+@app.post("/api/auth/logout")
+def logout(response: Response) -> dict[str, str]:
+    response.delete_cookie(
+        key=AUTH_COOKIE_NAME,
+        path="/api",
+        secure=settings.auth_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+    return {"status": "ok"}
 
 
 @app.get("/api/workspaces", response_model=list[WorkspaceRead])
@@ -938,10 +980,16 @@ def create_person(
 ) -> PersonRead:
     normalized = payload.name.strip()
     if db.scalar(select(Person).where(Person.workspace_id == current.workspace_id, Person.name == normalized)) is not None:
-        raise HTTPException(status_code=409, detail="Person already exists")
+        raise HTTPException(status_code=409, detail="人物名称已存在")
     person = Person(workspace_id=current.workspace_id, name=normalized, display_name=normalized, note=payload.note, is_unknown=False)
     db.add(person)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if db.scalar(select(Person).where(Person.workspace_id == current.workspace_id, Person.name == normalized)) is not None:
+            raise HTTPException(status_code=409, detail="人物名称已存在") from exc
+        raise
     db.refresh(person)
     return _person_to_read(db, person)
 
@@ -1054,22 +1102,36 @@ def update_person(
     current: CurrentContext = Depends(require_context),
 ) -> PersonRead:
     person = _get_workspace_object(db, Person, person_id, current.workspace_id, "Person")
+    normalized_name: str | None = None
     if payload.name is not None:
         if picture_service.is_singleton_unknown_person(person):
             raise HTTPException(status_code=400, detail="系统未知人物不能直接改名")
         normalized = payload.name.strip()
+        normalized_name = normalized
         duplicate = db.scalar(
             select(Person).where(Person.workspace_id == current.workspace_id, Person.name == normalized, Person.id != person_id)
         )
         if duplicate is not None:
-            raise HTTPException(status_code=409, detail="Person already exists")
+            raise HTTPException(status_code=409, detail="人物名称已存在")
         person.name = normalized
         person.display_name = normalized
         person.is_unknown = False
     if payload.note is not None:
         person.note = payload.note
     db.add(person)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if normalized_name is not None and db.scalar(
+            select(Person).where(
+                Person.workspace_id == current.workspace_id,
+                Person.name == normalized_name,
+                Person.id != person_id,
+            )
+        ) is not None:
+            raise HTTPException(status_code=409, detail="人物名称已存在") from exc
+        raise
     db.refresh(person)
     return _person_to_read(db, person)
 
@@ -1085,7 +1147,20 @@ def rename_person(
     try:
         person = picture_service.rename_person(db, person, payload.name)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 409 if str(exc) == "人物名称已存在" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        normalized = payload.name.strip()
+        if db.scalar(
+            select(Person).where(
+                Person.workspace_id == current.workspace_id,
+                Person.name == normalized,
+                Person.id != person_id,
+            )
+        ) is not None:
+            raise HTTPException(status_code=409, detail="人物名称已存在") from exc
+        raise
     return _person_to_read(db, person)
 
 
@@ -1532,6 +1607,7 @@ def _gallery_similarity_group_read(db: Session, group: GallerySimilarityGroup) -
         id=group.id,
         ordinal=group.ordinal,
         tier=group.tier,
+        review_status=group.review_status,
         min_score=group.min_score,
         average_score=group.average_score,
         people=[_person_to_read(db, person) for person in people],
@@ -1620,7 +1696,11 @@ def list_gallery_similarity_groups(
     scan = db.get(GallerySimilarityScan, scan_id)
     if scan is None or scan.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Similarity scan not found")
-    condition = (GallerySimilarityGroup.scan_id == scan_id, GallerySimilarityGroup.tier == tier)
+    condition = (
+        GallerySimilarityGroup.scan_id == scan_id,
+        GallerySimilarityGroup.tier == tier,
+        GallerySimilarityGroup.review_status == "pending",
+    )
     total = db.scalar(select(func.count(GallerySimilarityGroup.id)).where(*condition)) or 0
     groups = db.scalars(
         select(GallerySimilarityGroup)
@@ -1653,6 +1733,35 @@ def get_gallery_similarity_group(
         )
     )
     return _gallery_similarity_group_read(db, group) if group is not None else None
+
+
+@app.patch(
+    "/api/gallery/similarity-scans/{scan_id}/groups/{group_id}",
+    response_model=GallerySimilarityGroupRead,
+)
+def update_gallery_similarity_group(
+    scan_id: str,
+    group_id: int,
+    payload: GallerySimilarityGroupUpdate,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GallerySimilarityGroupRead:
+    scan = db.get(GallerySimilarityScan, scan_id)
+    if scan is None or scan.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Similarity scan not found")
+    group = db.scalar(
+        select(GallerySimilarityGroup).where(
+            GallerySimilarityGroup.id == group_id,
+            GallerySimilarityGroup.scan_id == scan_id,
+        )
+    )
+    if group is None:
+        raise HTTPException(status_code=404, detail="Similarity group not found")
+    group.review_status = payload.review_status
+    db.add(group)
+    db.commit()
+    db.refresh(group)
+    return _gallery_similarity_group_read(db, group)
 
 
 @app.get("/api/gallery/photos", response_model=PaginatedGalleryPhotos)
@@ -2007,6 +2116,18 @@ def create_video_category_tag(
         return _video_category_to_read(tag)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        normalized = payload.name.strip()
+        existing = db.scalar(
+            select(VideoCategoryTag).where(
+                VideoCategoryTag.workspace_id == current.workspace_id,
+                VideoCategoryTag.name == normalized,
+            )
+        )
+        if existing is not None:
+            return _video_category_to_read(existing)
+        raise
 
 
 @app.patch("/api/video-category-tags/{tag_id}", response_model=VideoCategoryTagRead)
@@ -2026,10 +2147,22 @@ def update_video_category_tag(
         )
     )
     if duplicate:
-        raise HTTPException(status_code=409, detail="Video category tag already exists")
+        raise HTTPException(status_code=409, detail="视频分类标签名称已存在")
     tag.name = normalized
     db.add(tag)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if db.scalar(
+            select(VideoCategoryTag).where(
+                VideoCategoryTag.workspace_id == current.workspace_id,
+                VideoCategoryTag.name == normalized,
+                VideoCategoryTag.id != tag_id,
+            )
+        ) is not None:
+            raise HTTPException(status_code=409, detail="视频分类标签名称已存在") from exc
+        raise
     db.refresh(tag)
     return _video_category_to_read(tag)
 
@@ -2071,7 +2204,7 @@ async def create_video_person(
     if not normalized:
         raise HTTPException(status_code=400, detail="Video person name is required")
     if db.scalar(select(VideoPerson).where(VideoPerson.workspace_id == current.workspace_id, VideoPerson.name == normalized)):
-        raise HTTPException(status_code=409, detail="Video person already exists")
+        raise HTTPException(status_code=409, detail="视频人物名称已存在")
     avatar_key = None
     avatar_type = None
     if avatar is not None and avatar.filename:
@@ -2089,7 +2222,20 @@ async def create_video_person(
         avatar_content_type=avatar_type,
     )
     db.add(person)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if avatar_key:
+            storage.remove_object(avatar_key)
+        if db.scalar(
+            select(VideoPerson).where(
+                VideoPerson.workspace_id == current.workspace_id,
+                VideoPerson.name == normalized,
+            )
+        ) is not None:
+            raise HTTPException(status_code=409, detail="视频人物名称已存在") from exc
+        raise
     db.refresh(person)
     return _video_person_to_read(person)
 
@@ -2104,8 +2250,10 @@ async def update_video_person(
     current: CurrentContext = Depends(require_context),
 ) -> VideoPersonRead:
     person = _get_workspace_object(db, VideoPerson, person_id, current.workspace_id, "Video person")
+    normalized_name: str | None = None
     if name is not None:
         normalized = name.strip()
+        normalized_name = normalized
         if not normalized:
             raise HTTPException(status_code=400, detail="Video person name is required")
         duplicate = db.scalar(
@@ -2116,10 +2264,11 @@ async def update_video_person(
             )
         )
         if duplicate:
-            raise HTTPException(status_code=409, detail="Video person already exists")
+            raise HTTPException(status_code=409, detail="视频人物名称已存在")
         person.name = normalized
     person.note = note
     old_avatar_key = None
+    new_avatar_key = None
     if avatar is not None and avatar.filename:
         try:
             avatar_key, avatar_type = video_service.save_person_avatar(
@@ -2128,10 +2277,25 @@ async def update_video_person(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         old_avatar_key = person.avatar_object_key
+        new_avatar_key = avatar_key
         person.avatar_object_key = avatar_key
         person.avatar_content_type = avatar_type
     db.add(person)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if new_avatar_key:
+            storage.remove_object(new_avatar_key)
+        if normalized_name is not None and db.scalar(
+            select(VideoPerson).where(
+                VideoPerson.workspace_id == current.workspace_id,
+                VideoPerson.name == normalized_name,
+                VideoPerson.id != person_id,
+            )
+        ) is not None:
+            raise HTTPException(status_code=409, detail="视频人物名称已存在") from exc
+        raise
     db.refresh(person)
     if old_avatar_key:
         storage.remove_object(old_avatar_key)

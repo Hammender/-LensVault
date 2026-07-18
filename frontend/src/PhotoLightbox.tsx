@@ -15,6 +15,7 @@ type PhotoLightboxProps = {
   onClose: () => void;
   onPrevious: () => void | Promise<void>;
   onNext: () => void | Promise<void>;
+  onKeyDown?: (event: KeyboardEvent) => void;
 };
 
 export default function PhotoLightbox({
@@ -29,7 +30,8 @@ export default function PhotoLightbox({
   nextLabel,
   onClose,
   onPrevious,
-  onNext
+  onNext,
+  onKeyDown: onCustomKeyDown
 }: PhotoLightboxProps) {
   useEffect(() => {
     if (!keyboardEnabled) return undefined;
@@ -41,11 +43,13 @@ export default function PhotoLightbox({
         void onPrevious();
       } else if (event.key === "ArrowRight" && canGoNext) {
         void onNext();
+      } else {
+        onCustomKeyDown?.(event);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, canGoNext, canGoPrevious, keyboardEnabled, onClose, onNext, onPrevious]);
+  }, [busy, canGoNext, canGoPrevious, keyboardEnabled, onClose, onCustomKeyDown, onNext, onPrevious]);
 
   return (
     <div className="lightbox-backdrop" onClick={onClose} role="presentation">
