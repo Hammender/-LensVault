@@ -3028,7 +3028,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                     <button className={photo.is_rich_text ? "photo-card rich-card" : "photo-card"} onClick={() => openGalleryLightbox(photo.id)}>
                     {photo.is_rich_text ? (
                       <div className="rich-card-layout">
-                        <img src={withImageWidth(photo.thumbnail_url, 720)} alt="图库预览" loading="lazy" />
+                        <img src={photo.animated_thumbnail_url} alt="图库预览" loading="lazy" />
                         <div className="rich-card-copy">
                           <p className="rich-snippet">{photo.rich_text || "未识别到文本，可在详情里手动补录。"}</p>
                           <div className="micro-row">
@@ -3049,7 +3049,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
                       </div>
                     ) : (
                       <>
-                        <img src={withImageWidth(photo.thumbnail_url, 720)} alt="图库预览" loading="lazy" />
+                        <img src={photo.animated_thumbnail_url} alt="图库预览" loading="lazy" />
                         <div className="photo-meta">
                           <div className="micro-row">
                             {photo.persons.map((person) => (

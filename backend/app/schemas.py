@@ -238,6 +238,7 @@ class GalleryPhotoListItem(BaseModel):
     persons: list[GalleryPersonTagRead]
     tags: list[GalleryTagRead]
     thumbnail_url: str
+    animated_thumbnail_url: str
     original_url: str
 
 

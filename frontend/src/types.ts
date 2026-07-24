@@ -127,6 +127,7 @@ export type GalleryPhotoListItem = {
   persons: GalleryPersonTag[];
   tags: GalleryTag[];
   thumbnail_url: string;
+  animated_thumbnail_url: string;
   original_url: string;
 };
 

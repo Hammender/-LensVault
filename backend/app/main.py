@@ -49,6 +49,7 @@ from app.mappers.workspaces import (
     workspace_to_read as _workspace_read,
     workspaces_to_read as _workspace_reads,
 )
+from app.services.thumbnails import animated_thumbnail_cache_key, render_gallery_thumbnail
 from app.models import (
     FaceRecord,
     GalleryPhoto,
@@ -1865,6 +1866,42 @@ def get_gallery_thumbnail(
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=92)
     return Response(content=buffer.getvalue(), media_type="image/jpeg")
+
+
+@app.get("/api/gallery/photos/{photo_id}/animated-thumbnail")
+def get_gallery_animated_thumbnail(
+    photo_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> Response:
+    photo = _get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    cache_key = animated_thumbnail_cache_key(photo.workspace_id, photo.id, photo.sha256)
+    cache_headers = {"Cache-Control": "private, max-age=31536000, immutable"}
+
+    try:
+        cached = storage.get_bytes(cache_key)
+    except Exception:
+        cached = None
+    if cached is not None:
+        return Response(content=cached, media_type="image/webp", headers=cache_headers)
+
+    payload = storage.get_bytes(photo.object_key)
+    try:
+        thumbnail = render_gallery_thumbnail(payload)
+    except Exception:
+        logger.exception("Failed to render animated gallery thumbnail photo_id=%s", photo.id)
+        return Response(
+            content=payload,
+            media_type=photo.content_type or "application/octet-stream",
+            headers=cache_headers,
+        )
+
+    if thumbnail.is_animated:
+        try:
+            storage.put_bytes(cache_key, thumbnail.payload, thumbnail.media_type)
+        except Exception:
+            logger.exception("Failed to cache animated gallery thumbnail photo_id=%s", photo.id)
+    return Response(content=thumbnail.payload, media_type=thumbnail.media_type, headers=cache_headers)
 
 
 @app.post("/api/gallery/photos/{photo_id}/persons", response_model=GalleryPhotoDetail)

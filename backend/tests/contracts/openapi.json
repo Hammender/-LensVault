@@ -603,6 +603,10 @@
       },
       "GalleryPhotoDetail": {
         "properties": {
+          "animated_thumbnail_url": {
+            "title": "Animated Thumbnail Url",
+            "type": "string"
+          },
           "content_type": {
             "anyOf": [
               {
@@ -743,6 +747,7 @@
           "persons",
           "tags",
           "thumbnail_url",
+          "animated_thumbnail_url",
           "original_url",
           "faces",
           "created_at",
@@ -753,6 +758,10 @@
       },
       "GalleryPhotoListItem": {
         "properties": {
+          "animated_thumbnail_url": {
+            "title": "Animated Thumbnail Url",
+            "type": "string"
+          },
           "filename": {
             "title": "Filename",
             "type": "string"
@@ -856,6 +865,7 @@
           "persons",
           "tags",
           "thumbnail_url",
+          "animated_thumbnail_url",
           "original_url"
         ],
         "title": "GalleryPhotoListItem",
@@ -4857,6 +4867,106 @@
           }
         },
         "summary": "Get Gallery Photo"
+      }
+    },
+    "/api/gallery/photos/{photo_id}/animated-thumbnail": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "photo_id",
+            "required": true,
+            "schema": {
+              "title": "Photo Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Gallery Animated Thumbnail"
       }
     },
     "/api/gallery/photos/{photo_id}/original": {

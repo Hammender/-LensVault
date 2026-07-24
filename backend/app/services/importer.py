@@ -21,6 +21,7 @@ from app.services.face import DetectedFace, FaceService
 from app.services.qdrant import QdrantVectorStore
 from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
+from app.services.thumbnails import animated_thumbnail_cache_key
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -723,6 +724,7 @@ class PictureService:
         for workspace_id in workspace_ids:
             mark_similarity_scans_stale(db, workspace_id)
         for photo in photos:
+            self.storage.remove_object(animated_thumbnail_cache_key(photo.workspace_id, photo.id, photo.sha256))
             self.storage.remove_object(photo.object_key)
             db.delete(photo)
             deleted += 1

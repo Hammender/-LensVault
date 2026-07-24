@@ -384,6 +384,12 @@
     ]
   },
   {
+    "path": "/api/gallery/photos/{photo_id}/animated-thumbnail",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/gallery/photos/{photo_id}/persons",
     "methods": [
       "POST"
