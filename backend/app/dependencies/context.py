@@ -12,7 +12,6 @@ from app.models import User, Workspace, WorkspaceMember
 from app.services.auth import decode_access_token
 
 
-settings = get_settings()
 AUTH_COOKIE_NAME = "pictureshow_session"
 
 PERMISSION_FIELDS = (
@@ -29,6 +28,75 @@ PERMISSION_FIELDS = (
 
 ALL_PERMISSIONS = {field: True for field in PERMISSION_FIELDS}
 NO_PERMISSIONS = {field: False for field in PERMISSION_FIELDS}
+
+# 以 FastAPI 路由模板为键，避免权限判断依赖字符串前缀或动态参数值。
+ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
+    ("POST", "/api/acquisition/sources"): "can_edit_gallery",
+    ("PATCH", "/api/acquisition/sources/{source_id}"): "can_edit_gallery",
+    ("POST", "/api/acquisition/sources/{source_id}/scripts"): "can_edit_gallery",
+    ("DELETE", "/api/acquisition/sources/{source_id}/scripts/{script_key}"): "can_edit_gallery",
+    ("DELETE", "/api/acquisition/sources/{source_id}"): "can_edit_gallery",
+    ("POST", "/api/acquisition/sources/{source_id}/categories"): "can_edit_gallery",
+    ("PATCH", "/api/acquisition/categories/{category_id}"): "can_edit_gallery",
+    ("DELETE", "/api/acquisition/categories/{category_id}"): "can_edit_gallery",
+    ("POST", "/api/acquisition/categories/{category_id}/runs"): "can_add_gallery",
+    ("POST", "/api/acquisition/assets/import"): "can_add_gallery",
+    ("POST", "/api/acquisition/assets/reject"): "can_delete_gallery",
+    ("POST", "/api/acquisition/similarity/scan"): "can_edit_gallery",
+    ("POST", "/api/persons"): "can_add_samples",
+    ("POST", "/api/persons/batch-delete"): "can_delete_samples",
+    ("POST", "/api/persons/import"): "can_add_samples",
+    ("PATCH", "/api/persons/{person_id}"): "can_edit_samples",
+    ("POST", "/api/persons/{person_id}/rename"): "can_edit_samples",
+    ("DELETE", "/api/persons/{person_id}"): "can_delete_samples",
+    ("POST", "/api/persons/{person_id}/tags"): "can_edit_samples",
+    ("DELETE", "/api/persons/{person_id}/tags/{tag_id}"): "can_delete_samples",
+    ("POST", "/api/persons/{person_id}/samples"): "can_add_samples",
+    ("DELETE", "/api/persons/{person_id}/samples/{sample_photo_id}"): "can_delete_samples",
+    ("POST", "/api/tags"): "can_edit_gallery",
+    ("PATCH", "/api/tags/{tag_id}"): "can_edit_gallery",
+    ("DELETE", "/api/tags/{tag_id}"): "can_edit_gallery",
+    ("POST", "/api/gallery/photos/import"): "can_add_gallery",
+    ("POST", "/api/gallery/rich-photos/import"): "can_add_gallery",
+    ("POST", "/api/gallery/photos/import-zip"): "can_add_gallery",
+    ("POST", "/api/gallery/similarity-scans"): "can_edit_gallery",
+    ("PATCH", "/api/gallery/similarity-scans/{scan_id}/groups/{group_id}"): "can_edit_gallery",
+    ("POST", "/api/gallery/photos/batch-delete"): "can_delete_gallery",
+    ("DELETE", "/api/gallery/photos/{photo_id}"): "can_delete_gallery",
+    ("POST", "/api/gallery/photos/{photo_id}/persons"): "can_edit_gallery",
+    ("POST", "/api/gallery/photos/{photo_id}/persons/{person_id}/sample"): "can_edit_gallery",
+    ("DELETE", "/api/gallery/photos/{photo_id}/persons/{person_id}/sample"): "can_delete_gallery",
+    ("DELETE", "/api/gallery/photos/{photo_id}/persons/{person_id}"): "can_delete_gallery",
+    ("POST", "/api/gallery/photos/{photo_id}/tags"): "can_edit_gallery",
+    ("DELETE", "/api/gallery/photos/{photo_id}/tags/{tag_id}"): "can_delete_gallery",
+    ("PATCH", "/api/gallery/photos/{photo_id}/rich-text"): "can_edit_gallery",
+    ("POST", "/api/gallery/photos/{photo_id}/re-recognize"): "can_edit_gallery",
+    ("POST", "/api/gallery/photos/re-recognize-unknown"): "can_edit_gallery",
+    ("POST", "/api/video-category-tags"): "can_edit_videos",
+    ("PATCH", "/api/video-category-tags/{tag_id}"): "can_edit_videos",
+    ("DELETE", "/api/video-category-tags/{tag_id}"): "can_edit_videos",
+    ("POST", "/api/video-people"): "can_edit_videos",
+    ("PATCH", "/api/video-people/{person_id}"): "can_edit_videos",
+    ("DELETE", "/api/video-people/{person_id}"): "can_edit_videos",
+    ("POST", "/api/videos/upload-sessions"): "can_add_videos",
+    ("PUT", "/api/videos/upload-sessions/{session_id}/parts/{part_index}"): "can_add_videos",
+    ("POST", "/api/videos/upload-sessions/{session_id}/complete"): "can_add_videos",
+    ("DELETE", "/api/videos/upload-sessions/{session_id}"): "can_add_videos",
+    ("POST", "/api/videos/{video_id}/optimize-playback"): "can_edit_videos",
+    ("POST", "/api/videos/{video_id}/subtitles/generate"): "can_edit_videos",
+    ("POST", "/api/videos/{video_id}/subtitles/{track_id}/cancel"): "can_edit_videos",
+    ("PATCH", "/api/videos/{video_id}/subtitles/{track_id}"): "can_edit_videos",
+    ("DELETE", "/api/videos/{video_id}/subtitles/{track_id}"): "can_edit_videos",
+    ("PATCH", "/api/videos/{video_id}"): "can_edit_videos",
+    ("DELETE", "/api/videos/{video_id}"): "can_delete_videos",
+    ("PUT", "/api/videos/{video_id}/cover"): "can_edit_videos",
+    ("POST", "/api/videos/{video_id}/category-tags"): "can_edit_videos",
+    ("DELETE", "/api/videos/{video_id}/category-tags/{tag_id}"): "can_delete_videos",
+    ("POST", "/api/videos/{video_id}/people"): "can_edit_videos",
+    ("DELETE", "/api/videos/{video_id}/people/{person_id}"): "can_delete_videos",
+    ("POST", "/api/subtitle-service/start"): "can_edit_videos",
+    ("POST", "/api/subtitle-service/stop"): "can_edit_videos",
+}
 
 
 @dataclass
@@ -73,69 +141,11 @@ def require_permission(current: CurrentContext, field: str) -> None:
 
 
 def enforce_request_permission(request: Request, current: CurrentContext) -> None:
-    if request.method in {"GET", "HEAD", "OPTIONS"}:
-        return
-    path = request.url.path
-    if path.startswith("/api/auth/") or path.startswith("/api/workspaces") or path.startswith("/api/workspace-invitations"):
-        return
-    if path.startswith("/api/acquisition/sources") or (
-        path.startswith("/api/acquisition/categories/") and not path.endswith("/runs")
-    ):
-        require_permission(current, "can_edit_gallery")
-        return
-    if path.startswith("/api/acquisition/similarity"):
-        require_permission(current, "can_edit_gallery")
-        return
-    if path.endswith("/reject") and path.startswith("/api/acquisition/"):
-        require_permission(current, "can_delete_gallery")
-        return
-    if path.startswith("/api/acquisition/") and (
-        path.endswith("/import")
-        or path.endswith("/defer")
-        or (path.startswith("/api/acquisition/categories/") and path.endswith("/runs"))
-    ):
-        require_permission(current, "can_add_gallery")
-        return
-    if path in {"/api/gallery/photos/import", "/api/gallery/rich-photos/import", "/api/gallery/photos/import-zip"}:
-        require_permission(current, "can_add_gallery")
-        return
-    if path == "/api/gallery/similarity-scans" and request.method == "POST":
-        require_permission(current, "can_edit_gallery")
-        return
-    if path.startswith("/api/gallery/similarity-scans/"):
-        require_permission(current, "can_edit_gallery")
-        return
-    if path == "/api/gallery/photos/batch-delete" or (path.startswith("/api/gallery/photos") and request.method == "DELETE"):
-        require_permission(current, "can_delete_gallery")
-        return
-    if path.startswith("/api/gallery/photos") or path.startswith("/api/tags"):
-        require_permission(current, "can_edit_gallery")
-        return
-    if path == "/api/persons/import" or (path == "/api/persons" and request.method == "POST") or path.endswith("/samples"):
-        require_permission(current, "can_add_samples")
-        return
-    if path == "/api/persons/batch-delete" or (path.startswith("/api/persons") and request.method == "DELETE"):
-        require_permission(current, "can_delete_samples")
-        return
-    if path.startswith("/api/persons"):
-        require_permission(current, "can_edit_samples")
-        return
-    if path.startswith("/api/videos/upload-sessions"):
-        require_permission(current, "can_add_videos")
-        return
-    if "/subtitles" in path:
-        require_permission(current, "can_edit_videos")
-        return
-    if path.startswith("/api/videos") and request.method == "DELETE":
-        require_permission(current, "can_delete_videos")
-        return
-    if (
-        path.startswith("/api/videos")
-        or path.startswith("/api/video-category-tags")
-        or path.startswith("/api/video-people")
-        or path.startswith("/api/subtitle-service")
-    ):
-        require_permission(current, "can_edit_videos")
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", request.url.path)
+    permission = ROUTE_PERMISSION_MATRIX.get((request.method, route_path))
+    if permission is not None:
+        require_permission(current, permission)
 
 
 def require_context(
@@ -155,6 +165,8 @@ def require_context(
         token = session_token
     if not token:
         raise HTTPException(status_code=401, detail="请先登录")
+    app = request.scope.get("app")
+    settings = app.state.settings if app is not None else get_settings()
     user_id = decode_access_token(token, settings.auth_secret_key)
     if user_id is None:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")

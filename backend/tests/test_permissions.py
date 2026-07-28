@@ -12,21 +12,24 @@ from tests.support.app_loader import load_test_main
 
 
 PERMISSION_CASES = (
-    ("can_add_gallery", "POST", "/api/gallery/photos/import"),
-    ("can_delete_gallery", "DELETE", "/api/gallery/photos/1"),
-    ("can_edit_gallery", "PATCH", "/api/gallery/photos/1/rich-text"),
-    ("can_edit_gallery", "PATCH", "/api/gallery/similarity-scans/scan-1/groups/1"),
-    ("can_add_samples", "POST", "/api/persons/1/samples"),
-    ("can_delete_samples", "DELETE", "/api/persons/1/samples/1"),
-    ("can_edit_samples", "PATCH", "/api/persons/1"),
-    ("can_add_videos", "POST", "/api/videos/upload-sessions"),
-    ("can_delete_videos", "DELETE", "/api/videos/1"),
-    ("can_edit_videos", "PATCH", "/api/videos/1"),
+    ("can_add_gallery", "POST", "/api/gallery/photos/import", "/api/gallery/photos/import"),
+    ("can_delete_gallery", "DELETE", "/api/gallery/photos/1", "/api/gallery/photos/{photo_id}"),
+    ("can_edit_gallery", "PATCH", "/api/gallery/photos/1/rich-text", "/api/gallery/photos/{photo_id}/rich-text"),
+    ("can_edit_gallery", "PATCH", "/api/gallery/similarity-scans/scan-1/groups/1", "/api/gallery/similarity-scans/{scan_id}/groups/{group_id}"),
+    ("can_add_samples", "POST", "/api/persons/1/samples", "/api/persons/{person_id}/samples"),
+    ("can_delete_samples", "DELETE", "/api/persons/1/samples/1", "/api/persons/{person_id}/samples/{sample_photo_id}"),
+    ("can_edit_samples", "PATCH", "/api/persons/1", "/api/persons/{person_id}"),
+    ("can_add_videos", "POST", "/api/videos/upload-sessions", "/api/videos/upload-sessions"),
+    ("can_delete_videos", "DELETE", "/api/videos/1", "/api/videos/{video_id}"),
+    ("can_edit_videos", "PATCH", "/api/videos/1", "/api/videos/{video_id}"),
 )
 
 
-def make_request(method: str, path: str) -> Request:
-    return Request({"type": "http", "method": method, "path": path, "headers": []})
+def make_request(method: str, path: str, route_path: str | None = None) -> Request:
+    scope = {"type": "http", "method": method, "path": path, "headers": []}
+    if route_path is not None:
+        scope["route"] = SimpleNamespace(path=route_path)
+    return Request(scope)
 
 
 def make_member_context(module):
@@ -41,17 +44,22 @@ def make_member_context(module):
     )
 
 
-@pytest.mark.parametrize(("permission", "method", "path"), PERMISSION_CASES)
-def test_permission_matrix_keeps_existing_route_rules(permission: str, method: str, path: str) -> None:
+@pytest.mark.parametrize(("permission", "method", "path", "route_path"), PERMISSION_CASES)
+def test_permission_matrix_keeps_existing_route_rules(
+    permission: str,
+    method: str,
+    path: str,
+    route_path: str,
+) -> None:
     module = load_test_main()
     current = make_member_context(module)
 
     with pytest.raises(HTTPException) as exc_info:
-        module._enforce_request_permission(make_request(method, path), current)
+        module._enforce_request_permission(make_request(method, path, route_path), current)
     assert exc_info.value.status_code == 403
 
     setattr(current.membership, permission, True)
-    module._enforce_request_permission(make_request(method, path), current)
+    module._enforce_request_permission(make_request(method, path, route_path), current)
 
 
 def test_read_requests_do_not_require_modify_permission() -> None:
@@ -179,8 +187,10 @@ def test_require_context_rejects_session_cookie_for_write_requests(db_session: S
 def test_auth_cookie_is_http_only_and_query_token_is_not_documented() -> None:
     module = load_test_main()
     response = Response()
+    request = Request({"type": "http", "method": "POST", "path": "/api/auth/login", "headers": [], "app": module.app})
+    from app.api.system import _set_auth_cookie
 
-    module._set_auth_cookie(response, "test-token")
+    _set_auth_cookie(request, response, "test-token")
 
     cookie = response.headers["set-cookie"]
     assert f"{module.AUTH_COOKIE_NAME}=test-token" in cookie

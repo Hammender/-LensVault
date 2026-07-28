@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 
 from app.application import create_app
 from app.api.acquisition import router as acquisition_router
+from app.api.statistics import router as statistics_router
+from app.api.system import router as system_router
 from app.core.config import get_settings
 from app.db import SessionLocal, engine, get_db
 from app.dependencies.context import (
@@ -172,6 +174,7 @@ app = create_app(
     logger=logger,
 )
 app.include_router(acquisition_router)
+app.include_router(system_router)
 
 
 def _permission_kwargs(payload: WorkspacePermissionUpdate | WorkspaceInvitationCreate) -> dict[str, bool]:
@@ -181,46 +184,6 @@ def _permission_kwargs(payload: WorkspacePermissionUpdate | WorkspaceInvitationC
 def _apply_permissions(target: WorkspaceMember | WorkspaceInvitation, permissions: dict[str, bool]) -> None:
     for field, value in permissions.items():
         setattr(target, field, bool(value))
-
-
-def _auth_session(db: Session, user: User, selected_workspace_id: int | None = None) -> AuthSession:
-    _ensure_private_workspace(db, user)
-    db.commit()
-    db.refresh(user)
-    workspaces = _workspace_reads(db, user)
-    selected = next((workspace for workspace in workspaces if workspace.id == selected_workspace_id), None)
-    if selected is None:
-        selected = workspaces[0]
-    token = create_access_token(user.id, settings.auth_secret_key, settings.access_token_expire_minutes)
-    return AuthSession(
-        access_token=token,
-        user=UserRead.model_validate(user),
-        workspace=selected,
-        workspaces=workspaces,
-    )
-
-
-def _set_auth_cookie(response: Response, token: str) -> None:
-    response.set_cookie(
-        key=AUTH_COOKIE_NAME,
-        value=token,
-        max_age=settings.access_token_expire_minutes * 60,
-        httponly=True,
-        secure=settings.auth_cookie_secure,
-        samesite="lax",
-        path="/api",
-    )
-
-
-def _auth_session_with_cookie(
-    response: Response,
-    db: Session,
-    user: User,
-    selected_workspace_id: int | None = None,
-) -> AuthSession:
-    session = _auth_session(db, user, selected_workspace_id)
-    _set_auth_cookie(response, session.access_token)
-    return session
 
 
 def _get_workspace_object(db: Session, model, object_id: int, workspace_id: int, label: str):
@@ -617,96 +580,6 @@ def _process_gallery_similarity_scan_task(scan_id: str, task_id: str) -> None:
             logger.exception("Failed to update gallery similarity task task_id=%s", task_id)
     finally:
         db.close()
-
-
-@app.get("/api/health")
-def health(db: Session = Depends(get_db)) -> dict[str, object]:
-    face_index = build_face_index_health(db, vector_store, settings)
-    return {
-        "status": "ok" if face_index["status"] == "ok" else "degraded",
-        "face_index": face_index,
-    }
-
-
-@app.get("/api/auth/bootstrap-status", response_model=BootstrapStatus)
-def get_bootstrap_status(db: Session = Depends(get_db)) -> BootstrapStatus:
-    return BootstrapStatus(required=(db.scalar(select(func.count(User.id))) or 0) == 0)
-
-
-@app.post("/api/auth/bootstrap", response_model=AuthSession)
-def bootstrap_admin(payload: BootstrapCreate, response: Response, db: Session = Depends(get_db)) -> AuthSession:
-    if db.scalar(select(func.count(User.id))) > 0:
-        raise HTTPException(status_code=409, detail="系统已初始化")
-    username = payload.username.strip()
-    display_name = (payload.display_name or username).strip()
-    user = User(username=username, display_name=display_name, password_hash=hash_password(payload.password), is_admin=True)
-    workspace_name = (payload.workspace_name or f"{display_name}的私人空间").strip()
-    workspace = Workspace(name=workspace_name, kind="private")
-    db.add_all([user, workspace])
-    db.flush()
-    workspace.owner_user_id = user.id
-    db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role="owner"))
-    db.commit()
-    db.refresh(user)
-    picture_service.ensure_system_tags(db, workspace.id)
-    db.refresh(user)
-    return _auth_session_with_cookie(response, db, user)
-
-
-@app.post("/api/auth/login", response_model=AuthSession)
-def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> AuthSession:
-    user = db.scalar(select(User).where(User.username == payload.username.strip()))
-    if user is None or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="用户名或密码不正确")
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="账号已停用")
-    return _auth_session_with_cookie(response, db, user)
-
-
-@app.post("/api/auth/register", response_model=AuthSession)
-def register(payload: RegisterRequest, response: Response, db: Session = Depends(get_db)) -> AuthSession:
-    if db.scalar(select(func.count(User.id))) == 0:
-        raise HTTPException(status_code=409, detail="系统尚未初始化，请先创建管理员")
-    username = payload.username.strip()
-    if not username:
-        raise HTTPException(status_code=400, detail="用户名不能为空")
-    if db.scalar(select(User).where(User.username == username)) is not None:
-        raise HTTPException(status_code=409, detail="用户名已存在")
-    display_name = (payload.display_name or username).strip() or username
-    user = User(username=username, display_name=display_name, password_hash=hash_password(payload.password), is_admin=False, is_active=True)
-    db.add(user)
-    db.flush()
-    private_workspace = Workspace(name=f"{display_name}的私人空间", kind="private", owner_user_id=user.id)
-    db.add(private_workspace)
-    db.flush()
-    db.add(WorkspaceMember(workspace_id=private_workspace.id, user_id=user.id, role="owner"))
-    db.commit()
-    db.refresh(user)
-    picture_service.ensure_system_tags(db, private_workspace.id)
-    db.refresh(user)
-    return _auth_session_with_cookie(response, db, user)
-
-
-@app.get("/api/auth/me", response_model=AuthSession)
-def get_current_session(
-    response: Response,
-    current: CurrentContext = Depends(require_context),
-    db: Session = Depends(get_db),
-) -> AuthSession:
-    db.refresh(current.user)
-    return _auth_session_with_cookie(response, db, current.user, current.workspace_id)
-
-
-@app.post("/api/auth/logout")
-def logout(response: Response) -> dict[str, str]:
-    response.delete_cookie(
-        key=AUTH_COOKIE_NAME,
-        path="/api",
-        secure=settings.auth_cookie_secure,
-        httponly=True,
-        samesite="lax",
-    )
-    return {"status": "ok"}
 
 
 @app.get("/api/workspaces", response_model=list[WorkspaceRead])
@@ -2881,151 +2754,4 @@ def get_video_playback_diagnostics(
     return result
 
 
-@app.get("/api/statistics/tags", response_model=list[TagStatistics])
-def get_tag_statistics(
-    is_system: bool | None = Query(default=None, description="Filter by system tag status"),
-    db: Session = Depends(get_db),
-    current: CurrentContext = Depends(require_context),
-) -> list[TagStatistics]:
-    """Get photo count statistics for each tag."""
-    query = (
-        select(
-            Tag.id,
-            Tag.name,
-            Tag.is_system,
-            func.count(GalleryPhotoTag.gallery_photo_id).label("photo_count"),
-        )
-        .outerjoin(GalleryPhotoTag, Tag.id == GalleryPhotoTag.tag_id)
-        .where(Tag.workspace_id == current.workspace_id)
-        .group_by(Tag.id)
-    )
-    if is_system is not None:
-        query = query.where(Tag.is_system == is_system)
-    results = db.execute(query).all()
-    return [
-        TagStatistics(
-            tag_id=row.id,
-            tag_name=row.name,
-            is_system=row.is_system,
-            photo_count=row.photo_count,
-        )
-        for row in results
-    ]
-
-@app.get("/api/statistics/upload-history", response_model=list[UploadHistoryRead])
-def get_upload_history(
-    upload_type: str | None = Query(default=None, description="Filter by upload type: gallery or rich"),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-    current: CurrentContext = Depends(require_context),
-) -> list[UploadHistoryRead]:
-    """Get upload history records."""
-    query = (
-        select(UploadHistory)
-        .where(UploadHistory.workspace_id == current.workspace_id)
-        .order_by(UploadHistory.created_at.desc())
-    )
-    if upload_type:
-        query = query.where(UploadHistory.upload_type == upload_type)
-    query = query.offset(offset).limit(limit)
-    results = db.scalars(query).all()
-    return [UploadHistoryRead.model_validate(r) for r in results]
-
-
-@app.get("/api/statistics/upload-summary")
-def get_upload_summary(
-    db: Session = Depends(get_db),
-    current: CurrentContext = Depends(require_context),
-) -> dict:
-    """Get summary statistics of uploads."""
-    total_uploads = db.scalar(select(func.count(UploadHistory.id)).where(UploadHistory.workspace_id == current.workspace_id))
-    total_photos = db.scalar(select(func.sum(UploadHistory.total_count)).where(UploadHistory.workspace_id == current.workspace_id)) or 0
-    total_success = db.scalar(select(func.sum(UploadHistory.success_count)).where(UploadHistory.workspace_id == current.workspace_id)) or 0
-    total_duplicates = db.scalar(select(func.sum(UploadHistory.duplicate_count)).where(UploadHistory.workspace_id == current.workspace_id)) or 0
-    
-    by_type = {}
-    for upload_type in ["gallery", "rich"]:
-        count = db.scalar(
-            select(func.count(UploadHistory.id)).where(
-                UploadHistory.workspace_id == current.workspace_id,
-                UploadHistory.upload_type == upload_type,
-            )
-        )
-        photos = db.scalar(
-            select(func.sum(UploadHistory.total_count)).where(
-                UploadHistory.workspace_id == current.workspace_id,
-                UploadHistory.upload_type == upload_type,
-            )
-        ) or 0
-        by_type[upload_type] = {"count": count, "photos": photos}
-    
-    return {
-        "total_uploads": total_uploads,
-        "total_photos": total_photos,
-        "total_success": total_success,
-        "total_duplicates": total_duplicates,
-        "by_type": by_type,
-    }
-
-
-@app.get("/api/statistics/persons", response_model=list[PersonStatistics])
-def get_person_statistics(
-    is_unknown: bool | None = Query(default=None, description="Filter by unknown person status"),
-    db: Session = Depends(get_db),
-    current: CurrentContext = Depends(require_context),
-) -> list[PersonStatistics]:
-    """Get photo count statistics for each person."""
-    # Create subqueries for counts to avoid cartesian product inflation
-    photo_count_sq = (
-        select(
-            GalleryPhotoPersonTag.person_id,
-            func.count(GalleryPhotoPersonTag.gallery_photo_id).label("count")
-        )
-        .join(GalleryPhoto, GalleryPhoto.id == GalleryPhotoPersonTag.gallery_photo_id)
-        .where(GalleryPhoto.workspace_id == current.workspace_id)
-        .group_by(GalleryPhotoPersonTag.person_id)
-        .subquery()
-    )
-    
-    sample_count_sq = (
-        select(
-            SamplePhoto.person_id,
-            func.count(SamplePhoto.id).label("count")
-        )
-        .where(SamplePhoto.workspace_id == current.workspace_id)
-        .group_by(SamplePhoto.person_id)
-        .subquery()
-    )
-
-    query = (
-        select(
-            Person.id,
-            Person.name,
-            Person.display_name,
-            Person.is_unknown,
-            func.coalesce(photo_count_sq.c.count, 0).label("photo_count"),
-            func.coalesce(sample_count_sq.c.count, 0).label("sample_count"),
-        )
-        .outerjoin(photo_count_sq, Person.id == photo_count_sq.c.person_id)
-        .outerjoin(sample_count_sq, Person.id == sample_count_sq.c.person_id)
-        .where(Person.workspace_id == current.workspace_id)
-    )
-    
-    if is_unknown is not None:
-        query = query.where(Person.is_unknown == is_unknown)
-    
-    query = query.order_by(Person.is_unknown.asc(), func.coalesce(photo_count_sq.c.count, 0).desc())
-    results = db.execute(query).all()
-    
-    return [
-        PersonStatistics(
-            person_id=row.id,
-            person_name=row.name,
-            display_name=row.display_name,
-            is_unknown=row.is_unknown,
-            photo_count=row.photo_count,
-            sample_count=row.sample_count,
-        )
-        for row in results
-    ]
+app.include_router(statistics_router)

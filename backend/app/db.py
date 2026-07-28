@@ -1,5 +1,6 @@
 from collections.abc import Generator
 
+from fastapi import Request
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -24,8 +25,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 Base = declarative_base()
 
 
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
+def get_db(request: Request) -> Generator[Session, None, None]:
+    """Yield a session from the application that is serving the request."""
+    session_factory = request.app.state.session_factory
+    db = session_factory()
     try:
         yield db
     finally:
