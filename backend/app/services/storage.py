@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 from io import BytesIO
+from pathlib import Path
 from typing import BinaryIO
 
 from minio import Minio
-from minio.commonconfig import ComposeSource
+from minio.commonconfig import ComposeSource, CopySource
 from minio.error import S3Error
 
 from app.core.config import Settings, get_settings
@@ -53,6 +54,14 @@ class MinioStorage:
             content_type=content_type or "application/octet-stream",
         )
 
+    def put_file(self, object_key: str, path: Path, content_type: str | None = None) -> None:
+        self.client.fput_object(
+            self.bucket,
+            object_key,
+            str(path),
+            content_type=content_type or "application/octet-stream",
+        )
+
     def stat_object(self, object_key: str):
         return self.client.stat_object(self.bucket, object_key)
 
@@ -70,6 +79,13 @@ class MinioStorage:
             self.bucket,
             object_key,
             [ComposeSource(self.bucket, source_key) for source_key in source_keys],
+        )
+
+    def copy_object(self, target_key: str, source_key: str) -> None:
+        self.client.copy_object(
+            self.bucket,
+            target_key,
+            CopySource(self.bucket, source_key),
         )
 
     def get_bytes(self, object_key: str) -> bytes:

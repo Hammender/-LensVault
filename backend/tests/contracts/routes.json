@@ -1,5 +1,173 @@
 [
   {
+    "path": "/api/acquisition/scripts",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/sources",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/sources",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/sources/{source_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/acquisition/sources/{source_id}/scripts",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/sources/{source_id}/scripts/{script_key}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/acquisition/sources/{source_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/acquisition/categories",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/sources/{source_id}/categories",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/categories/{category_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/acquisition/categories/{category_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/acquisition/categories/{category_id}/runs",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/runs",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets/ids",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets/summary",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets/{asset_id}/original",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets/import",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/import-batches",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/import-batches/{batch_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/import-batches/{batch_id}/items",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets/reject",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/similarity/scan",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/similarity",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/history",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/exports",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/exports",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/exports/{job_id}/download",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/health",
     "methods": [
       "GET"

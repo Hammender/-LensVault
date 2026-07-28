@@ -21,6 +21,12 @@ type ConfirmContextValue = {
 
 const ConfirmContext = createContext<ConfirmContextValue | null>(null);
 
+export function getConfirmDialogKeyboardDecision(key: string): boolean | null {
+  if (key === "Enter") return true;
+  if (key === "Escape") return false;
+  return null;
+}
+
 export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<PendingConfirmation | null>(null);
   const pendingRef = useRef<PendingConfirmation | null>(null);
@@ -55,16 +61,17 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        settle(false);
-      }
+      const decision = getConfirmDialogKeyboardDecision(event.key);
+      if (decision === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      settle(decision);
     };
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
     window.setTimeout(() => cancelButtonRef.current?.focus(), 0);
     return () => {
       document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [pending, settle]);
 

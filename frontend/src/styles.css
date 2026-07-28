@@ -2355,6 +2355,22 @@ input:focus, select:focus, textarea:focus {
   background: #1d5669;
 }
 
+.gallery-lightbox {
+  width: min(1600px, calc(100vw - 370px));
+  margin-right: 340px;
+}
+
+.gallery-lightbox + .lightbox-meta-rail {
+  top: 24px;
+  right: 24px;
+  bottom: 24px;
+  left: auto;
+  width: 300px;
+  max-height: none;
+  transform: none;
+  align-content: center;
+}
+
 @media (max-width: 1900px) {
   .lightbox-meta-rail {
     left: auto;
@@ -2470,6 +2486,21 @@ input:focus, select:focus, textarea:focus {
   }
   .upload-channel-progress {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1180px) {
+  .gallery-lightbox {
+    width: min(98vw, 1600px);
+    margin-right: 0;
+  }
+
+  .gallery-lightbox + .lightbox-meta-rail {
+    top: auto;
+    right: 24px;
+    bottom: 24px;
+    width: min(500px, calc(100vw - 48px));
+    max-height: 32vh;
   }
 }
 /* Bilibili Style Video Page */

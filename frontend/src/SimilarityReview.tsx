@@ -14,6 +14,7 @@ import { useConfirm } from "./ConfirmDialog";
 import SearchableSelect from "./SearchableSelect";
 import { filterPersonMatches, matchesPersonSearch } from "./personPicker";
 import { chooseRecoveredScan, findScanForScope } from "./similarityScanState";
+import { findPreviewAfterCurrentDelete, getSimilarityLightboxShortcut } from "./similarityReviewKeyboard";
 import type { GallerySimilarityGroup, GallerySimilarityScan, Person } from "./types";
 import { formatDate, withImageWidth } from "./utils";
 
@@ -111,7 +112,8 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
   const loadGroups = useCallback(async (
     targetScan: GallerySimilarityScan | null,
     nextOffset = 0,
-    resetSelection = true
+    resetSelection = true,
+    nextPreview?: { groupId: number; photoId: number } | null
   ) => {
     if (!targetScan || targetScan.status !== "completed") {
       setGroups([]);
@@ -127,7 +129,11 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     setTotal(response.total);
     setOffset(response.offset);
     if (resetSelection) setSelectedIds([]);
-    setPreview(null);
+    if (nextPreview && response.items.some((group) => group.id === nextPreview.groupId && group.members.some((member) => member.photo.id === nextPreview.photoId))) {
+      setPreview(nextPreview);
+    } else {
+      setPreview(null);
+    }
   }, [tier]);
 
   async function restoreOverview(preferredScanId?: string | null, showBusy = true) {
@@ -155,9 +161,12 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     setResultScan(chooseRecoveredScan(overview.results, preferredScanId));
   }
 
-  async function refreshGroupsAfterDelete() {
+  async function refreshGroupsAfterDelete(
+    nextPreview?: { groupId: number; photoId: number } | null,
+    resetSelection = true
+  ) {
     if (!resultScan) return;
-    await loadGroups(resultScan, offset);
+    await loadGroups(resultScan, offset, resetSelection, nextPreview);
   }
 
   function toggleSelected(photoId: number) {
@@ -268,6 +277,33 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       setNotice(`已删除第 ${group.ordinal} 组中的 ${deleted} 张图片。`);
       await refreshGroupsAfterDelete();
       await refreshOverviewAfterDelete(resultScan?.id ?? null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "删除图片失败");
+    } finally {
+      setDeletingGroupIds((current) => current.filter((groupId) => groupId !== group.id));
+    }
+  }
+
+  async function deleteCurrentPreviewPhoto(group: GallerySimilarityGroup, photoId: number) {
+    const member = group.members.find((item) => item.photo.id === photoId);
+    if (!member) return;
+    const confirmed = await confirm({
+      title: "删除当前图片",
+      message: `确认删除当前图片“${member.photo.filename}”吗？\n\n原图也会被删除，此操作不可撤销。`,
+      confirmLabel: "删除",
+      tone: "danger"
+    });
+    if (!confirmed) return;
+
+    const nextPhotoId = findPreviewAfterCurrentDelete(group.members.map((item) => item.photo.id), photoId);
+    setDeletingGroupIds((current) => [...current, group.id]);
+    try {
+      const deleted = await batchDeleteGalleryPhotos([photoId]);
+      setSelectedIds((current) => current.filter((id) => id !== photoId));
+      setNotice(`已删除图片“${member.photo.filename}”。`);
+      await refreshGroupsAfterDelete(nextPhotoId ? { groupId: group.id, photoId: nextPhotoId } : null, false);
+      await refreshOverviewAfterDelete(resultScan?.id ?? null);
+      if (!deleted) setNotice("图片未被删除，图库内容可能已经发生变化。");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "删除图片失败");
     } finally {
@@ -451,12 +487,13 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
             if (next) setPreview({ groupId: previewGroup.id, photoId: next.photo.id });
           }}
           onKeyDown={(event) => {
-            if (event.key === " " && canDelete) {
+            const shortcut = getSimilarityLightboxShortcut(event.key);
+            if (shortcut === "toggle_selection" && canDelete) {
               event.preventDefault();
               toggleSelected(previewMember.photo.id);
-            } else if (event.key === "Delete" && canDelete && previewSelectedCount > 0) {
+            } else if (shortcut === "delete_current" && canDelete) {
               event.preventDefault();
-              void deleteGroupSelected(previewGroup);
+              void deleteCurrentPreviewPhoto(previewGroup, previewMember.photo.id);
             }
           }}
           meta={(
@@ -506,6 +543,15 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                 <button
                   type="button"
                   className="danger-button"
+                  disabled={!canDelete || deletingGroupIds.includes(previewGroup.id)}
+                  onClick={() => void deleteCurrentPreviewPhoto(previewGroup, previewMember.photo.id)}
+                >
+                  <Trash2 size={17} aria-hidden="true" />
+                  {deletingGroupIds.includes(previewGroup.id) ? "正在删除" : "删除当前"}
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
                   disabled={!canDelete || previewSelectedCount === 0 || deletingGroupIds.includes(previewGroup.id)}
                   onClick={() => void deleteGroupSelected(previewGroup)}
                 >
@@ -524,7 +570,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                   <X size={17} aria-hidden="true" /> 关闭预览
                 </button>
                 <p className="similarity-review-shortcuts">
-                  <kbd>←</kbd><kbd>→</kbd> 切换　<kbd>Space</kbd> 标记　<kbd>Delete</kbd> 删除　<kbd>Esc</kbd> 关闭
+                  <kbd>←</kbd><kbd>→</kbd> 切换　<kbd>Space</kbd> 标记　<kbd>Delete</kbd> 删除当前　<kbd>Esc</kbd> 关闭
                 </p>
               </div>
               <div className="lightbox-meta-section">

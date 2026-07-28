@@ -500,6 +500,7 @@ class PictureService:
         is_rich_text: bool = False,
         rich_text: str | None = None,
         workspace_id: int | None = None,
+        source_object_key: str | None = None,
     ) -> tuple[GalleryPhoto, GalleryImportSummary]:
         summary = GalleryImportSummary()
         logger.info(
@@ -530,7 +531,10 @@ class PictureService:
 
         width, height, taken_at = parse_image_metadata(payload)
         object_key = self._build_object_key(workspace_id, "gallery", filename)
-        self.storage.put_bytes(object_key, payload, content_type)
+        if source_object_key:
+            self.storage.copy_object(object_key, source_object_key)
+        else:
+            self.storage.put_bytes(object_key, payload, content_type)
         logger.debug(
             "Stored gallery object filename=%s object_key=%s size=%sx%s",
             filename,

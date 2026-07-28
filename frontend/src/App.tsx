@@ -7,6 +7,7 @@ import {
   Download,
   Edit3,
   FileUp,
+  FolderSync,
   GalleryHorizontalEnd,
   HomeIcon,
   ImagePlus,
@@ -27,6 +28,7 @@ import PhotoLightbox from "./PhotoLightbox";
 import SearchableSelect from "./SearchableSelect";
 import Statistics from "./Statistics";
 import SimilarityReview from "./SimilarityReview";
+import AcquisitionCenter from "./AcquisitionCenter";
 import BiliVideoPlayer from "./BiliVideoPlayer";
 import { useConfirm } from "./ConfirmDialog";
 import { availablePhotoPersons, filterPersonMatches, resolveExistingPerson } from "./personPicker";
@@ -4191,6 +4193,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
     { key: "home", label: "首页", Icon: HomeIcon },
     { key: "gallery", label: "展示图库", Icon: GalleryHorizontalEnd },
     { key: "similarity", label: "相似整理", Icon: ScanSearch },
+    { key: "acquisition", label: "图片采集", Icon: FolderSync },
     { key: "people", label: "人物样本", Icon: UsersRound },
     { key: "upload", label: "上传", Icon: UploadCloud },
     { key: "videos", label: "视频库", Icon: Clapperboard },
@@ -4448,6 +4451,14 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
         <SimilarityReview
           persons={persons}
           canEdit={authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_edit_gallery)}
+          canDelete={authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_delete_gallery)}
+        />
+      )}
+
+      {page === "acquisition" && (
+        <AcquisitionCenter
+          canEdit={authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_edit_gallery)}
+          canAdd={authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_add_gallery)}
           canDelete={authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_delete_gallery)}
         />
       )}
@@ -4717,7 +4728,7 @@ function MainApp({ authSession, onLogout, onSessionChange }: MainAppProps) {
 
       {lightboxPhoto && (
         <PhotoLightbox
-          shellClassName={lightboxPhoto.is_rich_text ? "rich-lightbox" : ""}
+          shellClassName={`gallery-lightbox${lightboxPhoto.is_rich_text ? " rich-lightbox" : ""}`}
           meta={lightboxMeta}
           busy={busy}
           keyboardEnabled={!lightboxEditMode}

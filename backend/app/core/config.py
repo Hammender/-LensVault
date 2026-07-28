@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     gallery_similarity_near_threshold: float = 0.92
     gallery_similarity_scene_threshold: float = 0.88
 
+    acquisition_download_workers: int = 4
+    acquisition_download_timeout_seconds: int = 30
+    acquisition_download_retries: int = 3
+    acquisition_failed_retry_hours: int = 24
+    acquisition_max_file_bytes: int = 100 * 1024 * 1024
+    acquisition_quality_min_pixels: int = 512 * 512
+    acquisition_quality_max_aspect_ratio: float = 4.0
+    acquisition_quality_blur_threshold: float = 45.0
+    acquisition_export_ttl_hours: int = 24
+
     face_model_name: str = "buffalo_l"
     face_embedding_version: str = "buffalo_l-v2-exif"
     face_detection_size: int = 640

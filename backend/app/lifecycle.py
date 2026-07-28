@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+import json
+
 from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.orm import Session
 
@@ -11,6 +13,7 @@ from app.db import Base
 from app.models import Workspace
 from app.services.container import ServiceContainer
 from app.services.tasks import fail_incomplete_tasks
+from app.services.acquisition_adapters import LEGACY_SCRIPT_KEYS, SCRIPT_REGISTRY
 
 
 INCOMPLETE_TASK_TYPES = (
@@ -20,6 +23,7 @@ INCOMPLETE_TASK_TYPES = (
     "person_import",
     "video_subtitle_generation",
     "gallery_similarity_scan",
+    "acquisition_similarity_scan",
 )
 
 
@@ -95,6 +99,145 @@ def ensure_gallery_similarity_group_columns(engine: Engine) -> None:
                 "ON gallery_similarity_groups (review_status)"
             )
         )
+
+
+def ensure_acquisition_schema(engine: Engine) -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    additions = {
+        "acquisition_sources": {
+            "notes": "ALTER TABLE acquisition_sources ADD COLUMN notes TEXT",
+            "page_format_key": "ALTER TABLE acquisition_sources ADD COLUMN page_format_key VARCHAR(128)",
+        },
+        "acquisition_categories": {
+            "notes": "ALTER TABLE acquisition_categories ADD COLUMN notes TEXT",
+        },
+        "acquisition_runs": {
+            "script_key": "ALTER TABLE acquisition_runs ADD COLUMN script_key VARCHAR(128)",
+            "script_name_snapshot": "ALTER TABLE acquisition_runs ADD COLUMN script_name_snapshot VARCHAR(128) NOT NULL DEFAULT ''",
+            "script_version_snapshot": "ALTER TABLE acquisition_runs ADD COLUMN script_version_snapshot VARCHAR(64) NOT NULL DEFAULT ''",
+            "source_name_snapshot": "ALTER TABLE acquisition_runs ADD COLUMN source_name_snapshot VARCHAR(128) NOT NULL DEFAULT ''",
+            "category_name_snapshot": "ALTER TABLE acquisition_runs ADD COLUMN category_name_snapshot VARCHAR(256) NOT NULL DEFAULT ''",
+            "category_url_snapshot": "ALTER TABLE acquisition_runs ADD COLUMN category_url_snapshot VARCHAR(2048) NOT NULL DEFAULT ''",
+            "parameters_json": "ALTER TABLE acquisition_runs ADD COLUMN parameters_json TEXT NOT NULL DEFAULT '{}'",
+            "download_success_count": "ALTER TABLE acquisition_runs ADD COLUMN download_success_count INTEGER NOT NULL DEFAULT 0",
+            "candidate_count": "ALTER TABLE acquisition_runs ADD COLUMN candidate_count INTEGER NOT NULL DEFAULT 0",
+            "content_duplicate_count": "ALTER TABLE acquisition_runs ADD COLUMN content_duplicate_count INTEGER NOT NULL DEFAULT 0",
+            "gallery_duplicate_count": "ALTER TABLE acquisition_runs ADD COLUMN gallery_duplicate_count INTEGER NOT NULL DEFAULT 0",
+            "ignored_count": "ALTER TABLE acquisition_runs ADD COLUMN ignored_count INTEGER NOT NULL DEFAULT 0",
+        },
+        "acquisition_source_items": {
+            "script_key": "ALTER TABLE acquisition_source_items ADD COLUMN script_key VARCHAR(128)",
+            "remote_external_key": "ALTER TABLE acquisition_source_items ADD COLUMN remote_external_key VARCHAR(256)",
+        },
+        "acquisition_run_items": {
+            "collection_outcome": "ALTER TABLE acquisition_run_items ADD COLUMN collection_outcome VARCHAR(32) NOT NULL DEFAULT 'pending'",
+        },
+        "acquisition_similarity_candidates": {
+            "scan_task_id": "ALTER TABLE acquisition_similarity_candidates ADD COLUMN scan_task_id VARCHAR(64)",
+        },
+    }
+    with engine.begin() as connection:
+        for table_name, columns in additions.items():
+            if table_name not in tables:
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, statement in columns.items():
+                if column_name not in existing:
+                    connection.execute(text(statement))
+
+        if "acquisition_assets" in tables:
+            connection.execute(
+                text("UPDATE acquisition_assets SET status = 'pending_review' WHERE status = 'deferred'")
+            )
+
+        if "acquisition_scripts" not in tables or "acquisition_source_scripts" not in tables:
+            return
+        for definition in SCRIPT_REGISTRY.values():
+            values = {
+                "key": definition.key,
+                "name": definition.name,
+                "version": definition.version,
+                "page_format_key": definition.page_format_key,
+                "description": definition.description,
+                "parameter_schema_json": json.dumps([item.as_dict() for item in definition.parameters], ensure_ascii=False),
+            }
+            connection.execute(
+                text(
+                    "INSERT INTO acquisition_scripts (key, name, version, page_format_key, description, parameter_schema_json, enabled, created_at, updated_at) "
+                    "VALUES (:key, :name, :version, :page_format_key, :description, :parameter_schema_json, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(key) DO UPDATE SET name=excluded.name, version=excluded.version, "
+                    "page_format_key=excluded.page_format_key, description=excluded.description, "
+                    "parameter_schema_json=excluded.parameter_schema_json, enabled=1, updated_at=CURRENT_TIMESTAMP"
+                ),
+                values,
+            )
+
+        if "acquisition_sources" in tables:
+            legacy_sources = connection.execute(
+                text(
+                    "SELECT id, workspace_id, name, adapter_key, base_url FROM acquisition_sources "
+                    "WHERE adapter_key IS NOT NULL AND adapter_key != ''"
+                )
+            ).mappings().all()
+            for row in legacy_sources:
+                script_key = LEGACY_SCRIPT_KEYS.get(str(row["adapter_key"]), str(row["adapter_key"]))
+                definition = SCRIPT_REGISTRY.get(script_key)
+                if definition is None:
+                    continue
+                legacy_aliases = {
+                    "raindrop-ftxsri-workers-dev": {"raindrop.ftxsri.workers.dev"},
+                    "shfwzwz-raindrop-page": {"shfwzwz.raindrop.page"},
+                }
+                canonical_base_urls = {
+                    "raindrop-ftxsri-workers-dev": "https://raindrop.ftxsri.workers.dev",
+                    "shfwzwz-raindrop-page": "https://shfwzwz.raindrop.page",
+                }
+                if str(row["name"]) in legacy_aliases.get(script_key, set()):
+                    duplicate = connection.execute(
+                        text(
+                            "SELECT id FROM acquisition_sources WHERE name=:name AND id!=:source_id "
+                            "AND (workspace_id=:workspace_id OR (workspace_id IS NULL AND :workspace_id IS NULL))"
+                        ),
+                        {"name": definition.name, "source_id": row["id"], "workspace_id": row["workspace_id"]},
+                    ).first()
+                    if duplicate is None:
+                        connection.execute(
+                            text("UPDATE acquisition_sources SET name=:name WHERE id=:source_id"),
+                            {"name": definition.name, "source_id": row["id"]},
+                        )
+                if not row["base_url"]:
+                    connection.execute(
+                        text("UPDATE acquisition_sources SET base_url=:base_url WHERE id=:source_id"),
+                        {"base_url": canonical_base_urls[script_key], "source_id": row["id"]},
+                    )
+                connection.execute(
+                    text(
+                        "INSERT OR IGNORE INTO acquisition_source_scripts "
+                        "(source_id, script_key, enabled, default_parameters_json, created_at, updated_at) "
+                        "VALUES (:source_id, :script_key, 1, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                    ),
+                    {"source_id": row["id"], "script_key": script_key},
+                )
+                connection.execute(
+                    text("UPDATE acquisition_sources SET page_format_key=:page_format_key WHERE id=:source_id"),
+                    {"source_id": row["id"], "page_format_key": definition.page_format_key},
+                )
+                connection.execute(
+                    text(
+                        "UPDATE acquisition_runs SET script_key=:script_key, script_name_snapshot=:script_name, "
+                        "script_version_snapshot=:version, source_name_snapshot=(SELECT name FROM acquisition_sources WHERE id=:source_id), "
+                        "category_name_snapshot=(SELECT name FROM acquisition_categories WHERE id=acquisition_runs.category_id), "
+                        "category_url_snapshot=(SELECT crawl_url FROM acquisition_categories WHERE id=acquisition_runs.category_id) "
+                        "WHERE source_id=:source_id AND (script_key IS NULL OR script_key='')"
+                    ),
+                    {
+                        "source_id": row["id"],
+                        "script_key": script_key,
+                        "script_name": definition.name,
+                        "version": definition.version,
+                    },
+                )
 
 
 def _sqlite_index_columns(connection, index_name: str) -> list[str]:
@@ -385,6 +528,7 @@ def ensure_gallery_photo_type_unique_constraint(engine: Engine) -> None:
 
 def initialize_database(engine: Engine) -> None:
     Base.metadata.create_all(bind=engine)
+    ensure_acquisition_schema(engine)
     ensure_workspace_scoped_name_constraints(engine)
     ensure_gallery_photo_type_unique_constraint(engine)
     ensure_video_seek_columns(engine)
@@ -418,6 +562,21 @@ def initialize_runtime(
         recovered = sum(fail_incomplete_tasks(db, task_type) for task_type in INCOMPLETE_TASK_TYPES)
         if recovered > 0:
             logger.warning("应用启动：已恢复未完成任务 count=%d", recovered)
+        acquisition = getattr(services, "acquisition", None)
+        interrupted_runs = acquisition.recover_runs(db) if acquisition is not None else 0
+        import_recovery = acquisition.recover_imports(db) if acquisition is not None else {"recovered": 0, "failed": 0}
+        reconciled_items = acquisition.reconcile_run_metrics(db) if acquisition is not None else 0
+        expired_exports = acquisition.cleanup_expired_exports(db) if acquisition is not None else 0
+        if interrupted_runs or expired_exports or import_recovery["recovered"] or import_recovery["failed"] or reconciled_items:
+            logger.warning(
+                "应用启动：已处理采集状态 interrupted=%d import_recovered=%d import_failed=%d "
+                "metrics_reconciled=%d expired_exports=%d",
+                interrupted_runs,
+                import_recovery["recovered"],
+                import_recovery["failed"],
+                reconciled_items,
+                expired_exports,
+            )
     finally:
         db.close()
 

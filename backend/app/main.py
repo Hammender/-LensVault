@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.application import create_app
+from app.api.acquisition import router as acquisition_router
 from app.core.config import get_settings
 from app.db import SessionLocal, engine, get_db
 from app.dependencies.context import (
@@ -170,6 +171,7 @@ app = create_app(
     session_factory=SessionLocal,
     logger=logger,
 )
+app.include_router(acquisition_router)
 
 
 def _permission_kwargs(payload: WorkspacePermissionUpdate | WorkspaceInvitationCreate) -> dict[str, bool]:

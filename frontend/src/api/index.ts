@@ -5,6 +5,7 @@ export * from "./gallery";
 export * from "./videos";
 export * from "./subtitles";
 export * from "./statistics";
+export * from "./acquisition";
 export {
   clearAuthToken,
   clearSelectedWorkspaceId,

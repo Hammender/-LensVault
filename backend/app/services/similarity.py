@@ -391,6 +391,15 @@ class GallerySimilarityScanner:
         db.flush()
         return features, vectors
 
+    def ensure_features(
+        self,
+        db: Session,
+        photos: dict[int, GalleryPhoto],
+        progress: Any | None = None,
+    ) -> tuple[dict[int, GallerySimilarityFeature], dict[int, np.ndarray]]:
+        """为其他受控工作流复用图库相似特征缓存和 Qdrant 向量。"""
+        return self._ensure_features(db, photos, progress)
+
     def _candidate_pairs(
         self,
         photos: dict[int, GalleryPhoto],

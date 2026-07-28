@@ -78,6 +78,24 @@ def enforce_request_permission(request: Request, current: CurrentContext) -> Non
     path = request.url.path
     if path.startswith("/api/auth/") or path.startswith("/api/workspaces") or path.startswith("/api/workspace-invitations"):
         return
+    if path.startswith("/api/acquisition/sources") or (
+        path.startswith("/api/acquisition/categories/") and not path.endswith("/runs")
+    ):
+        require_permission(current, "can_edit_gallery")
+        return
+    if path.startswith("/api/acquisition/similarity"):
+        require_permission(current, "can_edit_gallery")
+        return
+    if path.endswith("/reject") and path.startswith("/api/acquisition/"):
+        require_permission(current, "can_delete_gallery")
+        return
+    if path.startswith("/api/acquisition/") and (
+        path.endswith("/import")
+        or path.endswith("/defer")
+        or (path.startswith("/api/acquisition/categories/") and path.endswith("/runs"))
+    ):
+        require_permission(current, "can_add_gallery")
+        return
     if path in {"/api/gallery/photos/import", "/api/gallery/rich-photos/import", "/api/gallery/photos/import-zip"}:
         require_permission(current, "can_add_gallery")
         return
