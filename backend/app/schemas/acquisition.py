@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
+
+from app.schemas.base import BaseModel, ShanghaiDateTime as datetime
 
 from .gallery import TaskRead
 class AcquisitionSourceCreate(BaseModel):
@@ -85,11 +86,17 @@ class AcquisitionRunRead(BaseModel):
     candidate_count: int
     content_duplicate_count: int
     gallery_duplicate_count: int
+    resolution_duplicate_count: int
+    resolution_upgrade_count: int
     ignored_count: int
     invalid_count: int
     error_count: int
     imported_count: int
     error_message: str | None
+    scan_start_page: int | None
+    scan_end_page: int | None
+    reached_collection_end: bool
+    stop_reason: str | None
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime

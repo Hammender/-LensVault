@@ -46,6 +46,7 @@ import {
   formatBytes,
   formatCodecs,
   formatDate,
+  formatPhotoDate,
   formatDurationSeconds,
   formatResolution,
   getFileExtension,
@@ -2772,7 +2773,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 </a>
                 <div className="detail-copy">
                   <h3>图片详情</h3>
-                  <p>{formatDate(selectedPhoto.taken_at || selectedPhoto.created_at)}</p>
+                  <p>{formatPhotoDate(selectedPhoto.taken_at, selectedPhoto.created_at)}</p>
                   <p>
                     {selectedPhoto.width} × {selectedPhoto.height}
                   </p>
@@ -3179,7 +3180,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                         </a>
                         <div className="sample-copy">
                           <strong>样本记录 #{sample.id}</strong>
-                          <span>{formatDate(sample.taken_at || sample.created_at)}</span>
+                          <span>{formatPhotoDate(sample.taken_at, sample.created_at)}</span>
                           <small className={`status-pill status-${sample.status}`}>{sample.status}</small>
                           {sample.error_message && <p>{sample.error_message}</p>}
                           {sample.source_type === "gallery_face" && (

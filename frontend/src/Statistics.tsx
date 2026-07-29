@@ -13,19 +13,11 @@ import type {
   UploadHistory,
   UploadSummary
 } from "./types";
+import { formatCompactDate } from "./utils";
 
 type TagFilter = "all" | "system" | "custom";
 type PersonFilter = "all" | "known" | "unknown";
 type UploadTypeFilter = "all" | "gallery" | "rich";
-
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
 
 function formatPercent(value: number, total: number): string {
   if (total <= 0) {
@@ -136,7 +128,7 @@ export default function Statistics() {
         </article>
         <article className="metric-card">
           <span>最近上传</span>
-          <strong>{latestUpload ? formatDate(latestUpload.created_at) : "暂无"}</strong>
+          <strong>{latestUpload ? formatCompactDate(latestUpload.created_at) : "暂无"}</strong>
           <small>{latestUpload ? `${latestUpload.success_count}/${latestUpload.total_count} 成功` : "还没有上传记录"}</small>
         </article>
       </section>
@@ -235,7 +227,7 @@ export default function Statistics() {
                 <span className={record.upload_type === "rich" ? "stat-badge rich" : "stat-badge gallery"}>
                   {record.upload_type === "rich" ? "图文" : "普通"}
                 </span>
-                <strong>{formatDate(record.created_at)}</strong>
+                <strong>{formatCompactDate(record.created_at)}</strong>
               </div>
               <div className="upload-record-numbers">
                 <span>{record.success_count}/{record.total_count} 成功</span>

@@ -39,10 +39,15 @@ export function restoreAcquisitionRunParameters(
   script: AcquisitionScript,
   snapshot: Record<string, unknown>
 ): AcquisitionRunFormParameters {
+  const normalizedSnapshot = script.key === "shfwzwz-raindrop-page"
+    && Object.prototype.hasOwnProperty.call(snapshot, "max_pages")
+    && !Object.prototype.hasOwnProperty.call(snapshot, "end_page")
+    ? { ...snapshot, start_page: 1, end_page: snapshot.max_pages, force_full_scan: false }
+    : snapshot;
   return Object.fromEntries(script.parameters.map((parameter) => {
     const fallback = parameterDefault(parameter);
-    if (!Object.prototype.hasOwnProperty.call(snapshot, parameter.key)) return [parameter.key, fallback];
-    const value = snapshot[parameter.key];
+    if (!Object.prototype.hasOwnProperty.call(normalizedSnapshot, parameter.key)) return [parameter.key, fallback];
+    const value = normalizedSnapshot[parameter.key];
     if (parameter.type === "boolean") return [parameter.key, booleanSnapshotValue(value, Boolean(fallback))];
     return [parameter.key, value == null ? fallback : String(value)];
   }));

@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session, aliased
 
+from app.core.timezones import as_shanghai_naive, shanghai_isoformat, shanghai_now
 from app.db import get_db
 from app.dependencies.context import CurrentContext, require_context
 from app.http.media import stream_storage_object
@@ -147,11 +148,17 @@ def _run_read(run: AcquisitionRun) -> AcquisitionRunRead:
         candidate_count=run.candidate_count,
         content_duplicate_count=run.content_duplicate_count,
         gallery_duplicate_count=run.gallery_duplicate_count,
+        resolution_duplicate_count=run.resolution_duplicate_count,
+        resolution_upgrade_count=run.resolution_upgrade_count,
         ignored_count=run.ignored_count,
         invalid_count=run.invalid_count,
         error_count=run.error_count,
         imported_count=run.imported_count,
         error_message=run.error_message,
+        scan_start_page=run.scan_start_page,
+        scan_end_page=run.scan_end_page,
+        reached_collection_end=run.reached_collection_end,
+        stop_reason=run.stop_reason,
         started_at=run.started_at,
         completed_at=run.completed_at,
         created_at=run.created_at,
@@ -597,6 +604,8 @@ def list_import_batches(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> PaginatedAcquisitionImportBatches:
+    date_from = as_shanghai_naive(date_from)
+    date_to = as_shanghai_naive(date_to)
     filters = [AcquisitionImportBatch.workspace_id == current.workspace_id]
     if date_from:
         filters.append(AcquisitionImportBatch.created_at >= date_from)
@@ -654,6 +663,8 @@ def list_import_batch_items(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> PaginatedAcquisitionImportBatchItems:
+    date_from = as_shanghai_naive(date_from)
+    date_to = as_shanghai_naive(date_to)
     if batch_id == "unassigned":
         filters = list(_unassigned_import_filter(current.workspace_id))
         if date_from:
@@ -841,6 +852,8 @@ def list_history(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> list[dict[str, object]]:
+    date_from = as_shanghai_naive(date_from)
+    date_to = as_shanghai_naive(date_to)
     query = (
         select(AcquisitionImportedPhoto, AcquisitionRun, AcquisitionCategory, GalleryPhoto)
         .join(AcquisitionRun, AcquisitionRun.id == AcquisitionImportedPhoto.run_id)
@@ -877,7 +890,7 @@ def list_history(
             "filename": history.filename_snapshot,
             "sha256": history.sha256_snapshot,
             "available": photo is not None,
-            "created_at": history.created_at,
+            "created_at": shanghai_isoformat(history.created_at),
         }
         for history, run, category, photo in unique_rows
     ]
@@ -891,7 +904,11 @@ def create_export(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> AcquisitionExportRead:
-    job = _service(request).create_export_job(db, current.workspace_id, payload.model_dump(exclude_none=True))
+    job = _service(request).create_export_job(
+        db,
+        current.workspace_id,
+        payload.model_dump(mode="json", exclude_none=True),
+    )
     background_tasks.add_task(_process_export, request.app.state.session_factory, _service(request), job.id)
     return _export_read(job)
 
@@ -931,7 +948,7 @@ def download_export(
             storage.remove_object(object_key)
 
     job.status = "downloaded"
-    job.downloaded_at = datetime.utcnow()
+    job.downloaded_at = shanghai_now()
     job.object_key = None
     db.commit()
     return StreamingResponse(stream(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"'})

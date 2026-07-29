@@ -864,6 +864,40 @@
             "title": "Parameters",
             "type": "object"
           },
+          "reached_collection_end": {
+            "title": "Reached Collection End",
+            "type": "boolean"
+          },
+          "resolution_duplicate_count": {
+            "title": "Resolution Duplicate Count",
+            "type": "integer"
+          },
+          "resolution_upgrade_count": {
+            "title": "Resolution Upgrade Count",
+            "type": "integer"
+          },
+          "scan_end_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan End Page"
+          },
+          "scan_start_page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Start Page"
+          },
           "script_key": {
             "anyOf": [
               {
@@ -911,6 +945,17 @@
             "title": "Status",
             "type": "string"
           },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          },
           "total_count": {
             "title": "Total Count",
             "type": "integer"
@@ -941,11 +986,17 @@
           "candidate_count",
           "content_duplicate_count",
           "gallery_duplicate_count",
+          "resolution_duplicate_count",
+          "resolution_upgrade_count",
           "ignored_count",
           "invalid_count",
           "error_count",
           "imported_count",
           "error_message",
+          "scan_start_page",
+          "scan_end_page",
+          "reached_collection_end",
+          "stop_reason",
           "started_at",
           "completed_at",
           "created_at",

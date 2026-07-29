@@ -6,6 +6,7 @@ from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.core.timezones import shanghai_now
 class AcquisitionSource(Base):
     __tablename__ = "acquisition_sources"
     __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_acquisition_source_workspace_name"),)
@@ -19,8 +20,8 @@ class AcquisitionSource(Base):
     page_format_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     settings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionScript(Base):
@@ -33,8 +34,8 @@ class AcquisitionScript(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     parameter_schema_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionSourceScript(Base):
@@ -46,8 +47,8 @@ class AcquisitionSourceScript(Base):
     script_key: Mapped[str] = mapped_column(ForeignKey("acquisition_scripts.key", ondelete="CASCADE"), nullable=False, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     default_parameters_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionCategory(Base):
@@ -62,8 +63,8 @@ class AcquisitionCategory(Base):
     crawl_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionRun(Base):
@@ -89,15 +90,21 @@ class AcquisitionRun(Base):
     candidate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     content_duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     gallery_duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    resolution_duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    resolution_upgrade_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     ignored_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     invalid_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     imported_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scan_start_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scan_end_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reached_collection_end: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    stop_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionSourceItem(Base):
@@ -115,10 +122,10 @@ class AcquisitionSourceItem(Base):
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionAsset(Base):
@@ -135,11 +142,14 @@ class AcquisitionAsset(Base):
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     blur_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    perceptual_phash: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    perceptual_dhash: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     quality_warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending_review", nullable=False, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionRunItem(Base):
@@ -152,9 +162,11 @@ class AcquisitionRunItem(Base):
     asset_id: Mapped[str | None] = mapped_column(ForeignKey("acquisition_assets.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     collection_outcome: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    resolved_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    resolved_candidate: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionImportedPhoto(Base):
@@ -169,7 +181,7 @@ class AcquisitionImportedPhoto(Base):
     filename_snapshot: Mapped[str] = mapped_column(String(512), nullable=False)
     sha256_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
     category_path_snapshot: Mapped[str] = mapped_column(String(1024), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
 
 class AcquisitionImportBatch(Base):
@@ -186,8 +198,8 @@ class AcquisitionImportBatch(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionImportBatchItem(Base):
@@ -206,8 +218,8 @@ class AcquisitionImportBatchItem(Base):
     gallery_photo_id: Mapped[int | None] = mapped_column(ForeignKey("gallery_photos.id", ondelete="SET NULL"), nullable=True, index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
 class AcquisitionSimilarityCandidate(Base):
@@ -221,7 +233,7 @@ class AcquisitionSimilarityCandidate(Base):
     other_asset_id: Mapped[str | None] = mapped_column(ForeignKey("acquisition_assets.id", ondelete="CASCADE"), nullable=True, index=True)
     gallery_photo_id: Mapped[int | None] = mapped_column(ForeignKey("gallery_photos.id", ondelete="CASCADE"), nullable=True, index=True)
     score: Mapped[float] = mapped_column(Float, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
 
 class AcquisitionExportJob(Base):
@@ -237,6 +249,6 @@ class AcquisitionExportJob(Base):
     missing_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

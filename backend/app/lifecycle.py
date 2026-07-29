@@ -9,10 +9,12 @@ from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.timezones import shanghai_now
 from app.db import Base
 from app.models import Workspace
 from app.services.container import ServiceContainer
 from app.services.tasks import fail_incomplete_tasks
+from app.services.timezone_migration import mark_timezone_baseline, migrate_system_timestamps
 from app.services.acquisition_adapters import LEGACY_SCRIPT_KEYS, SCRIPT_REGISTRY
 
 
@@ -124,7 +126,18 @@ def ensure_acquisition_schema(engine: Engine) -> None:
             "candidate_count": "ALTER TABLE acquisition_runs ADD COLUMN candidate_count INTEGER NOT NULL DEFAULT 0",
             "content_duplicate_count": "ALTER TABLE acquisition_runs ADD COLUMN content_duplicate_count INTEGER NOT NULL DEFAULT 0",
             "gallery_duplicate_count": "ALTER TABLE acquisition_runs ADD COLUMN gallery_duplicate_count INTEGER NOT NULL DEFAULT 0",
+            "resolution_duplicate_count": "ALTER TABLE acquisition_runs ADD COLUMN resolution_duplicate_count INTEGER NOT NULL DEFAULT 0",
+            "resolution_upgrade_count": "ALTER TABLE acquisition_runs ADD COLUMN resolution_upgrade_count INTEGER NOT NULL DEFAULT 0",
             "ignored_count": "ALTER TABLE acquisition_runs ADD COLUMN ignored_count INTEGER NOT NULL DEFAULT 0",
+            "scan_start_page": "ALTER TABLE acquisition_runs ADD COLUMN scan_start_page INTEGER",
+            "scan_end_page": "ALTER TABLE acquisition_runs ADD COLUMN scan_end_page INTEGER",
+            "reached_collection_end": "ALTER TABLE acquisition_runs ADD COLUMN reached_collection_end BOOLEAN NOT NULL DEFAULT 0",
+            "stop_reason": "ALTER TABLE acquisition_runs ADD COLUMN stop_reason VARCHAR(32)",
+        },
+        "acquisition_assets": {
+            "perceptual_phash": "ALTER TABLE acquisition_assets ADD COLUMN perceptual_phash VARCHAR(32)",
+            "perceptual_dhash": "ALTER TABLE acquisition_assets ADD COLUMN perceptual_dhash VARCHAR(32)",
+            "quality_score": "ALTER TABLE acquisition_assets ADD COLUMN quality_score FLOAT",
         },
         "acquisition_source_items": {
             "script_key": "ALTER TABLE acquisition_source_items ADD COLUMN script_key VARCHAR(128)",
@@ -132,6 +145,8 @@ def ensure_acquisition_schema(engine: Engine) -> None:
         },
         "acquisition_run_items": {
             "collection_outcome": "ALTER TABLE acquisition_run_items ADD COLUMN collection_outcome VARCHAR(32) NOT NULL DEFAULT 'pending'",
+            "resolved_url": "ALTER TABLE acquisition_run_items ADD COLUMN resolved_url VARCHAR(2048)",
+            "resolved_candidate": "ALTER TABLE acquisition_run_items ADD COLUMN resolved_candidate VARCHAR(32)",
         },
         "acquisition_similarity_candidates": {
             "scan_task_id": "ALTER TABLE acquisition_similarity_candidates ADD COLUMN scan_task_id VARCHAR(64)",
@@ -148,6 +163,18 @@ def ensure_acquisition_schema(engine: Engine) -> None:
 
         if "acquisition_assets" in tables:
             connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_acquisition_assets_perceptual_phash "
+                    "ON acquisition_assets (perceptual_phash)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_acquisition_assets_perceptual_dhash "
+                    "ON acquisition_assets (perceptual_dhash)"
+                )
+            )
+            connection.execute(
                 text("UPDATE acquisition_assets SET status = 'pending_review' WHERE status = 'deferred'")
             )
 
@@ -161,14 +188,15 @@ def ensure_acquisition_schema(engine: Engine) -> None:
                 "page_format_key": definition.page_format_key,
                 "description": definition.description,
                 "parameter_schema_json": json.dumps([item.as_dict() for item in definition.parameters], ensure_ascii=False),
+                "now": shanghai_now(),
             }
             connection.execute(
                 text(
                     "INSERT INTO acquisition_scripts (key, name, version, page_format_key, description, parameter_schema_json, enabled, created_at, updated_at) "
-                    "VALUES (:key, :name, :version, :page_format_key, :description, :parameter_schema_json, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
+                    "VALUES (:key, :name, :version, :page_format_key, :description, :parameter_schema_json, 1, :now, :now) "
                     "ON CONFLICT(key) DO UPDATE SET name=excluded.name, version=excluded.version, "
                     "page_format_key=excluded.page_format_key, description=excluded.description, "
-                    "parameter_schema_json=excluded.parameter_schema_json, enabled=1, updated_at=CURRENT_TIMESTAMP"
+                    "parameter_schema_json=excluded.parameter_schema_json, enabled=1, updated_at=:now"
                 ),
                 values,
             )
@@ -215,9 +243,9 @@ def ensure_acquisition_schema(engine: Engine) -> None:
                     text(
                         "INSERT OR IGNORE INTO acquisition_source_scripts "
                         "(source_id, script_key, enabled, default_parameters_json, created_at, updated_at) "
-                        "VALUES (:source_id, :script_key, 1, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                        "VALUES (:source_id, :script_key, 1, '{}', :now, :now)"
                     ),
-                    {"source_id": row["id"], "script_key": script_key},
+                    {"source_id": row["id"], "script_key": script_key, "now": shanghai_now()},
                 )
                 connection.execute(
                     text("UPDATE acquisition_sources SET page_format_key=:page_format_key WHERE id=:source_id"),
@@ -527,6 +555,7 @@ def ensure_gallery_photo_type_unique_constraint(engine: Engine) -> None:
 
 
 def initialize_database(engine: Engine) -> None:
+    is_fresh_database = not inspect(engine).get_table_names()
     Base.metadata.create_all(bind=engine)
     ensure_acquisition_schema(engine)
     ensure_workspace_scoped_name_constraints(engine)
@@ -534,6 +563,10 @@ def initialize_database(engine: Engine) -> None:
     ensure_video_seek_columns(engine)
     ensure_face_recognition_columns(engine)
     ensure_gallery_similarity_group_columns(engine)
+    if is_fresh_database:
+        mark_timezone_baseline(engine)
+    else:
+        migrate_system_timestamps(engine)
 
 
 def initialize_runtime(

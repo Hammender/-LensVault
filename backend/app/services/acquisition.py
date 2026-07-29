@@ -5,6 +5,8 @@ import json
 import mimetypes
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -20,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.core.timezones import as_shanghai_naive, shanghai_isoformat, shanghai_now
 from app.models import (
     AcquisitionAsset,
     AcquisitionCategory,
@@ -61,6 +64,30 @@ from app.services.storage import MinioStorage
 
 def _stable_key(value: str) -> str:
     return hashlib.sha256(value.strip().encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class PendingRemote:
+    remote: RemoteItem
+    source_item_id: int
+    run_item_id: int
+
+
+@dataclass(frozen=True)
+class DownloadedRemote:
+    payload: bytes
+    content_type: str | None
+    resolved_url: str
+    resolved_candidate: str
+    filename: str
+    width: int
+    height: int
+    blur_score: float
+    quality_warnings: tuple[str, ...]
+    sha256: str
+    perceptual_phash: str
+    perceptual_dhash: str
+    quality_score: float
 
 
 class AcquisitionService:
@@ -251,8 +278,10 @@ class AcquisitionService:
             raise ValueError("该脚本未绑定到分类所属站点")
         if source.page_format_key != definition.page_format_key:
             raise ValueError("脚本网页格式与站点不一致")
-        defaults = json.loads(binding.default_parameters_json or "{}")
+        defaults = definition.validate_parameters(json.loads(binding.default_parameters_json or "{}"))
         validated_parameters = definition.validate_parameters({**defaults, **(parameters or {})})
+        if mode == "verify" and validated_parameters.get("force_full_scan") is True:
+            raise ValueError("核验模式本身会完整翻页，无需启用强制扫描")
         active = db.scalar(
             select(AcquisitionRun).where(
                 AcquisitionRun.category_id == category.id,
@@ -324,7 +353,7 @@ class AcquisitionService:
                         break
         raise RuntimeError(str(last_error or "下载失败"))
 
-    def _download_remote(self, remote: RemoteItem, referer: str) -> tuple[bytes, str | None]:
+    def _download_remote(self, remote: RemoteItem, referer: str) -> tuple[bytes, str | None, str]:
         candidates = list(remote.candidate_urls or (remote.source_url,))
         errors: list[str] = []
         index = 0
@@ -342,10 +371,42 @@ class AcquisitionService:
                 if content_type and not content_type.lower().startswith("image/"):
                     errors.append(f"{candidate}: 返回类型 {content_type}")
                     continue
-                return payload, content_type
+                return payload, content_type, candidate
             except Exception as exc:
                 errors.append(f"{candidate}: {exc}")
         raise RuntimeError("；".join(errors) or "没有可下载的图片地址")
+
+    def _download_and_analyze(self, remote: RemoteItem, referer: str) -> DownloadedRemote:
+        result = self._download_remote(remote, referer)
+        if len(result) == 2:  # 兼容测试和第三方扩展中的旧下载器实现。
+            payload, content_type = result
+            resolved_url = remote.source_url
+        else:
+            payload, content_type, resolved_url = result
+        width, height, blur, warnings = self._quality(payload)
+        features = compute_perceptual_features(payload)
+        if resolved_url == remote.source_url:
+            candidate = "source"
+        elif remote.preview_url and resolved_url == remote.preview_url:
+            candidate = "preview"
+        else:
+            candidate = "cache"
+        filename = Path(urlparse(resolved_url).path).name or Path(urlparse(remote.source_url).path).name
+        return DownloadedRemote(
+            payload=payload,
+            content_type=content_type,
+            resolved_url=resolved_url,
+            resolved_candidate=candidate,
+            filename=filename or f"{remote.external_key}.img",
+            width=width,
+            height=height,
+            blur_score=blur,
+            quality_warnings=tuple(warnings),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            perceptual_phash=features.phash,
+            perceptual_dhash=features.dhash,
+            quality_score=features.quality_score,
+        )
 
     def _quality(self, payload: bytes) -> tuple[int, int, float, list[str]]:
         image = Image.open(BytesIO(payload))
@@ -369,21 +430,16 @@ class AcquisitionService:
 
     @staticmethod
     def _has_completed_full_scan(db: Session, category_id: int, script_key: str) -> bool:
-        parameter_snapshots = db.scalars(
-            select(AcquisitionRun.parameters_json).where(
+        return db.scalar(
+            select(AcquisitionRun.id).where(
                 AcquisitionRun.category_id == category_id,
                 AcquisitionRun.script_key == script_key,
                 AcquisitionRun.status == "completed",
+                AcquisitionRun.scan_start_page == 1,
+                AcquisitionRun.reached_collection_end.is_(True),
+                AcquisitionRun.error_count == 0,
             )
-        ).all()
-        for snapshot in parameter_snapshots:
-            try:
-                parameters = json.loads(snapshot or "{}")
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if parameters.get("max_pages") in (None, "", 0, "0"):
-                return True
-        return False
+        ) is not None
 
     def process_run(self, db: Session, run_id: str) -> None:
         run = db.get(AcquisitionRun, run_id)
@@ -402,6 +458,10 @@ class AcquisitionService:
             run.error_message = "运行所使用的采集脚本不可用"
             db.commit()
             return
+        try:
+            parameters = json.loads(run.parameters_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            parameters = {}
         known_external_keys: set[str] = set()
         if self._has_completed_full_scan(db, category.id, definition.key):
             known_external_keys = set(
@@ -414,19 +474,47 @@ class AcquisitionService:
                 ).all()
             )
         run.status = "running"
-        run.started_at = datetime.utcnow()
+        run.started_at = shanghai_now()
+        run.scan_start_page = int(parameters.get("start_page") or 1)
+        run.scan_end_page = None
+        run.reached_collection_end = False
+        run.stop_reason = None
         db.commit()
         try:
-            parameters = json.loads(run.parameters_json or "{}")
-            for remote in definition.adapter.enumerate(
-                run.category_url_snapshot or category.crawl_url,
-                parameters,
-                known_external_keys,
-                run.mode == "incremental",
-            ):
-                self._process_remote_item(db, run, source, category, remote)
+            referer = run.category_url_snapshot or category.crawl_url
+            workers = max(1, int(getattr(self.settings, "acquisition_download_workers", 8)))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acquisition-download") as executor:
+                for page in definition.adapter.enumerate_pages(
+                    referer,
+                    parameters,
+                    known_external_keys,
+                    run.mode == "incremental",
+                ):
+                    run.scan_end_page = page.page_number
+                    pending = [
+                        prepared
+                        for remote in page.items
+                        if (prepared := self._prepare_remote_item(db, run, source, category, remote)) is not None
+                    ]
+                    futures = {
+                        executor.submit(self._download_and_analyze, prepared.remote, referer): prepared
+                        for prepared in pending
+                    }
+                    for future in as_completed(futures):
+                        prepared = futures[future]
+                        try:
+                            self._persist_downloaded_remote(db, run.id, prepared, future.result())
+                        except Exception as exc:
+                            self._record_remote_failure(db, run.id, prepared, exc)
+                    run = db.get(AcquisitionRun, run_id)
+                    if run is None:
+                        return
+                    if page.stop_reason is not None:
+                        run.stop_reason = page.stop_reason
+                        run.reached_collection_end = page.reached_collection_end
+                    db.commit()
             run.status = "completed"
-            run.completed_at = datetime.utcnow()
+            run.completed_at = shanghai_now()
         except Exception as exc:
             db.rollback()
             run = db.get(AcquisitionRun, run_id)
@@ -434,18 +522,18 @@ class AcquisitionService:
                 return
             run.status = "failed"
             run.error_message = str(exc)
-            run.completed_at = datetime.utcnow()
+            run.completed_at = shanghai_now()
         db.commit()
 
-    def _process_remote_item(
+    def _prepare_remote_item(
         self,
         db: Session,
         run: AcquisitionRun,
         source: AcquisitionSource,
         category: AcquisitionCategory,
         remote: RemoteItem,
-    ) -> None:
-        now = datetime.utcnow()
+    ) -> PendingRemote | None:
+        now = shanghai_now()
         scoped_external_key = _stable_key(f"{category.id}:{run.script_key}:{remote.external_key}")
         item = db.scalar(
             select(AcquisitionSourceItem).where(
@@ -482,7 +570,7 @@ class AcquisitionService:
         )
         if existing_run_item is not None:
             db.commit()
-            return
+            return None
         run.total_count += 1
         run_item = AcquisitionRunItem(run_id=run.id, source_item_id=item.id)
         db.add(run_item)
@@ -495,29 +583,124 @@ class AcquisitionService:
             run_item.collection_outcome = "ignored"
             run.ignored_count += 1
             db.commit()
-            return
+            return None
         if run.mode == "incremental" and item.status in self.terminal_source_statuses:
             run_item.status = "skipped"
             run_item.collection_outcome = "source_skipped"
             run.skipped_count += 1
             db.commit()
-            return
+            return None
         if item.status == "failed" and item.failed_at and now - item.failed_at < timedelta(hours=self.settings.acquisition_failed_retry_hours):
             run_item.status = "skipped"
             run_item.collection_outcome = "source_skipped"
             run.skipped_count += 1
             db.commit()
-            return
+            return None
+        return PendingRemote(remote=remote, source_item_id=item.id, run_item_id=run_item.id)
+
+    @staticmethod
+    def _normalized_image_difference(left_payload: bytes, right_payload: bytes) -> float:
+        left = open_normalized_image(left_payload).resize((64, 64), Image.Resampling.LANCZOS)
+        right = open_normalized_image(right_payload).resize((64, 64), Image.Resampling.LANCZOS)
         try:
-            payload, content_type = self._download_remote(remote, run.category_url_snapshot or category.crawl_url)
-            filename = Path(urlparse(remote.source_url).path).name or f"{remote.external_key}.img"
-            width, height, blur, warnings = self._quality(payload)
-            sha256 = hashlib.sha256(payload).hexdigest()
-            run.download_success_count += 1
+            left_array = np.asarray(left, dtype=np.float32)
+            right_array = np.asarray(right, dtype=np.float32)
+            return float(np.mean(np.abs(left_array - right_array)) / 255.0)
+        finally:
+            left.close()
+            right.close()
+
+    def _find_resolution_variant(
+        self,
+        db: Session,
+        run: AcquisitionRun,
+        downloaded: DownloadedRemote,
+    ) -> AcquisitionAsset | None:
+        candidates = db.scalars(
+            select(AcquisitionAsset).where(
+                AcquisitionAsset.workspace_id == run.workspace_id,
+                AcquisitionAsset.status == "pending_review",
+                AcquisitionAsset.object_key.is_not(None),
+                AcquisitionAsset.perceptual_phash.is_not(None),
+                AcquisitionAsset.perceptual_dhash.is_not(None),
+                AcquisitionAsset.sha256 != downloaded.sha256,
+            )
+        ).all()
+        matches: list[AcquisitionAsset] = []
+        incoming_ratio = downloaded.width / max(downloaded.height, 1)
+        for candidate in candidates:
+            if not candidate.width or not candidate.height or not candidate.object_key:
+                continue
+            candidate_ratio = candidate.width / candidate.height
+            if abs(incoming_ratio - candidate_ratio) / max(incoming_ratio, candidate_ratio) > 0.01:
+                continue
+            if hash_similarity(candidate.perceptual_phash or "", downloaded.perceptual_phash) < 0.9375:
+                continue
+            if hash_similarity(candidate.perceptual_dhash or "", downloaded.perceptual_dhash) < 0.9375:
+                continue
+            try:
+                existing_payload = self.storage.get_bytes(candidate.object_key)
+                difference = self._normalized_image_difference(downloaded.payload, existing_payload)
+            except Exception:
+                continue
+            if difference <= 8 / 255:
+                matches.append(candidate)
+        return max(
+            matches,
+            key=lambda asset: (
+                int(asset.width or 0) * int(asset.height or 0),
+                float(asset.quality_score or 0),
+                int(asset.size_bytes or 0),
+            ),
+            default=None,
+        )
+
+    @staticmethod
+    def _asset_rank(width: int, height: int, quality_score: float, size_bytes: int) -> tuple[int, float, int]:
+        return width * height, quality_score, size_bytes
+
+    def _create_asset(self, run: AcquisitionRun, downloaded: DownloadedRemote) -> AcquisitionAsset:
+        asset_id = uuid4().hex
+        object_key = self._asset_key(run.workspace_id, asset_id, downloaded.filename)
+        self.storage.put_bytes(object_key, downloaded.payload, downloaded.content_type)
+        return AcquisitionAsset(
+            id=asset_id,
+            workspace_id=run.workspace_id,
+            sha256=downloaded.sha256,
+            filename=downloaded.filename,
+            content_type=downloaded.content_type or mimetypes.guess_type(downloaded.filename)[0],
+            object_key=object_key,
+            size_bytes=len(downloaded.payload),
+            width=downloaded.width,
+            height=downloaded.height,
+            blur_score=downloaded.blur_score,
+            perceptual_phash=downloaded.perceptual_phash,
+            perceptual_dhash=downloaded.perceptual_dhash,
+            quality_score=downloaded.quality_score,
+            quality_warnings=json.dumps(downloaded.quality_warnings, ensure_ascii=False),
+        )
+
+    def _persist_downloaded_remote(
+        self,
+        db: Session,
+        run_id: str,
+        prepared: PendingRemote,
+        downloaded: DownloadedRemote,
+    ) -> None:
+        run = db.get(AcquisitionRun, run_id)
+        item = db.get(AcquisitionSourceItem, prepared.source_item_id)
+        run_item = db.get(AcquisitionRunItem, prepared.run_item_id)
+        if run is None or item is None or run_item is None:
+            raise RuntimeError("采集运行条目检查点丢失")
+        run_item.resolved_url = downloaded.resolved_url
+        run_item.resolved_candidate = downloaded.resolved_candidate
+        run.download_success_count += 1
+        object_to_remove: str | None = None
+        try:
             existing_gallery = db.scalar(
                 select(GalleryPhoto).where(
                     GalleryPhoto.workspace_id == run.workspace_id,
-                    GalleryPhoto.sha256 == sha256,
+                    GalleryPhoto.sha256 == downloaded.sha256,
                     GalleryPhoto.is_rich_text.is_(False),
                 )
             )
@@ -525,7 +708,7 @@ class AcquisitionService:
                 asset = db.scalar(
                     select(AcquisitionAsset).where(
                         AcquisitionAsset.workspace_id == run.workspace_id,
-                        AcquisitionAsset.sha256 == sha256,
+                        AcquisitionAsset.sha256 == downloaded.sha256,
                     )
                 )
                 if asset is not None:
@@ -540,26 +723,40 @@ class AcquisitionService:
             asset = db.scalar(
                 select(AcquisitionAsset).where(
                     AcquisitionAsset.workspace_id == run.workspace_id,
-                    AcquisitionAsset.sha256 == sha256,
+                    AcquisitionAsset.sha256 == downloaded.sha256,
                 )
             )
             if asset is None:
-                asset_id = uuid4().hex
-                object_key = self._asset_key(run.workspace_id, asset_id, filename)
-                self.storage.put_bytes(object_key, payload, content_type)
-                asset = AcquisitionAsset(
-                    id=asset_id,
-                    workspace_id=run.workspace_id,
-                    sha256=sha256,
-                    filename=filename,
-                    content_type=content_type or mimetypes.guess_type(filename)[0],
-                    object_key=object_key,
-                    size_bytes=len(payload),
-                    width=width,
-                    height=height,
-                    blur_score=blur,
-                    quality_warnings=json.dumps(warnings, ensure_ascii=False),
-                )
+                variant = self._find_resolution_variant(db, run, downloaded)
+                if variant is not None:
+                    incoming_rank = self._asset_rank(
+                        downloaded.width, downloaded.height, downloaded.quality_score, len(downloaded.payload)
+                    )
+                    existing_rank = self._asset_rank(
+                        int(variant.width or 0), int(variant.height or 0), float(variant.quality_score or 0), int(variant.size_bytes)
+                    )
+                    if incoming_rank <= existing_rank:
+                        run_item.asset_id = variant.id
+                        run_item.status = "pending_review"
+                        run_item.collection_outcome = "resolution_duplicate"
+                        item.status = "pending_review"
+                        item.last_error = None
+                        item.failed_at = None
+                        run.resolution_duplicate_count += 1
+                        db.commit()
+                        return
+                    asset = self._create_asset(run, downloaded)
+                    db.add(asset)
+                    db.flush()
+                    for linked_item in db.scalars(
+                        select(AcquisitionRunItem).where(AcquisitionRunItem.asset_id == variant.id)
+                    ).all():
+                        linked_item.asset_id = asset.id
+                    object_to_remove = variant.object_key
+                    db.delete(variant)
+                    run.resolution_upgrade_count += 1
+                else:
+                    asset = self._create_asset(run, downloaded)
                 db.add(asset)
                 run.downloaded_count += 1
                 run.candidate_count += 1
@@ -580,26 +777,54 @@ class AcquisitionService:
             item.status = "pending_review"
             item.last_error = None
             item.failed_at = None
-        except Exception as exc:
+            db.commit()
+        except Exception:
             db.rollback()
-            run = db.get(AcquisitionRun, run.id)
-            item = db.get(AcquisitionSourceItem, item.id)
-            run_item = db.scalar(
-                select(AcquisitionRunItem).where(
-                    AcquisitionRunItem.run_id == run.id,
-                    AcquisitionRunItem.source_item_id == item.id,
-                )
-            )
-            if run_item is None:
-                raise RuntimeError("采集运行条目检查点丢失") from exc
-            item.status = "failed"
-            item.last_error = str(exc)
-            item.failed_at = now
-            run_item.status = "failed"
-            run_item.collection_outcome = "failed"
-            run_item.error_message = str(exc)
-            run.error_count += 1
+            raise
+        if object_to_remove:
+            try:
+                self.storage.remove_object(object_to_remove)
+            except Exception:
+                pass
+
+    def _record_remote_failure(
+        self,
+        db: Session,
+        run_id: str,
+        prepared: PendingRemote,
+        exc: Exception,
+    ) -> None:
+        db.rollback()
+        run = db.get(AcquisitionRun, run_id)
+        item = db.get(AcquisitionSourceItem, prepared.source_item_id)
+        run_item = db.get(AcquisitionRunItem, prepared.run_item_id)
+        if run is None or item is None or run_item is None:
+            raise RuntimeError("采集运行条目检查点丢失") from exc
+        item.status = "failed"
+        item.last_error = str(exc)
+        item.failed_at = shanghai_now()
+        run_item.status = "failed"
+        run_item.collection_outcome = "failed"
+        run_item.error_message = str(exc)
+        run.error_count += 1
         db.commit()
+
+    def _process_remote_item(
+        self,
+        db: Session,
+        run: AcquisitionRun,
+        source: AcquisitionSource,
+        category: AcquisitionCategory,
+        remote: RemoteItem,
+    ) -> None:
+        prepared = self._prepare_remote_item(db, run, source, category, remote)
+        if prepared is None:
+            return
+        try:
+            downloaded = self._download_and_analyze(remote, run.category_url_snapshot or category.crawl_url)
+            self._persist_downloaded_remote(db, run.id, prepared, downloaded)
+        except Exception as exc:
+            self._record_remote_failure(db, run.id, prepared, exc)
 
     def reject_assets(self, db: Session, workspace_id: int | None, asset_ids: list[str]) -> int:
         assets = db.scalars(
@@ -663,7 +888,7 @@ class AcquisitionService:
         if batch is None or batch.status not in {"queued", "running"}:
             return
         batch.status = "running"
-        batch.started_at = batch.started_at or datetime.utcnow()
+        batch.started_at = batch.started_at or shanghai_now()
         db.commit()
         item_ids = list(
             db.scalars(
@@ -873,7 +1098,7 @@ class AcquisitionService:
         batch.processed_count = batch.imported_count + batch.duplicate_count + batch.failed_count
         if finish or batch.processed_count >= batch.total_count:
             batch.status = "completed_with_errors" if batch.failed_count else "completed"
-            batch.completed_at = datetime.utcnow()
+            batch.completed_at = shanghai_now()
 
     def scan_similarity(
         self,
@@ -982,9 +1207,11 @@ class AcquisitionService:
             if filters.get("category_id"):
                 query = query.where(AcquisitionRun.category_id == int(filters["category_id"]))
             if filters.get("date_from"):
-                query = query.where(AcquisitionImportedPhoto.created_at >= datetime.fromisoformat(str(filters["date_from"])))
+                date_from = as_shanghai_naive(datetime.fromisoformat(str(filters["date_from"])))
+                query = query.where(AcquisitionImportedPhoto.created_at >= date_from)
             if filters.get("date_to"):
-                query = query.where(AcquisitionImportedPhoto.created_at <= datetime.fromisoformat(str(filters["date_to"])))
+                date_to = as_shanghai_naive(datetime.fromisoformat(str(filters["date_to"])))
+                query = query.where(AcquisitionImportedPhoto.created_at <= date_to)
             rows = db.execute(query.order_by(AcquisitionImportedPhoto.created_at.asc())).all()
             unique_rows = []
             seen_asset_ids: set[str] = set()
@@ -1033,7 +1260,7 @@ class AcquisitionService:
                         "metadata.json",
                         json.dumps(
                             {
-                                "created_at": datetime.utcnow().isoformat(),
+                                "created_at": shanghai_isoformat(shanghai_now()),
                                 "filters": filters,
                                 "exported_count": exported,
                                 "missing_count": len(missing),
@@ -1050,11 +1277,11 @@ class AcquisitionService:
                 temp_path.unlink(missing_ok=True)
             job.status = "ready"
             job.object_key = object_key
-            job.filename = f"acquisition_export_{datetime.utcnow():%Y%m%d_%H%M%S}.zip"
+            job.filename = f"acquisition_export_{shanghai_now():%Y%m%d_%H%M%S}.zip"
             job.item_count = exported
             job.missing_count = len(missing)
-            job.completed_at = datetime.utcnow()
-            job.expires_at = datetime.utcnow() + timedelta(hours=self.settings.acquisition_export_ttl_hours)
+            job.completed_at = shanghai_now()
+            job.expires_at = shanghai_now() + timedelta(hours=self.settings.acquisition_export_ttl_hours)
         except Exception as exc:
             job.status = "failed"
             job.error_message = str(exc)
@@ -1065,7 +1292,7 @@ class AcquisitionService:
             select(AcquisitionExportJob).where(
                 AcquisitionExportJob.status == "ready",
                 AcquisitionExportJob.expires_at.is_not(None),
-                AcquisitionExportJob.expires_at < datetime.utcnow(),
+                AcquisitionExportJob.expires_at < shanghai_now(),
             )
         ).all()
         for job in jobs:
@@ -1183,7 +1410,13 @@ class AcquisitionService:
             run.candidate_count = outcomes.count("candidate")
             run.content_duplicate_count = outcomes.count("content_duplicate")
             run.gallery_duplicate_count = outcomes.count("gallery_duplicate")
-            run.download_success_count = run.candidate_count + run.content_duplicate_count + run.gallery_duplicate_count
+            run.resolution_duplicate_count = outcomes.count("resolution_duplicate")
+            run.download_success_count = (
+                run.candidate_count
+                + run.content_duplicate_count
+                + run.gallery_duplicate_count
+                + run.resolution_duplicate_count
+            )
             run.downloaded_count = run.candidate_count
             run.error_count = outcomes.count("failed")
         db.commit()
@@ -1278,8 +1511,8 @@ def migrate_catchpics_history(
                 parameters_json="{}",
                 mode="legacy",
                 status="completed",
-                started_at=datetime.utcnow(),
-                completed_at=datetime.utcnow(),
+                started_at=shanghai_now(),
+                completed_at=shanghai_now(),
             )
             db.add(run)
             db.flush()

@@ -13,6 +13,7 @@ export const videoLongPressRate = 3;
 export const supportedVideoExtensions = [".mp4", ".mkv", ".mov", ".webm"];
 export const supportedVideoAccept = "video/mp4,video/x-matroska,video/quicktime,video/webm,.mp4,.mkv,.mov,.webm";
 export const supportedVideoFormatLabel = "MP4/MKV/MOV/WEBM";
+export const appTimeZone = "Asia/Shanghai";
 
 export const workspacePermissionFields: Array<{ key: keyof WorkspacePermissionsPayload; label: string }> = [
   { key: "can_add_gallery", label: "新增展示图" },
@@ -30,17 +31,46 @@ export const emptyWorkspacePermissions: WorkspacePermissionsPayload = Object.fro
   workspacePermissionFields.map((item) => [item.key, false])
 ) as WorkspacePermissionsPayload;
 
+function parseShanghaiDateTime(value: string): Date {
+  const normalized = value.replace(" ", "T");
+  const hasTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  return new Date(hasTimeZone ? normalized : `${normalized}+08:00`);
+}
+
+function formatWithShanghaiTimeZone(value: string, compact: boolean): string {
+  const date = parseShanghaiDateTime(value);
+  if (Number.isNaN(date.getTime())) {
+    return "时间格式错误";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: appTimeZone,
+    year: compact ? undefined : "numeric",
+    month: compact ? "2-digit" : "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
+}
+
 export function formatDate(value: string | null | undefined): string {
   if (!value) {
     return "未记录时间";
   }
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
+  return formatWithShanghaiTimeZone(value, false);
+}
+
+export function formatCompactDate(value: string): string {
+  return formatWithShanghaiTimeZone(value, true);
+}
+
+export function formatPhotoDate(takenAt: string | null | undefined, createdAt: string): string {
+  return takenAt ? formatWithShanghaiTimeZone(takenAt, false) : formatDate(createdAt);
+}
+
+export function toShanghaiDateTimeBoundary(date: string, boundary: "start" | "end"): string {
+  const time = boundary === "start" ? "00:00:00" : "23:59:59.999999";
+  return `${date}T${time}+08:00`;
 }
 
 export function formatBytes(value: number): string {

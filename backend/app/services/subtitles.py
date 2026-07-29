@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.core.timezones import shanghai_now
 from app.db import SessionLocal
 from app.models import Task, VideoItem, VideoSubtitleTrack
 from app.services.storage import MinioStorage
@@ -228,7 +229,7 @@ class SubtitleService:
             track.provider = self.settings.subtitle_translation_provider
             track.status = "ready"
             track.error_message = None
-            track.generated_at = datetime.utcnow()
+            track.generated_at = shanghai_now()
             db.add(track)
             db.commit()
             if task_id:
@@ -918,4 +919,3 @@ class SubtitleService:
     def _user_facing_error(exc: Exception) -> str:
         message = str(exc).strip()
         return message or exc.__class__.__name__
-

@@ -6,6 +6,7 @@ from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.core.timezones import shanghai_now
 class VideoItem(Base):
     __tablename__ = "video_items"
     __table_args__ = (
@@ -37,11 +38,11 @@ class VideoItem(Base):
     seek_keyframe_interval_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 
@@ -60,7 +61,7 @@ class VideoCategoryTag(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(128), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     video_links: Mapped[list[VideoItemCategoryTag]] = relationship(back_populates="tag", cascade="all, delete-orphan")
 
@@ -75,11 +76,11 @@ class VideoPerson(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     avatar_object_key: Mapped[str | None] = mapped_column(String(512), unique=True, nullable=True)
     avatar_content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 
@@ -93,7 +94,7 @@ class VideoItemCategoryTag(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     video_id: Mapped[int] = mapped_column(ForeignKey("video_items.id", ondelete="CASCADE"), index=True)
     tag_id: Mapped[int] = mapped_column(ForeignKey("video_category_tags.id", ondelete="CASCADE"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     video: Mapped[VideoItem] = relationship(back_populates="category_links")
     tag: Mapped[VideoCategoryTag] = relationship(back_populates="video_links")
@@ -106,7 +107,7 @@ class VideoItemPerson(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     video_id: Mapped[int] = mapped_column(ForeignKey("video_items.id", ondelete="CASCADE"), index=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("video_people.id", ondelete="CASCADE"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     video: Mapped[VideoItem] = relationship(back_populates="person_links")
     person: Mapped[VideoPerson] = relationship(back_populates="video_links")
@@ -127,11 +128,11 @@ class VideoSubtitleTrack(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 
@@ -152,11 +153,11 @@ class VideoUploadSession(Base):
     total_parts: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="uploading", nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 
@@ -173,6 +174,6 @@ class VideoUploadPart(Base):
     object_key: Mapped[str] = mapped_column(String(512), unique=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     session: Mapped[VideoUploadSession] = relationship(back_populates="parts")

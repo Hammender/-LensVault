@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.timezones import shanghai_now
 from app.models import GallerySimilarityScan, Person, UploadHistory
 from app.services.similarity import mark_similarity_scans_stale
 from app.services.tasks import update_task
@@ -275,7 +276,7 @@ def process_gallery_similarity_scan_task(
         similarity_service.run_scan(db, scan, progress_callback)
         scan.status = "completed"
         scan.is_stale = False
-        scan.completed_at = datetime.utcnow()
+        scan.completed_at = shanghai_now()
         db.add(scan)
         db.commit()
         update_task(

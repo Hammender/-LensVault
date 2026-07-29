@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._helpers import get_workspace_object
+from app.core.timezones import shanghai_now
 from app.db import get_db
 from app.dependencies.context import CurrentContext, require_context
 from app.http.media import stream_storage_object
@@ -586,7 +587,7 @@ def update_video_subtitle(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     track.status = "ready"
     track.error_message = None
-    track.generated_at = track.generated_at or datetime.utcnow()
+    track.generated_at = track.generated_at or shanghai_now()
     db.add(track)
     db.commit()
     db.refresh(track)

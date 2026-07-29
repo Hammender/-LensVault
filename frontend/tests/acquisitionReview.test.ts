@@ -184,7 +184,7 @@ describe("acquisition import batch state", () => {
     await listAcquisitionImportBatches(15, 15, "2026-07-01", "2026-07-26");
     await listAcquisitionImportBatchItems("batch-id", "imported", 40, 40);
 
-    expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/import-batches?offset=15&limit=15&date_from=2026-07-01T00%3A00%3A00&date_to=2026-07-26T23%3A59%3A59");
+    expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/import-batches?offset=15&limit=15&date_from=2026-07-01T00%3A00%3A00%2B08%3A00&date_to=2026-07-26T23%3A59%3A59.999999%2B08%3A00");
     expect(fetch.mock.calls[1][0]).toBe("/api/acquisition/import-batches/batch-id/items?status=imported&offset=40&limit=40");
   });
 });

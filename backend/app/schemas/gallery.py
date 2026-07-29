@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
+
+from app.schemas.base import BaseModel, ShanghaiDateTime as datetime
 class GalleryPersonTagRead(BaseModel):
     person_id: int
     person_name: str

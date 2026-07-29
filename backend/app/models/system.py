@@ -6,6 +6,7 @@ from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.core.timezones import shanghai_now
 class User(Base):
     __tablename__ = "users"
 
@@ -15,11 +16,11 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(512))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 
@@ -34,11 +35,11 @@ class Workspace(Base):
     name: Mapped[str] = mapped_column(String(128), index=True)
     kind: Mapped[str] = mapped_column(String(32), default="private", nullable=False, index=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 
@@ -64,7 +65,7 @@ class WorkspaceMember(Base):
     can_add_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     can_delete_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     can_edit_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     workspace: Mapped[Workspace] = relationship(back_populates="members")
     user: Mapped[User] = relationship(back_populates="memberships")
@@ -88,11 +89,11 @@ class WorkspaceInvitation(Base):
     can_add_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     can_delete_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     can_edit_videos: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 

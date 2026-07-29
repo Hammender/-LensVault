@@ -6,6 +6,7 @@ from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.core.timezones import shanghai_now
 from .people import SamplePhoto
 class GalleryPhoto(Base):
     __tablename__ = "gallery_photos"
@@ -25,11 +26,11 @@ class GalleryPhoto(Base):
     is_rich_text: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     rich_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 
@@ -67,9 +68,9 @@ class GallerySimilarityFeature(Base):
     quality_score: Mapped[float] = mapped_column(Float, nullable=False)
     vector_point_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     vector_ready: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False
     )
 
     gallery_photo: Mapped[GalleryPhoto] = relationship(back_populates="similarity_feature")
@@ -96,7 +97,7 @@ class GallerySimilarityScan(Base):
     candidate_pair_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     group_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     groups: Mapped[list[GallerySimilarityGroup]] = relationship(
@@ -117,7 +118,7 @@ class GallerySimilarityGroup(Base):
     review_status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     min_score: Mapped[float] = mapped_column(Float, nullable=False)
     average_score: Mapped[float] = mapped_column(Float, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     scan: Mapped[GallerySimilarityScan] = relationship(back_populates="groups")
     members: Mapped[list[GallerySimilarityGroupMember]] = relationship(
@@ -193,7 +194,7 @@ class FaceRecord(Base):
     pose_yaw: Mapped[float | None] = mapped_column(Float, nullable=True)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     vector_collection: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     sample_photo: Mapped[SamplePhoto | None] = relationship(back_populates="faces")
     gallery_photo: Mapped[GalleryPhoto | None] = relationship(back_populates="faces")
@@ -214,7 +215,7 @@ class FaceRecognitionCorrection(Base):
     corrected_person_id: Mapped[int] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"), index=True)
     embedding_version: Mapped[str] = mapped_column(String(64), nullable=False)
     promoted_to_sample: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False, index=True)
 
 
 class Tag(Base):
@@ -225,7 +226,7 @@ class Tag(Base):
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(128), index=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     gallery_links: Mapped[list[GalleryPhotoTag]] = relationship(back_populates="tag", cascade="all, delete-orphan")
     person_links: Mapped[list[PersonTag]] = relationship(back_populates="tag", cascade="all, delete-orphan")
@@ -238,7 +239,7 @@ class PersonTag(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"), index=True)
     tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     person: Mapped[Person] = relationship(back_populates="labels")
     tag: Mapped[Tag] = relationship(back_populates="person_links")
@@ -252,7 +253,7 @@ class GalleryPhotoPersonTag(Base):
     gallery_photo_id: Mapped[int] = mapped_column(ForeignKey("gallery_photos.id", ondelete="CASCADE"), index=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"), index=True)
     source: Mapped[str] = mapped_column(String(32), default="auto", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     gallery_photo: Mapped[GalleryPhoto] = relationship(back_populates="person_tags")
     person: Mapped[Person] = relationship(back_populates="person_tags")
@@ -266,7 +267,7 @@ class GalleryPhotoTag(Base):
     gallery_photo_id: Mapped[int] = mapped_column(ForeignKey("gallery_photos.id", ondelete="CASCADE"), index=True)
     tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), index=True)
     source: Mapped[str] = mapped_column(String(32), default="manual", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     gallery_photo: Mapped[GalleryPhoto] = relationship(back_populates="tags")
     tag: Mapped[Tag] = relationship(back_populates="gallery_links")

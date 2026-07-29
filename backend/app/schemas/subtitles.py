@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
+
+from app.schemas.base import BaseModel, ShanghaiDateTime as datetime
 from .gallery import TaskRead
 from .videos import VideoSubtitleTrackRead
 

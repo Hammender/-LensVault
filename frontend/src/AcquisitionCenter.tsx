@@ -58,7 +58,7 @@ import type {
   AcquisitionSource,
   PaginatedAcquisitionAssets
 } from "./types";
-import { formatBytes, formatDate } from "./utils";
+import { formatBytes, formatDate, toShanghaiDateTimeBoundary } from "./utils";
 import "./AcquisitionCenter.css";
 
 type Tab = "sources" | "runs" | "review" | "history";
@@ -87,6 +87,17 @@ function statusLabel(status: string): string {
     import_queued: "等待入库", importing: "正在入库", import_failed: "入库失败",
     gallery_duplicate: "图库已存在", completed_with_errors: "部分失败", ready: "可下载", downloaded: "已下载", expired: "已过期"
   } as Record<string, string>)[status] ?? status;
+}
+
+function runStopLabel(run: AcquisitionRun): string | null {
+  if (run.scan_start_page == null || run.scan_end_page == null) return null;
+  const reason = ({
+    collection_end: "已到网站末页",
+    requested_end: "已到指定末页",
+    known_page: "整页均已采集",
+    empty_page: "页面为空"
+  } as Record<string, string>)[run.stop_reason ?? ""];
+  return `页码 ${run.scan_start_page}-${run.scan_end_page}${reason ? ` · ${reason}` : ""}`;
 }
 
 function findPreviewableIndexInDirection(assets: AcquisitionAsset[], start: number, step: -1 | 1): number {
@@ -534,6 +545,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       if (parameter.type === "integer" || parameter.type === "number") result[parameter.key] = Number(value);
       else result[parameter.key] = value;
     }
+    const startPage = Number(result.start_page ?? 1);
+    const endPage = result.end_page == null ? null : Number(result.end_page);
+    if (endPage != null && endPage < startPage) throw new Error("结束页不能小于起始页");
+    if (runMode === "verify" && result.force_full_scan === true) throw new Error("核验模式无需启用强制扫描");
     return result;
   }
 
@@ -788,12 +803,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         {selectedRunScript?.parameters.map((parameter) => <label key={parameter.key} title={parameter.description ?? undefined}>
           <span>{parameter.label}{parameter.required ? " *" : ""}</span>
           {parameter.type === "boolean"
-            ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
+            ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} disabled={parameter.key === "force_full_scan" && runMode === "verify"} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
             : parameter.type === "select"
               ? <select value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))}>{parameter.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
               : <input type={parameter.type === "string" ? "text" : "number"} required={parameter.required} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} step={parameter.type === "integer" ? 1 : "any"} value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))} />}
         </label>)}
-        <div className="mode-switch"><button type="button" className={runMode === "incremental" ? "active" : ""} onClick={() => setRunMode("incremental")}>增量</button><button type="button" className={runMode === "verify" ? "active" : ""} onClick={() => setRunMode("verify")}>核验</button></div>
+        <div className="mode-switch"><button type="button" className={runMode === "incremental" ? "active" : ""} onClick={() => setRunMode("incremental")}>增量</button><button type="button" className={runMode === "verify" ? "active" : ""} onClick={() => { setRunMode("verify"); setRunParameters((current) => ({ ...current, force_full_scan: false })); }}>核验</button></div>
         <button type="button" disabled={!canAdd || !runCategoryId || !runScriptKey || busy} onClick={() => void perform(async () => {
           await startAcquisitionRun(Number(runCategoryId), { script_key: runScriptKey, mode: runMode, parameters: runPayloadParameters() });
         }, "采集任务已进入队列")}><Play size={16} /> 开始采集</button>
@@ -810,9 +825,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
               ? "载入此运行配置"
               : "原分类或脚本已不可用";
           return <article className="run-line" key={run.id}>
-            <div><strong>{run.source_name} / {run.category_name}</strong><small>{run.script_name} · v{run.script_version} · {formatDate(run.created_at)} · {run.mode === "verify" ? "核验" : "增量"}</small>{run.error_message && <p className="run-error">{run.error_message}</p>}</div>
+            <div><strong>{run.source_name} / {run.category_name}</strong><small>{run.script_name} · v{run.script_version} · {formatDate(run.created_at)} · {run.mode === "verify" ? "核验" : "增量"}</small>{runStopLabel(run) && <small>{runStopLabel(run)}</small>}{run.error_message && <p className="run-error">{run.error_message}</p>}</div>
             <div className="run-actions">
-              <div className="run-metrics"><span className={`acquisition-status status-${run.status}`}>{statusLabel(run.status)}</span><small>扫描 {run.total_count} · 来源跳过 {run.skipped_count} · 忽略 {run.ignored_count}</small><small>下载成功 {run.download_success_count} · 新候选 {run.candidate_count} · 内容重复 {run.content_duplicate_count} · 图库重复 {run.gallery_duplicate_count} · 失败 {run.error_count}</small></div>
+              <div className="run-metrics"><span className={`acquisition-status status-${run.status}`}>{statusLabel(run.status)}</span><small>扫描 {run.total_count} · 来源跳过 {run.skipped_count} · 忽略 {run.ignored_count}</small><small>下载成功 {run.download_success_count} · 新候选 {run.candidate_count} · 内容重复 {run.content_duplicate_count} · 清晰度重复 {run.resolution_duplicate_count} · 高清替换 {run.resolution_upgrade_count} · 图库重复 {run.gallery_duplicate_count} · 失败 {run.error_count}</small></div>
               <button type="button" className="icon-button" title={loadTitle} aria-label={`${loadTitle} ${run.category_name}`} disabled={!canLoadConfiguration} onClick={() => loadRunConfiguration(run)}><RotateCcw size={16} /></button>
             </div>
           </article>;
@@ -1009,7 +1024,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           <div className="history-date-range"><input type="date" aria-label="导出开始日期" value={exportDateFrom} onChange={(event) => setExportDateFrom(event.target.value)} /><span>至</span><input type="date" aria-label="导出结束日期" value={exportDateTo} onChange={(event) => setExportDateTo(event.target.value)} /></div>
           <button type="button" disabled={busy || (exportScope !== "all" && !exportScopeId)} onClick={() => void perform(async () => {
             const value = exportScopeId || undefined;
-            const dateRange = { date_from: exportDateFrom ? `${exportDateFrom}T00:00:00` : undefined, date_to: exportDateTo ? `${exportDateTo}T23:59:59` : undefined };
+            const dateRange = {
+              date_from: exportDateFrom ? toShanghaiDateTimeBoundary(exportDateFrom, "start") : undefined,
+              date_to: exportDateTo ? toShanghaiDateTimeBoundary(exportDateTo, "end") : undefined
+            };
             await createAcquisitionExport(exportScope === "all" ? dateRange : exportScope === "source" ? { ...dateRange, source_id: Number(value) } : exportScope === "category" ? { ...dateRange, category_id: Number(value) } : { ...dateRange, run_id: value });
           }, "导出任务已创建")}>创建 ZIP</button>
         </div>

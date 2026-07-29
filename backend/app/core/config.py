@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     gallery_similarity_near_threshold: float = 0.92
     gallery_similarity_scene_threshold: float = 0.88
 
-    acquisition_download_workers: int = 4
+    acquisition_download_workers: int = 8
     acquisition_download_timeout_seconds: int = 30
     acquisition_download_retries: int = 3
     acquisition_failed_retry_hours: int = 24

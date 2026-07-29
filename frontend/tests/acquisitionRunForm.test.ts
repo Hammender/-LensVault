@@ -20,6 +20,19 @@ const script: AcquisitionScript = {
   ]
 };
 
+const pageScript: AcquisitionScript = {
+  key: "shfwzwz-raindrop-page",
+  name: "shfwzwz-raindrop-page",
+  version: "1.1.0",
+  page_format_key: "raindrop-public-page-v1",
+  description: "",
+  parameters: [
+    { key: "start_page", label: "起始页", type: "integer", required: false, default: 1, description: null, minimum: 1, maximum: 1001, options: [] },
+    { key: "end_page", label: "结束页", type: "integer", required: false, default: null, description: null, minimum: 1, maximum: 1001, options: [] },
+    { key: "force_full_scan", label: "强制扫描", type: "boolean", required: false, default: false, description: null, minimum: null, maximum: null, options: [] }
+  ]
+};
+
 const source: AcquisitionSource = {
   id: 1,
   name: "站点",
@@ -63,11 +76,17 @@ const run: AcquisitionRun = {
   candidate_count: 44,
   content_duplicate_count: 0,
   gallery_duplicate_count: 0,
+  resolution_duplicate_count: 0,
+  resolution_upgrade_count: 0,
   ignored_count: 0,
   invalid_count: 0,
   error_count: 0,
   imported_count: 0,
   error_message: null,
+  scan_start_page: 1,
+  scan_end_page: 10,
+  reached_collection_end: false,
+  stop_reason: "requested_end",
   started_at: null,
   completed_at: null,
   created_at: "2026-01-01T00:00:00",
@@ -95,5 +114,13 @@ describe("acquisition run form configuration", () => {
 
   it("rejects a historical configuration after its script binding is removed", () => {
     expect(getAcquisitionRunFormConfiguration(run, [category], [{ ...source, script_keys: [] }], [script])).toBeNull();
+  });
+
+  it("maps the historical max page snapshot to the new inclusive page fields", () => {
+    expect(restoreAcquisitionRunParameters(pageScript, { max_pages: 5 })).toEqual({
+      start_page: "1",
+      end_page: "5",
+      force_full_scan: false
+    });
   });
 });

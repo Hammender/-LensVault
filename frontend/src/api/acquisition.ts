@@ -15,6 +15,7 @@ import type {
   Task
 } from "../types";
 import { authFetch, jsonHeaders, parseResponse as parse, withWorkspaceContext } from "../apiClient";
+import { toShanghaiDateTimeBoundary } from "../utils";
 
 const fetch = authFetch;
 
@@ -137,8 +138,8 @@ export async function listAcquisitionImportBatches(
   dateTo?: string
 ): Promise<PaginatedAcquisitionImportBatches> {
   const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
-  if (dateFrom) params.set("date_from", `${dateFrom}T00:00:00`);
-  if (dateTo) params.set("date_to", `${dateTo}T23:59:59`);
+  if (dateFrom) params.set("date_from", toShanghaiDateTimeBoundary(dateFrom, "start"));
+  if (dateTo) params.set("date_to", toShanghaiDateTimeBoundary(dateTo, "end"));
   return parse<PaginatedAcquisitionImportBatches>(await fetch(`/api/acquisition/import-batches?${params}`));
 }
 
@@ -151,8 +152,8 @@ export async function listAcquisitionImportBatchItems(
   dateTo?: string
 ): Promise<PaginatedAcquisitionImportBatchItems> {
   const params = new URLSearchParams({ status, offset: String(offset), limit: String(limit) });
-  if (batchId === "unassigned" && dateFrom) params.set("date_from", `${dateFrom}T00:00:00`);
-  if (batchId === "unassigned" && dateTo) params.set("date_to", `${dateTo}T23:59:59`);
+  if (batchId === "unassigned" && dateFrom) params.set("date_from", toShanghaiDateTimeBoundary(dateFrom, "start"));
+  if (batchId === "unassigned" && dateTo) params.set("date_to", toShanghaiDateTimeBoundary(dateTo, "end"));
   return parse<PaginatedAcquisitionImportBatchItems>(
     await fetch(`/api/acquisition/import-batches/${encodeURIComponent(batchId)}/items?${params}`)
   );
@@ -169,8 +170,8 @@ export async function listAcquisitionSimilarity(offset = 0, limit = 12): Promise
 
 export async function listAcquisitionHistory(dateFrom?: string, dateTo?: string): Promise<AcquisitionHistoryItem[]> {
   const params = new URLSearchParams();
-  if (dateFrom) params.set("date_from", `${dateFrom}T00:00:00`);
-  if (dateTo) params.set("date_to", `${dateTo}T23:59:59`);
+  if (dateFrom) params.set("date_from", toShanghaiDateTimeBoundary(dateFrom, "start"));
+  if (dateTo) params.set("date_to", toShanghaiDateTimeBoundary(dateTo, "end"));
   return parse<AcquisitionHistoryItem[]>(await fetch(`/api/acquisition/history${params.size ? `?${params}` : ""}`));
 }
 

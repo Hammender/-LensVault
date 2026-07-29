@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,9 +39,11 @@ from app.services.acquisition_adapters import (
     RaindropPageAdapter,
     RaindropWorkersAdapter,
     RemoteItem,
+    RemotePage,
     curl_request_bytes,
     get_script,
     script_catalog,
+    stable_key,
 )
 
 
@@ -51,7 +54,7 @@ class AcquisitionAdapterTests(unittest.TestCase):
             {item["name"] for item in catalog},
             {"raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page"},
         )
-        self.assertEqual({item["version"] for item in catalog}, {"1.0.2"})
+        self.assertEqual({item["version"] for item in catalog}, {"1.0.2", "1.1.0"})
 
     def test_raindrop_page_normalizes_relative_image_urls(self) -> None:
         payload = (
@@ -103,6 +106,77 @@ class AcquisitionAdapterTests(unittest.TestCase):
 
         self.assertEqual(len(items), 3)
         self.assertEqual(request.call_count, 2)
+
+    def test_raindrop_page_scans_inclusive_one_based_page_range(self) -> None:
+        first_page = (
+            b'<span>90 bookmarks</span>'
+            b'<article><a href="https://cdn.example.test/a.jpg">a</a></article>'
+        )
+        second_page = b'<article><a href="https://cdn.example.test/b.jpg">b</a></article>'
+        third_page = b'<article><a href="https://cdn.example.test/c.jpg">c</a></article>'
+        with patch(
+            "app.services.acquisition_adapters._request_bytes",
+            side_effect=[
+                (first_page, "text/html; charset=utf-8"),
+                (second_page, "text/html; charset=utf-8"),
+                (third_page, "text/html; charset=utf-8"),
+            ],
+        ) as request:
+            pages = list(
+                RaindropPageAdapter().enumerate_pages(
+                    "https://shfwzwz.raindrop.page/album",
+                    {"start_page": 2, "end_page": 3, "force_full_scan": False},
+                    set(),
+                    True,
+                )
+            )
+
+        self.assertEqual([page.page_number for page in pages], [2, 3])
+        self.assertEqual([page.items[0].source_url for page in pages], [
+            "https://cdn.example.test/b.jpg",
+            "https://cdn.example.test/c.jpg",
+        ])
+        self.assertEqual(pages[-1].stop_reason, "collection_end")
+        self.assertEqual(request.call_count, 3)
+
+    def test_raindrop_page_force_scan_ignores_known_page_early_stop(self) -> None:
+        first_page = (
+            b'<span>60 bookmarks</span>'
+            b'<article><a href="https://cdn.example.test/a.jpg">a</a></article>'
+        )
+        second_page = b'<article><a href="https://cdn.example.test/b.jpg">b</a></article>'
+        known = {stable_key("https://cdn.example.test/a.jpg")}
+        with patch(
+            "app.services.acquisition_adapters._request_bytes",
+            return_value=(first_page, "text/html; charset=utf-8"),
+        ):
+            normal_pages = list(
+                RaindropPageAdapter().enumerate_pages(
+                    "https://shfwzwz.raindrop.page/album",
+                    {"start_page": 1, "force_full_scan": False},
+                    known,
+                    True,
+                )
+            )
+        with patch(
+            "app.services.acquisition_adapters._request_bytes",
+            side_effect=[
+                (first_page, "text/html; charset=utf-8"),
+                (second_page, "text/html; charset=utf-8"),
+            ],
+        ):
+            forced_pages = list(
+                RaindropPageAdapter().enumerate_pages(
+                    "https://shfwzwz.raindrop.page/album",
+                    {"start_page": 1, "force_full_scan": True},
+                    known,
+                    True,
+                )
+            )
+
+        self.assertEqual([page.stop_reason for page in normal_pages], ["known_page"])
+        self.assertEqual([page.page_number for page in forced_pages], [1, 2])
+        self.assertEqual(forced_pages[-1].stop_reason, "collection_end")
 
     def test_curl_fallback_uses_system_routing_and_complete_retry_budget(self) -> None:
         completed = subprocess.CompletedProcess([], 0, stdout="text/html", stderr="")
@@ -186,6 +260,19 @@ class AcquisitionAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "未知参数"):
             definition.validate_parameters({"category_name": "不能传给脚本"})
 
+        page_definition = get_script("shfwzwz-raindrop-page")
+        assert page_definition is not None
+        self.assertEqual(
+            page_definition.validate_parameters({"max_pages": "3"}),
+            {"start_page": 1, "end_page": 3, "force_full_scan": False},
+        )
+        self.assertEqual(
+            page_definition.validate_parameters({"start_page": "2", "end_page": "4", "force_full_scan": True}),
+            {"start_page": 2, "end_page": 4, "force_full_scan": True},
+        )
+        with self.assertRaisesRegex(ValueError, "结束页不能小于起始页"):
+            page_definition.validate_parameters({"start_page": 4, "end_page": 2})
+
 
 class AcquisitionModelTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -230,7 +317,7 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertEqual(run.category_url_snapshot, category.crawl_url)
         self.assertEqual(json.loads(run.parameters_json), {"max_pages": 2})
 
-    def test_only_completed_unlimited_run_establishes_incremental_baseline(self) -> None:
+    def test_only_completed_error_free_run_reaching_collection_end_establishes_incremental_baseline(self) -> None:
         definition = get_script("raindrop-ftxsri-workers-dev")
         assert definition is not None
         self.db.add(
@@ -269,14 +356,19 @@ class AcquisitionModelTests(unittest.TestCase):
         self.db.commit()
         self.assertFalse(self.service._has_completed_full_scan(self.db, category.id, definition.key))
 
-        run.parameters_json = "{}"
         run.status = "interrupted"
+        run.scan_start_page = 1
+        run.reached_collection_end = True
         self.db.commit()
         self.assertFalse(self.service._has_completed_full_scan(self.db, category.id, definition.key))
 
         run.status = "completed"
         self.db.commit()
         self.assertTrue(self.service._has_completed_full_scan(self.db, category.id, definition.key))
+
+        run.error_count = 1
+        self.db.commit()
+        self.assertFalse(self.service._has_completed_full_scan(self.db, category.id, definition.key))
 
     def test_site_rejects_other_page_format_and_external_category_url(self) -> None:
         source = self.service.create_source(
@@ -345,11 +437,14 @@ class AcquisitionModelTests(unittest.TestCase):
         ensure_acquisition_schema(engine)
 
         columns = {column["name"] for column in inspect(engine).get_columns("acquisition_similarity_candidates")}
+        asset_indexes = {index["name"] for index in inspect(engine).get_indexes("acquisition_assets")}
         with engine.connect() as connection:
             status = connection.execute(text(
                 "SELECT status FROM acquisition_assets WHERE id = 'legacy-deferred'"
             )).scalar_one()
         self.assertIn("scan_task_id", columns)
+        self.assertIn("ix_acquisition_assets_perceptual_phash", asset_indexes)
+        self.assertIn("ix_acquisition_assets_perceptual_dhash", asset_indexes)
         self.assertEqual(status, "pending_review")
         engine.dispose()
 
@@ -400,10 +495,10 @@ class AcquisitionModelTests(unittest.TestCase):
         with (
             patch.object(
                 definition.adapter,
-                "enumerate",
-                return_value=[RemoteItem("remote-a", "https://cdn.example.test/a.jpg")],
+                "enumerate_pages",
+                return_value=[RemotePage(1, (RemoteItem("remote-a", "https://cdn.example.test/a.jpg"),), "collection_end")],
             ),
-            patch.object(self.service, "_process_remote_item", side_effect=violate_unique_constraint),
+            patch.object(self.service, "_prepare_remote_item", side_effect=violate_unique_constraint),
         ):
             self.service.process_run(self.db, run.id)
 
@@ -411,6 +506,67 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertEqual(run.status, "failed")
         self.assertIsNotNone(run.completed_at)
         self.assertIn("UNIQUE constraint failed", run.error_message or "")
+
+    def test_process_run_downloads_eight_items_concurrently(self) -> None:
+        definition = get_script("raindrop-ftxsri-workers-dev")
+        assert definition is not None
+        self.db.add(
+            AcquisitionScript(
+                key=definition.key,
+                name=definition.name,
+                version=definition.version,
+                page_format_key=definition.page_format_key,
+                parameter_schema_json="[]",
+            )
+        )
+        self.db.commit()
+        source = self.service.create_source(
+            self.db,
+            None,
+            "并发下载测试站点",
+            "https://raindrop.ftxsri.workers.dev",
+        )
+        self.service.bind_script(self.db, source, definition.key)
+        category = self.service.create_category(
+            self.db,
+            source,
+            "并发下载测试分类",
+            "https://raindrop.ftxsri.workers.dev/collection-1",
+        )
+        run = self.service.start_run(self.db, None, category, definition.key, "incremental", {})
+        barrier = threading.Barrier(8, timeout=2)
+        active = 0
+        peak_active = 0
+        lock = threading.Lock()
+
+        def download(_remote: RemoteItem, _referer: str) -> object:
+            nonlocal active, peak_active
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            barrier.wait()
+            with lock:
+                active -= 1
+            return object()
+
+        remotes = tuple(
+            RemoteItem(f"remote-{index}", f"https://cdn.example.test/{index}.jpg")
+            for index in range(8)
+        )
+        with (
+            patch.object(
+                definition.adapter,
+                "enumerate_pages",
+                return_value=[RemotePage(1, remotes, "collection_end")],
+            ),
+            patch.object(self.service, "_download_and_analyze", side_effect=download),
+            patch.object(self.service, "_persist_downloaded_remote"),
+        ):
+            self.service.process_run(self.db, run.id)
+
+        self.db.refresh(run)
+        self.assertEqual(peak_active, 8)
+        self.assertEqual(run.status, "completed")
 
 
 class AcquisitionQualityTests(unittest.TestCase):
@@ -538,6 +694,85 @@ class AcquisitionSimilarityTests(unittest.TestCase):
 
 
 class AcquisitionWorkflowTests(unittest.TestCase):
+    def test_resolution_variants_keep_only_the_highest_resolution_future_asset(self) -> None:
+        class MemoryStorage:
+            def __init__(self) -> None:
+                self.objects: dict[str, bytes] = {}
+
+            def put_bytes(self, key: str, payload: bytes, _content_type: str | None = None) -> None:
+                self.objects[key] = payload
+
+            def get_bytes(self, key: str) -> bytes:
+                return self.objects[key]
+
+            def remove_object(self, key: str) -> None:
+                self.objects.pop(key, None)
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        with engine.begin() as connection:
+            connection.execute(text("PRAGMA foreign_keys=ON"))
+        Base.metadata.create_all(engine)
+        db = Session(engine, autoflush=False)
+        storage = MemoryStorage()
+        settings = SimpleNamespace(
+            acquisition_failed_retry_hours=24,
+            acquisition_quality_min_pixels=1,
+            acquisition_quality_max_aspect_ratio=10.0,
+            acquisition_quality_blur_threshold=0.0,
+        )
+        service = AcquisitionService(storage, SimpleNamespace(), settings)
+        definition = get_script("raindrop-ftxsri-workers-dev")
+        assert definition is not None
+        db.add(AcquisitionScript(
+            key=definition.key,
+            name=definition.name,
+            version=definition.version,
+            page_format_key=definition.page_format_key,
+            parameter_schema_json="[]",
+        ))
+        db.commit()
+        source = service.create_source(db, None, "清晰度去重站点", "https://raindrop.ftxsri.workers.dev")
+        service.bind_script(db, source, definition.key)
+        category = service.create_category(
+            db,
+            source,
+            "清晰度去重分类",
+            "https://raindrop.ftxsri.workers.dev/collection-1",
+        )
+        run = service.start_run(db, None, category, definition.key, "incremental", {})
+
+        payloads: list[bytes] = []
+        for size in (32, 64, 24):
+            image = Image.new("RGB", (size, size), color="white")
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG")
+            payloads.append(buffer.getvalue())
+
+        with patch.object(
+            service,
+            "_download_remote",
+            side_effect=[(payload, "image/jpeg") for payload in payloads],
+        ):
+            for index in range(3):
+                service._process_remote_item(
+                    db,
+                    run,
+                    source,
+                    category,
+                    RemoteItem(f"variant-{index}", f"https://cdn.example.test/variant-{index}.jpg"),
+                )
+
+        assets = db.query(AcquisitionAsset).all()
+        run_items = db.query(AcquisitionRunItem).filter_by(run_id=run.id).all()
+        self.assertEqual(len(assets), 1)
+        self.assertEqual((assets[0].width, assets[0].height), (64, 64))
+        self.assertEqual({item.asset_id for item in run_items}, {assets[0].id})
+        self.assertEqual(run.resolution_upgrade_count, 1)
+        self.assertEqual(run.resolution_duplicate_count, 1)
+        self.assertEqual(len(storage.objects), 1)
+        db.close()
+        engine.dispose()
+
     def test_deduplicate_import_trace_export_and_deleted_gallery_snapshot(self) -> None:
         class Stream(io.BytesIO):
             def release_conn(self) -> None:

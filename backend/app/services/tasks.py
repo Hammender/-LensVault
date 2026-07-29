@@ -6,6 +6,7 @@ from uuid import uuid4
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.core.timezones import shanghai_now
 from app.models import Task
 
 
@@ -23,7 +24,7 @@ def update_task(db: Session, task_id: str, **changes: object) -> Task:
         raise ValueError(f"Task {task_id} not found")
     for key, value in changes.items():
         setattr(task, key, value)
-    task.updated_at = datetime.utcnow()
+    task.updated_at = shanghai_now()
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -35,7 +36,7 @@ def fail_incomplete_tasks(
     kind: str,
     message: str = "任务因服务重启中断，请重新提交。",
 ) -> int:
-    now = datetime.utcnow()
+    now = shanghai_now()
     result = db.execute(
         update(Task)
         .where(Task.kind == kind, Task.status.in_(("pending", "running")))

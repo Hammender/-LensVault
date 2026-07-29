@@ -69,11 +69,17 @@ export type AcquisitionRun = {
   candidate_count: number;
   content_duplicate_count: number;
   gallery_duplicate_count: number;
+  resolution_duplicate_count: number;
+  resolution_upgrade_count: number;
   ignored_count: number;
   invalid_count: number;
   error_count: number;
   imported_count: number;
   error_message: string | null;
+  scan_start_page: number | null;
+  scan_end_page: number | null;
+  reached_collection_end: boolean;
+  stop_reason: string | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;

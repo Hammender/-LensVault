@@ -61,6 +61,17 @@ class RemoteItem:
 
 
 @dataclass(frozen=True)
+class RemotePage:
+    page_number: int
+    items: tuple[RemoteItem, ...]
+    stop_reason: Literal["collection_end", "requested_end", "known_page"] | None = None
+
+    @property
+    def reached_collection_end(self) -> bool:
+        return self.stop_reason == "collection_end"
+
+
+@dataclass(frozen=True)
 class ScriptDefinition:
     key: str
     name: str
@@ -69,6 +80,7 @@ class ScriptDefinition:
     description: str
     adapter: "SourceAdapter"
     parameters: tuple[ScriptParameter, ...] = field(default_factory=tuple)
+    legacy_parameters: tuple[ScriptParameter, ...] = field(default_factory=tuple)
 
     def metadata(self) -> dict[str, object]:
         return {
@@ -82,12 +94,13 @@ class ScriptDefinition:
 
     def validate_parameters(self, raw: dict[str, object] | None) -> dict[str, object]:
         raw = raw or {}
-        known = {parameter.key for parameter in self.parameters}
+        all_parameters = (*self.parameters, *self.legacy_parameters)
+        known = {parameter.key for parameter in all_parameters}
         unknown = sorted(set(raw) - known)
         if unknown:
             raise ValueError(f"脚本包含未知参数：{', '.join(unknown)}")
         result: dict[str, object] = {}
-        for parameter in self.parameters:
+        for parameter in all_parameters:
             value = raw.get(parameter.key, parameter.default)
             if value in (None, ""):
                 if parameter.required:
@@ -116,10 +129,28 @@ class ScriptDefinition:
             if parameter.type == "select" and str(value) not in {option[0] for option in parameter.options}:
                 raise ValueError(f"参数“{parameter.label}”的选项无效")
             result[parameter.key] = value
+        if self.key == "shfwzwz-raindrop-page":
+            if "max_pages" in result:
+                if any(key in raw for key in ("start_page", "end_page", "force_full_scan")):
+                    raise ValueError("旧参数 max_pages 不能与起止页或强制扫描同时使用")
+                result = {"start_page": 1, "end_page": int(result["max_pages"]), "force_full_scan": False}
+            start_page = int(result.get("start_page", 1))
+            end_page = result.get("end_page")
+            if end_page is not None and int(end_page) < start_page:
+                raise ValueError("结束页不能小于起始页")
         return result
 
 
 class SourceAdapter:
+    def enumerate_pages(
+        self,
+        crawl_url: str,
+        parameters: dict[str, object],
+        known_external_keys: set[str],
+        incremental: bool,
+    ) -> Iterable[RemotePage]:
+        raise NotImplementedError
+
     def enumerate(
         self,
         crawl_url: str,
@@ -127,7 +158,8 @@ class SourceAdapter:
         known_external_keys: set[str],
         incremental: bool,
     ) -> Iterable[RemoteItem]:
-        raise NotImplementedError
+        for page in self.enumerate_pages(crawl_url, parameters, known_external_keys, incremental):
+            yield from page.items
 
 
 def max_pages_from(parameters: dict[str, object]) -> int | None:
@@ -253,7 +285,7 @@ class RaindropWorkersAdapter(SourceAdapter):
         page_url = urlunparse((parsed.scheme, parsed.netloc.lower(), parsed.path.rstrip("/"), "", urlencode(query), ""))
         return f"{parsed.scheme}://{parsed.netloc.lower()}", page_url
 
-    def enumerate(self, crawl_url: str, parameters: dict[str, object], known_external_keys: set[str], incremental: bool) -> Iterable[RemoteItem]:
+    def enumerate_pages(self, crawl_url: str, parameters: dict[str, object], known_external_keys: set[str], incremental: bool) -> Iterable[RemotePage]:
         base_url, page_url = self._normalize(crawl_url)
         max_pages = max_pages_from(parameters)
         page = 0
@@ -268,8 +300,10 @@ class RaindropWorkersAdapter(SourceAdapter):
             if not isinstance(batch, list):
                 raise ValueError("Workers 采集接口未返回图片列表")
             if not batch:
+                yield RemotePage(page_number=page + 1, items=(), stop_reason="collection_end")
                 break
             page_keys: list[str] = []
+            page_items: list[RemoteItem] = []
             for record in batch:
                 if not isinstance(record, dict) or record.get("type") != "image":
                     continue
@@ -292,12 +326,15 @@ class RaindropWorkersAdapter(SourceAdapter):
                 ):
                     if candidate and candidate not in candidates:
                         candidates.append(candidate)
-                yield RemoteItem(item_id, link or cover, cover or None, str(record.get("title") or "") or None, tuple(candidates))
-            if incremental and page_keys and all(key in known_external_keys for key in page_keys):
+                page_items.append(RemoteItem(item_id, link or cover, cover or None, str(record.get("title") or "") or None, tuple(candidates)))
+            natural_end = len(batch) < 30
+            requested_end = max_pages is not None and page + 1 >= max_pages
+            known_end = incremental and page_keys and all(key in known_external_keys for key in page_keys)
+            stop_reason = "collection_end" if natural_end else "known_page" if known_end else "requested_end" if requested_end else None
+            yield RemotePage(page_number=page + 1, items=tuple(page_items), stop_reason=stop_reason)
+            if stop_reason is not None:
                 break
             page += 1
-            if len(batch) < 30:
-                break
 
 
 @dataclass
@@ -395,15 +432,18 @@ class RaindropPageAdapter(SourceAdapter):
             raise ValueError("页面中没有找到媒体条目")
         return PageData(parser.items, parser.page_urls, parser.bookmark_count)
 
-    def enumerate(self, crawl_url: str, parameters: dict[str, object], known_external_keys: set[str], incremental: bool) -> Iterable[RemoteItem]:
+    def enumerate_pages(self, crawl_url: str, parameters: dict[str, object], known_external_keys: set[str], incremental: bool) -> Iterable[RemotePage]:
         requested_url = self._validate(crawl_url)
-        max_pages = max_pages_from(parameters)
-        first_url = self._url_with_page(requested_url, 0) if incremental else requested_url
+        start_page = int(parameters.get("start_page") or 1) - 1
+        end_page = int(parameters["end_page"]) - 1 if parameters.get("end_page") not in (None, "") else None
+        force_full_scan = bool(parameters.get("force_full_scan", False))
+        if "max_pages" in parameters:
+            start_page = 0
+            legacy_max_pages = max_pages_from(parameters)
+            end_page = legacy_max_pages - 1 if legacy_max_pages is not None else None
+        first_url = self._url_with_page(requested_url, 0)
         first_page = self._fetch(first_url)
-        parts = [part for part in urlparse(first_url).path.split("/") if part]
-        start_match = PAGE_RE.search(parts[1]) if len(parts) > 1 else None
-        start_page = int(start_match.group(1)) if start_match else 0
-        last_page = max([start_page, *first_page.page_urls.keys()])
+        last_page = max([0, *first_page.page_urls.keys()])
         if first_page.bookmark_count is not None:
             per_page = 30
             for candidate in [first_url, *first_page.page_urls.values()]:
@@ -413,15 +453,17 @@ class RaindropPageAdapter(SourceAdapter):
                     per_page = max(1, int(match.group(1)))
                     break
             last_page = max(last_page, max(0, (first_page.bookmark_count - 1) // per_page))
-        if max_pages is not None:
-            last_page = min(last_page, start_page + max_pages - 1)
+        if start_page > last_page:
+            raise ValueError(f"起始页 {start_page + 1} 超过网站最后一页 {last_page + 1}")
+        requested_last_page = min(last_page, end_page) if end_page is not None else last_page
         discovered = dict(first_page.page_urls)
         seen: set[str] = set()
-        for page_number in range(start_page, last_page + 1):
+        for page_number in range(start_page, requested_last_page + 1):
             current_url = discovered.get(page_number) or self._url_with_page(first_url, page_number)
-            page = first_page if page_number == start_page else self._fetch(current_url)
+            page = first_page if page_number == 0 else self._fetch(current_url)
             discovered.update(page.page_urls)
             page_keys: list[str] = []
+            page_items: list[RemoteItem] = []
             for item in page.items:
                 source_url = str(item.get("original_url") or item.get("preview_url") or "")
                 parsed = urlparse(source_url)
@@ -433,15 +475,20 @@ class RaindropPageAdapter(SourceAdapter):
                 seen.add(external_key)
                 suffix = parsed.path.lower().rsplit(".", 1)[-1] if "." in parsed.path else ""
                 ignored = "页面条目是视频" if item.get("has_video") or f".{suffix}" in VIDEO_EXTENSIONS else None
-                yield RemoteItem(
+                page_items.append(RemoteItem(
                     external_key=external_key,
                     source_url=source_url,
                     preview_url=str(item.get("preview_url") or "") or None,
                     title=str(item.get("title") or "") or None,
                     candidate_urls=tuple(dict.fromkeys(filter(None, (source_url, str(item.get("preview_url") or ""))))),
                     ignored_reason=ignored,
-                )
-            if incremental and page_keys and all(key in known_external_keys for key in page_keys):
+                ))
+            natural_end = page_number >= last_page
+            requested_end = page_number >= requested_last_page
+            known_end = incremental and not force_full_scan and page_keys and all(key in known_external_keys for key in page_keys)
+            stop_reason = "collection_end" if natural_end else "known_page" if known_end else "requested_end" if requested_end else None
+            yield RemotePage(page_number=page_number + 1, items=tuple(page_items), stop_reason=stop_reason)
+            if stop_reason is not None:
                 break
 
 
@@ -453,6 +500,34 @@ MAX_PAGES = ScriptParameter(
     minimum=1,
     maximum=1000,
     description="留空时按网站返回的总页数扫描。",
+)
+
+START_PAGE = ScriptParameter(
+    key="start_page",
+    label="起始页",
+    type="integer",
+    default=1,
+    minimum=1,
+    maximum=1001,
+    description="从第几页开始扫描，第一页填写 1。",
+)
+
+END_PAGE = ScriptParameter(
+    key="end_page",
+    label="结束页（包含，留空为末页）",
+    type="integer",
+    default=None,
+    minimum=1,
+    maximum=1001,
+    description="扫描到该页后结束；留空时扫描到网站最后一页。",
+)
+
+FORCE_FULL_SCAN = ScriptParameter(
+    key="force_full_scan",
+    label="强制扫描全部指定页面",
+    type="boolean",
+    default=False,
+    description="忽略整页已采集的提前结束判断，但不会重复下载已成功条目。",
 )
 
 SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
@@ -468,11 +543,12 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "shfwzwz-raindrop-page": ScriptDefinition(
         key="shfwzwz-raindrop-page",
         name="shfwzwz-raindrop-page",
-        version="1.0.2",
+        version="1.1.0",
         page_format_key="raindrop-public-page-v1",
-        description="解析 *.raindrop.page 公共集合 HTML，并支持最新优先增量停止。",
+        description="解析 *.raindrop.page 公共集合 HTML，支持指定页码范围和强制完整翻页。",
         adapter=RaindropPageAdapter(),
-        parameters=(MAX_PAGES,),
+        parameters=(START_PAGE, END_PAGE, FORCE_FULL_SCAN),
+        legacy_parameters=(MAX_PAGES,),
     ),
 }
 

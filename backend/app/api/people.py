@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api._helpers import get_workspace_object
+from app.core.timezones import shanghai_isoformat, shanghai_now
 from app.background_tasks import process_person_import_task
 from app.db import get_db
 from app.dependencies.context import CurrentContext, require_context
@@ -129,11 +130,11 @@ def export_persons(
             )
         archive.writestr(
             "metadata.json",
-            json.dumps({"version": 1, "exported_at": datetime.utcnow().isoformat(), "persons": export_data}, ensure_ascii=False, indent=2),
+            json.dumps({"version": 1, "exported_at": shanghai_isoformat(shanghai_now()), "persons": export_data}, ensure_ascii=False, indent=2),
         )
 
     buffer.seek(0)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = shanghai_now().strftime("%Y%m%d_%H%M%S")
     return StreamingResponse(
         buffer,
         media_type="application/zip",

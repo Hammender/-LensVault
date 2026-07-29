@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.core.timezones import shanghai_now
 from app.db import SessionLocal
 from app.models import (
     VideoCategoryTag,
@@ -339,7 +340,7 @@ class VideoService:
                         return
                     video.status = "ready"
                     video.faststart_applied = False
-                    video.processed_at = datetime.utcnow()
+                    video.processed_at = shanghai_now()
                     video.processing_error = None
                     db.commit()
                     logger.info("视频播放优化跳过：video_id=%s faststart 已关闭，状态设为 ready", video_id)
@@ -395,7 +396,7 @@ class VideoService:
             video.video_codec = playback_info.video_codec or original_info.video_codec or video.video_codec
             video.audio_codec = playback_info.audio_codec or original_info.audio_codec or video.audio_codec
             self._apply_seek_optimization_result(video, seek_keyframe_interval_seconds)
-            video.processed_at = datetime.utcnow()
+            video.processed_at = shanghai_now()
             video.processing_error = None
             db.commit()
             logger.info(
@@ -418,7 +419,7 @@ class VideoService:
                 video.seek_optimized = previous_seek_optimized
                 video.seek_optimized_at = previous_seek_optimized_at
                 video.seek_keyframe_interval_seconds = previous_seek_keyframe_interval_seconds
-                video.processed_at = datetime.utcnow()
+                video.processed_at = shanghai_now()
                 video.processing_error = str(exc)[:2000]
                 db.commit()
         finally:
@@ -504,7 +505,7 @@ class VideoService:
             video.video_codec = playback_info.video_codec or original_info.video_codec or video.video_codec
             video.audio_codec = playback_info.audio_codec or original_info.audio_codec or video.audio_codec
             self._apply_seek_optimization_result(video, seek_keyframe_interval_seconds)
-            video.processed_at = datetime.utcnow()
+            video.processed_at = shanghai_now()
             video.processing_error = None
             db.commit()
             logger.info(
@@ -526,7 +527,7 @@ class VideoService:
                 video.seek_optimized = previous_seek_optimized
                 video.seek_optimized_at = previous_seek_optimized_at
                 video.seek_keyframe_interval_seconds = previous_seek_keyframe_interval_seconds
-                video.processed_at = datetime.utcnow()
+                video.processed_at = shanghai_now()
                 video.processing_error = str(exc)[:2000]
                 db.commit()
         finally:
@@ -583,7 +584,7 @@ class VideoService:
                 video.status = "ready"
                 video.faststart_applied = True
                 video.content_type = "video/mp4"
-                video.processed_at = datetime.utcnow()
+                video.processed_at = shanghai_now()
                 video.processing_error = None
             db.commit()
             logger.info(
@@ -620,7 +621,7 @@ class VideoService:
             logger.warning("视频拖动优化标记未写入：video_id=%s 关键帧间隔验证失败", video.id)
             return
         video.seek_optimized = True
-        video.seek_optimized_at = datetime.utcnow()
+        video.seek_optimized_at = shanghai_now()
         video.seek_keyframe_interval_seconds = keyframe_interval_seconds
         logger.info(
             "视频拖动优化标记已写入：video_id=%s keyframe_interval=%s",

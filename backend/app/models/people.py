@@ -6,6 +6,7 @@ from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.core.timezones import shanghai_now
 class Person(Base):
     __tablename__ = "persons"
     __table_args__ = (
@@ -20,11 +21,11 @@ class Person(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_unknown: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     unknown_serial: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=shanghai_now,
+        onupdate=shanghai_now,
         nullable=False,
     )
 
@@ -59,7 +60,7 @@ class SamplePhoto(Base):
     source_gallery_photo_id: Mapped[int | None] = mapped_column(
         ForeignKey("gallery_photos.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     person: Mapped[Person] = relationship(back_populates="sample_photos")
     faces: Mapped[list[FaceRecord]] = relationship(back_populates="sample_photo", cascade="all, delete-orphan")
