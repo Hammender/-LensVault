@@ -20,6 +20,7 @@ from app.core.config import Settings, get_settings
 from app.db import SessionLocal
 from app.models import Task, VideoItem, VideoSubtitleTrack
 from app.services.storage import MinioStorage
+from app.services.subtitle_formats import format_duration, format_timestamp, sanitize_vtt_text, vtt_timestamp_to_srt
 from app.services.tasks import update_task
 
 logger = logging.getLogger(__name__)
@@ -389,7 +390,7 @@ class SubtitleService:
                         ratio = min(segment_end / audio_duration, 1.0)
                         progress = 0.35 + 0.29 * ratio
                         message = (
-                            f"正在识别语音 {_format_duration(segment_end)}/{_format_duration(audio_duration)}，"
+                            f"正在识别语音 {format_duration(segment_end)}/{format_duration(audio_duration)}，"
                             f"已生成 {len(segments)} 段"
                         )
                     update_task(db, task_id, message=message, progress=progress)
@@ -853,8 +854,8 @@ class SubtitleService:
             text = translated.get(segment["id"], "").strip()
             if not text:
                 continue
-            lines.append(f"{_format_timestamp(segment['start'])} --> {_format_timestamp(segment['end'])}")
-            lines.append(_sanitize_vtt_text(text))
+            lines.append(f"{format_timestamp(segment['start'])} --> {format_timestamp(segment['end'])}")
+            lines.append(sanitize_vtt_text(text))
             lines.append("")
         return "\n".join(lines)
 
@@ -882,7 +883,7 @@ class SubtitleService:
                     "\n".join(
                         [
                             str(len(blocks) + 1),
-                            f"{_vtt_timestamp_to_srt(start.strip())} --> {_vtt_timestamp_to_srt(end.strip())}",
+                            f"{vtt_timestamp_to_srt(start.strip())} --> {vtt_timestamp_to_srt(end.strip())}",
                             *current_text,
                         ]
                     )
@@ -918,25 +919,3 @@ class SubtitleService:
         message = str(exc).strip()
         return message or exc.__class__.__name__
 
-
-def _format_timestamp(seconds: float) -> str:
-    millis = max(round(seconds * 1000), 0)
-    hours, remainder = divmod(millis, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    secs, ms = divmod(remainder, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{ms:03d}"
-
-
-def _vtt_timestamp_to_srt(timestamp: str) -> str:
-    return timestamp.replace(".", ",", 1)
-
-
-def _format_duration(seconds: float) -> str:
-    total_seconds = max(round(seconds), 0)
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
-
-def _sanitize_vtt_text(text: str) -> str:
-    return "\n".join(line.strip() for line in text.replace("\r", "\n").split("\n") if line.strip())

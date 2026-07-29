@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+from .gallery import GalleryPhotoListItem, TaskRead
+from .people import PersonRead
+
+class GallerySimilarityScanCreate(BaseModel):
+    person_id: int | None = None
+    include_cross_type: bool = False
+
+
+class GallerySimilarityScanRead(BaseModel):
+    id: str
+    task_id: str | None
+    person_id: int | None
+    include_cross_type: bool
+    status: str
+    is_stale: bool
+    feature_version: str
+    photo_count: int
+    candidate_pair_count: int
+    group_count: int
+    error_message: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    task: TaskRead | None = None
+
+
+class GallerySimilarityScanOverview(BaseModel):
+    active: GallerySimilarityScanRead | None = None
+    results: list[GallerySimilarityScanRead]
+
+
+class GallerySimilarityMemberRead(BaseModel):
+    photo: GalleryPhotoListItem
+    score_to_representative: float
+    quality_score: float
+    recommended_keep: bool
+
+
+class GallerySimilarityGroupRead(BaseModel):
+    id: int
+    ordinal: int
+    tier: str
+    review_status: Literal["pending", "dismissed"]
+    min_score: float
+    average_score: float
+    people: list[PersonRead]
+    members: list[GallerySimilarityMemberRead]
+
+
+class GallerySimilarityGroupUpdate(BaseModel):
+    review_status: Literal["pending", "dismissed"]
+
+
+class PaginatedGallerySimilarityGroups(BaseModel):
+    items: list[GallerySimilarityGroupRead]
+    total: int
+    offset: int
+    limit: int

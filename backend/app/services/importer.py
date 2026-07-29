@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.models import FaceRecognitionCorrection, FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
 from app.services.face import DetectedFace, FaceService
+from app.services.image_metadata import parse_image_metadata
 from app.services.qdrant import QdrantVectorStore
 from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
@@ -25,20 +26,6 @@ from app.services.thumbnails import animated_thumbnail_cache_key
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-def parse_image_metadata(payload: bytes) -> tuple[int, int, datetime | None]:
-    image = Image.open(BytesIO(payload))
-    width, height = image.size
-    taken_at = None
-    try:
-        exif = ImageOps.exif_transpose(image).getexif()
-        timestamp = exif.get(36867) or exif.get(306)
-        if timestamp:
-            taken_at = datetime.strptime(timestamp, "%Y:%m:%d %H:%M:%S")
-    except Exception:
-        taken_at = None
-    return width, height, taken_at
 
 
 @dataclass
