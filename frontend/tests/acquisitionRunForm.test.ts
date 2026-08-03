@@ -23,13 +23,12 @@ const script: AcquisitionScript = {
 const pageScript: AcquisitionScript = {
   key: "shfwzwz-raindrop-page",
   name: "shfwzwz-raindrop-page",
-  version: "1.1.0",
+  version: "1.2.0",
   page_format_key: "raindrop-public-page-v1",
   description: "",
   parameters: [
     { key: "start_page", label: "起始页", type: "integer", required: false, default: 1, description: null, minimum: 1, maximum: 1001, options: [] },
-    { key: "end_page", label: "结束页", type: "integer", required: false, default: null, description: null, minimum: 1, maximum: 1001, options: [] },
-    { key: "force_full_scan", label: "强制扫描", type: "boolean", required: false, default: false, description: null, minimum: null, maximum: null, options: [] }
+    { key: "end_page", label: "结束页", type: "integer", required: false, default: null, description: null, minimum: 1, maximum: 1001, options: [] }
   ]
 };
 
@@ -119,8 +118,28 @@ describe("acquisition run form configuration", () => {
   it("maps the historical max page snapshot to the new inclusive page fields", () => {
     expect(restoreAcquisitionRunParameters(pageScript, { max_pages: 5 })).toEqual({
       start_page: "1",
-      end_page: "5",
-      force_full_scan: false
+      end_page: "5"
+    });
+  });
+
+  it("maps a historical forced scan to full mode and removes the retired parameter", () => {
+    const historicalRun = {
+      ...run,
+      script_key: pageScript.key,
+      script_name: pageScript.name,
+      script_version: "1.1.0",
+      parameters: { start_page: 1, end_page: 8, force_full_scan: true }
+    };
+    const historicalSource = {
+      ...source,
+      page_format_key: pageScript.page_format_key,
+      script_keys: [pageScript.key]
+    };
+    expect(getAcquisitionRunFormConfiguration(historicalRun, [category], [historicalSource], [pageScript])).toEqual({
+      categoryId: "2",
+      scriptKey: pageScript.key,
+      mode: "full",
+      parameters: { start_page: "1", end_page: "8" }
     });
   });
 });

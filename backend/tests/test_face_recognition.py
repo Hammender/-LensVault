@@ -16,8 +16,9 @@ from app.db import Base
 from app.lifecycle import ensure_gallery_photo_type_unique_constraint
 from app.models import FaceRecord, GalleryPhoto, Person, SamplePhoto
 from app.services.face import DetectedFace, FaceService
+from app.services import face as face_module
 from app.services.face_index import build_face_index_health
-from app.services.importer import PictureService
+from app.services.importer import PersonMatch, PictureService
 from app.services.qdrant import FaceIndexInspection, FaceSearchHit
 
 
@@ -108,6 +109,25 @@ def test_face_detection_applies_exif_orientation_before_model_input() -> None:
     assert captured["shape"] == (20, 10, 3)
 
 
+def test_face_service_rejects_missing_required_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    import onnxruntime as ort
+
+    class FakeFaceAnalysis:
+        pass
+
+    monkeypatch.setattr(face_module, "FaceAnalysis", FakeFaceAnalysis)
+    monkeypatch.setattr(ort, "get_available_providers", lambda: ["CPUExecutionProvider"])
+    service = FaceService(
+        Settings(
+            face_execution_providers="CUDAExecutionProvider,CPUExecutionProvider",
+            face_require_primary_provider=True,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="CUDAExecutionProvider"):
+        service._get_app()
+
+
 @pytest.mark.parametrize(
     ("searchable_samples", "covered_people", "expected_status"),
     [(37, 17, "degraded"), (293, 164, "ok")],
@@ -167,6 +187,17 @@ def test_person_level_matching_uses_best_sample_and_workspace_version_filters() 
     assert store.search_args["workspace_id"] == 7
     assert store.search_args["embedding_version"] == "test-v1"
     assert store.search_args["limit"] == 50
+
+
+def test_confident_match_requires_top_two_margin() -> None:
+    service = PictureService.__new__(PictureService)
+    service.settings = Settings(face_recognition_threshold=0.45, face_recognition_min_margin=0.08)
+    person = Person(id=1, name="person", display_name="人物")
+
+    assert service._is_confident_match(PersonMatch(1, 0.70, 2, 0.61), person) is True
+    assert service._is_confident_match(PersonMatch(1, 0.70, 2, 0.64), person) is False
+    assert service._is_confident_match(PersonMatch(1, 0.44, 2, 0.10), person) is False
+    assert service._is_confident_match(PersonMatch(1, 0.70, None, None), person) is True
 
 
 def test_sample_quality_has_human_readable_warnings() -> None:

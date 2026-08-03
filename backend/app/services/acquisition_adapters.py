@@ -131,9 +131,9 @@ class ScriptDefinition:
             result[parameter.key] = value
         if self.key == "shfwzwz-raindrop-page":
             if "max_pages" in result:
-                if any(key in raw for key in ("start_page", "end_page", "force_full_scan")):
-                    raise ValueError("旧参数 max_pages 不能与起止页或强制扫描同时使用")
-                result = {"start_page": 1, "end_page": int(result["max_pages"]), "force_full_scan": False}
+                if any(key in raw for key in ("start_page", "end_page")):
+                    raise ValueError("旧参数 max_pages 不能与起止页同时使用")
+                result = {"start_page": 1, "end_page": int(result["max_pages"])}
             start_page = int(result.get("start_page", 1))
             end_page = result.get("end_page")
             if end_page is not None and int(end_page) < start_page:
@@ -436,7 +436,6 @@ class RaindropPageAdapter(SourceAdapter):
         requested_url = self._validate(crawl_url)
         start_page = int(parameters.get("start_page") or 1) - 1
         end_page = int(parameters["end_page"]) - 1 if parameters.get("end_page") not in (None, "") else None
-        force_full_scan = bool(parameters.get("force_full_scan", False))
         if "max_pages" in parameters:
             start_page = 0
             legacy_max_pages = max_pages_from(parameters)
@@ -485,7 +484,7 @@ class RaindropPageAdapter(SourceAdapter):
                 ))
             natural_end = page_number >= last_page
             requested_end = page_number >= requested_last_page
-            known_end = incremental and not force_full_scan and page_keys and all(key in known_external_keys for key in page_keys)
+            known_end = incremental and page_keys and all(key in known_external_keys for key in page_keys)
             stop_reason = "collection_end" if natural_end else "known_page" if known_end else "requested_end" if requested_end else None
             yield RemotePage(page_number=page_number + 1, items=tuple(page_items), stop_reason=stop_reason)
             if stop_reason is not None:
@@ -522,14 +521,6 @@ END_PAGE = ScriptParameter(
     description="扫描到该页后结束；留空时扫描到网站最后一页。",
 )
 
-FORCE_FULL_SCAN = ScriptParameter(
-    key="force_full_scan",
-    label="强制扫描全部指定页面",
-    type="boolean",
-    default=False,
-    description="忽略整页已采集的提前结束判断，但不会重复下载已成功条目。",
-)
-
 SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "raindrop-ftxsri-workers-dev": ScriptDefinition(
         key="raindrop-ftxsri-workers-dev",
@@ -543,11 +534,11 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "shfwzwz-raindrop-page": ScriptDefinition(
         key="shfwzwz-raindrop-page",
         name="shfwzwz-raindrop-page",
-        version="1.1.0",
+        version="1.2.0",
         page_format_key="raindrop-public-page-v1",
-        description="解析 *.raindrop.page 公共集合 HTML，支持指定页码范围和强制完整翻页。",
+        description="解析 *.raindrop.page 公共集合 HTML，支持指定页码范围。",
         adapter=RaindropPageAdapter(),
-        parameters=(START_PAGE, END_PAGE, FORCE_FULL_SCAN),
+        parameters=(START_PAGE, END_PAGE),
         legacy_parameters=(MAX_PAGES,),
     ),
 }

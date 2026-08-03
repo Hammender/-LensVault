@@ -54,7 +54,7 @@ class AcquisitionAdapterTests(unittest.TestCase):
             {item["name"] for item in catalog},
             {"raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page"},
         )
-        self.assertEqual({item["version"] for item in catalog}, {"1.0.2", "1.1.0"})
+        self.assertEqual({item["version"] for item in catalog}, {"1.0.2", "1.2.0"})
 
     def test_raindrop_page_normalizes_relative_image_urls(self) -> None:
         payload = (
@@ -125,7 +125,7 @@ class AcquisitionAdapterTests(unittest.TestCase):
             pages = list(
                 RaindropPageAdapter().enumerate_pages(
                     "https://shfwzwz.raindrop.page/album",
-                    {"start_page": 2, "end_page": 3, "force_full_scan": False},
+                    {"start_page": 2, "end_page": 3},
                     set(),
                     True,
                 )
@@ -139,7 +139,7 @@ class AcquisitionAdapterTests(unittest.TestCase):
         self.assertEqual(pages[-1].stop_reason, "collection_end")
         self.assertEqual(request.call_count, 3)
 
-    def test_raindrop_page_force_scan_ignores_known_page_early_stop(self) -> None:
+    def test_raindrop_page_full_mode_ignores_known_page_early_stop(self) -> None:
         first_page = (
             b'<span>60 bookmarks</span>'
             b'<article><a href="https://cdn.example.test/a.jpg">a</a></article>'
@@ -153,7 +153,7 @@ class AcquisitionAdapterTests(unittest.TestCase):
             normal_pages = list(
                 RaindropPageAdapter().enumerate_pages(
                     "https://shfwzwz.raindrop.page/album",
-                    {"start_page": 1, "force_full_scan": False},
+                    {"start_page": 1},
                     known,
                     True,
                 )
@@ -168,9 +168,9 @@ class AcquisitionAdapterTests(unittest.TestCase):
             forced_pages = list(
                 RaindropPageAdapter().enumerate_pages(
                     "https://shfwzwz.raindrop.page/album",
-                    {"start_page": 1, "force_full_scan": True},
+                    {"start_page": 1},
                     known,
-                    True,
+                    False,
                 )
             )
 
@@ -264,12 +264,14 @@ class AcquisitionAdapterTests(unittest.TestCase):
         assert page_definition is not None
         self.assertEqual(
             page_definition.validate_parameters({"max_pages": "3"}),
-            {"start_page": 1, "end_page": 3, "force_full_scan": False},
+            {"start_page": 1, "end_page": 3},
         )
         self.assertEqual(
-            page_definition.validate_parameters({"start_page": "2", "end_page": "4", "force_full_scan": True}),
-            {"start_page": 2, "end_page": 4, "force_full_scan": True},
+            page_definition.validate_parameters({"start_page": "2", "end_page": "4"}),
+            {"start_page": 2, "end_page": 4},
         )
+        with self.assertRaisesRegex(ValueError, "未知参数"):
+            page_definition.validate_parameters({"force_full_scan": True})
         with self.assertRaisesRegex(ValueError, "结束页不能小于起始页"):
             page_definition.validate_parameters({"start_page": 4, "end_page": 2})
 
@@ -316,6 +318,144 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertEqual(run.category_name_snapshot, "这个名字仅用于展示")
         self.assertEqual(run.category_url_snapshot, category.crawl_url)
         self.assertEqual(json.loads(run.parameters_json), {"max_pages": 2})
+
+    def test_legacy_force_parameter_maps_to_full_mode_and_is_not_persisted(self) -> None:
+        source = self.service.create_source(
+            self.db,
+            None,
+            "旧参数兼容站点",
+            "https://shfwzwz.raindrop.page",
+        )
+        self.service.bind_script(self.db, source, "shfwzwz-raindrop-page")
+        category = self.service.create_category(
+            self.db,
+            source,
+            "旧参数兼容分类",
+            "https://shfwzwz.raindrop.page/collection",
+        )
+
+        with patch("app.services.acquisition.ensure_perceptual_feature_dependencies"):
+            run = self.service.start_run(
+                self.db,
+                None,
+                category,
+                "shfwzwz-raindrop-page",
+                "incremental",
+                {"start_page": 2, "end_page": 4, "force_full_scan": True},
+            )
+
+        self.assertEqual(run.mode, "full")
+        self.assertEqual(json.loads(run.parameters_json), {"start_page": 2, "end_page": 4})
+
+    def test_missing_image_analysis_dependencies_prevent_run_creation(self) -> None:
+        source = self.service.create_source(
+            self.db,
+            None,
+            "依赖预检站点",
+            "https://raindrop.ftxsri.workers.dev",
+        )
+        self.service.bind_script(self.db, source, "raindrop-ftxsri-workers-dev")
+        category = self.service.create_category(
+            self.db,
+            source,
+            "依赖预检分类",
+            "https://raindrop.ftxsri.workers.dev/collection-1",
+        )
+
+        with patch(
+            "app.services.acquisition.ensure_perceptual_feature_dependencies",
+            side_effect=RuntimeError("图片分析依赖不可用：ImageHash"),
+        ), self.assertRaisesRegex(ValueError, "图片分析依赖不可用"):
+            self.service.start_run(self.db, None, category, "raindrop-ftxsri-workers-dev", "incremental", {})
+
+        self.assertEqual(self.db.query(AcquisitionRun).count(), 0)
+
+    def test_full_mode_skips_successes_and_immediately_retries_failures(self) -> None:
+        definition = get_script("raindrop-ftxsri-workers-dev")
+        assert definition is not None
+        source = self.service.create_source(
+            self.db,
+            None,
+            "全量发现测试站点",
+            "https://raindrop.ftxsri.workers.dev",
+        )
+        self.service.bind_script(self.db, source, definition.key)
+        category = self.service.create_category(
+            self.db,
+            source,
+            "全量发现测试分类",
+            "https://raindrop.ftxsri.workers.dev/collection-1",
+        )
+        with patch("app.services.acquisition.ensure_perceptual_feature_dependencies"):
+            run = self.service.start_run(self.db, None, category, definition.key, "full", {})
+
+        successful_remote = RemoteItem("successful", "https://cdn.example.test/successful.jpg")
+        failed_remote = RemoteItem("failed", "https://cdn.example.test/failed.jpg")
+        for remote, status in ((successful_remote, "pending_review"), (failed_remote, "failed")):
+            self.db.add(AcquisitionSourceItem(
+                source_id=source.id,
+                category_id=category.id,
+                script_key=definition.key,
+                external_key=hashlib.sha256(f"{category.id}:{definition.key}:{remote.external_key}".encode()).hexdigest(),
+                remote_external_key=remote.external_key,
+                source_url=remote.source_url,
+                status=status,
+            ))
+        self.db.commit()
+
+        skipped = self.service._prepare_remote_item(self.db, run, source, category, successful_remote)
+        retried = self.service._prepare_remote_item(self.db, run, source, category, failed_remote)
+
+        self.assertIsNone(skipped)
+        self.assertIsNotNone(retried)
+        self.assertEqual(run.skipped_count, 1)
+
+        run.status = "interrupted"
+        self.db.commit()
+        with patch("app.services.acquisition.ensure_perceptual_feature_dependencies"):
+            verify_run = self.service.start_run(self.db, None, category, definition.key, "verify", {})
+        verified = self.service._prepare_remote_item(self.db, verify_run, source, category, successful_remote)
+        self.assertIsNotNone(verified)
+
+    def test_failed_sources_disable_incremental_known_page_early_stop(self) -> None:
+        definition = get_script("raindrop-ftxsri-workers-dev")
+        assert definition is not None
+        source = self.service.create_source(
+            self.db,
+            None,
+            "失败来源增量测试站点",
+            "https://raindrop.ftxsri.workers.dev",
+        )
+        self.service.bind_script(self.db, source, definition.key)
+        category = self.service.create_category(
+            self.db,
+            source,
+            "失败来源增量测试分类",
+            "https://raindrop.ftxsri.workers.dev/collection-1",
+        )
+        with patch("app.services.acquisition.ensure_perceptual_feature_dependencies"):
+            baseline = self.service.start_run(self.db, None, category, definition.key, "incremental", {})
+        baseline.status = "completed"
+        baseline.scan_start_page = 1
+        baseline.reached_collection_end = True
+        self.db.add(AcquisitionSourceItem(
+            source_id=source.id,
+            category_id=category.id,
+            script_key=definition.key,
+            external_key="failed-source",
+            remote_external_key="failed-source",
+            source_url="https://cdn.example.test/failed.jpg",
+            status="failed",
+        ))
+        self.db.commit()
+        with patch("app.services.acquisition.ensure_perceptual_feature_dependencies"):
+            retry_run = self.service.start_run(self.db, None, category, definition.key, "incremental", {})
+
+        with patch.object(definition.adapter, "enumerate_pages", return_value=[]) as enumerate_pages:
+            self.service.process_run(self.db, retry_run.id)
+
+        self.assertEqual(enumerate_pages.call_args.args[2], set())
+        self.assertTrue(enumerate_pages.call_args.args[3])
 
     def test_only_completed_error_free_run_reaching_collection_end_establishes_incremental_baseline(self) -> None:
         definition = get_script("raindrop-ftxsri-workers-dev")
@@ -715,7 +855,6 @@ class AcquisitionWorkflowTests(unittest.TestCase):
         db = Session(engine, autoflush=False)
         storage = MemoryStorage()
         settings = SimpleNamespace(
-            acquisition_failed_retry_hours=24,
             acquisition_quality_min_pixels=1,
             acquisition_quality_max_aspect_ratio=10.0,
             acquisition_quality_blur_threshold=0.0,
@@ -833,7 +972,6 @@ class AcquisitionWorkflowTests(unittest.TestCase):
             db = Session(engine, autoflush=False)
             storage = MemoryStorage()
             settings = SimpleNamespace(
-                acquisition_failed_retry_hours=24,
                 acquisition_quality_min_pixels=1,
                 acquisition_quality_max_aspect_ratio=10.0,
                 acquisition_quality_blur_threshold=0.0,

@@ -162,7 +162,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [runCategoryId, setRunCategoryId] = useState("");
   const [runScriptKey, setRunScriptKey] = useState("");
   const [runParameters, setRunParameters] = useState<Record<string, string | boolean>>({});
-  const [runMode, setRunMode] = useState<"incremental" | "verify">("incremental");
+  const [runMode, setRunMode] = useState<"incremental" | "full" | "verify">("incremental");
   const [assetStatus, setAssetStatus] = useState("pending_review");
   const [exportScope, setExportScope] = useState<"all" | "source" | "category" | "run">("all");
   const [exportScopeId, setExportScopeId] = useState("");
@@ -548,7 +548,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     const startPage = Number(result.start_page ?? 1);
     const endPage = result.end_page == null ? null : Number(result.end_page);
     if (endPage != null && endPage < startPage) throw new Error("结束页不能小于起始页");
-    if (runMode === "verify" && result.force_full_scan === true) throw new Error("核验模式无需启用强制扫描");
     return result;
   }
 
@@ -803,12 +802,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         {selectedRunScript?.parameters.map((parameter) => <label key={parameter.key} title={parameter.description ?? undefined}>
           <span>{parameter.label}{parameter.required ? " *" : ""}</span>
           {parameter.type === "boolean"
-            ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} disabled={parameter.key === "force_full_scan" && runMode === "verify"} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
+            ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
             : parameter.type === "select"
               ? <select value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))}>{parameter.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
               : <input type={parameter.type === "string" ? "text" : "number"} required={parameter.required} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} step={parameter.type === "integer" ? 1 : "any"} value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))} />}
         </label>)}
-        <div className="mode-switch"><button type="button" className={runMode === "incremental" ? "active" : ""} onClick={() => setRunMode("incremental")}>增量</button><button type="button" className={runMode === "verify" ? "active" : ""} onClick={() => { setRunMode("verify"); setRunParameters((current) => ({ ...current, force_full_scan: false })); }}>核验</button></div>
+        <div className="mode-switch run-mode-switch" aria-label="采集模式"><button type="button" className={runMode === "incremental" ? "active" : ""} onClick={() => setRunMode("incremental")}>增量</button><button type="button" className={runMode === "full" ? "active" : ""} onClick={() => setRunMode("full")}>全量发现</button><button type="button" className={runMode === "verify" ? "active" : ""} onClick={() => setRunMode("verify")}>核验更新</button></div>
         <button type="button" disabled={!canAdd || !runCategoryId || !runScriptKey || busy} onClick={() => void perform(async () => {
           await startAcquisitionRun(Number(runCategoryId), { script_key: runScriptKey, mode: runMode, parameters: runPayloadParameters() });
         }, "采集任务已进入队列")}><Play size={16} /> 开始采集</button>
@@ -825,9 +824,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
               ? "载入此运行配置"
               : "原分类或脚本已不可用";
           return <article className="run-line" key={run.id}>
-            <div><strong>{run.source_name} / {run.category_name}</strong><small>{run.script_name} · v{run.script_version} · {formatDate(run.created_at)} · {run.mode === "verify" ? "核验" : "增量"}</small>{runStopLabel(run) && <small>{runStopLabel(run)}</small>}{run.error_message && <p className="run-error">{run.error_message}</p>}</div>
+            <div><strong>{run.source_name} / {run.category_name}</strong><small>{run.script_name} · v{run.script_version} · {formatDate(run.created_at)} · {run.mode === "verify" ? "核验更新" : run.mode === "full" || run.parameters.force_full_scan === true ? "全量发现" : "增量"}</small>{runStopLabel(run) && <small>{runStopLabel(run)}</small>}{run.error_message && <p className="run-error">{run.error_message}</p>}</div>
             <div className="run-actions">
-              <div className="run-metrics"><span className={`acquisition-status status-${run.status}`}>{statusLabel(run.status)}</span><small>扫描 {run.total_count} · 来源跳过 {run.skipped_count} · 忽略 {run.ignored_count}</small><small>下载成功 {run.download_success_count} · 新候选 {run.candidate_count} · 内容重复 {run.content_duplicate_count} · 清晰度重复 {run.resolution_duplicate_count} · 高清替换 {run.resolution_upgrade_count} · 图库重复 {run.gallery_duplicate_count} · 失败 {run.error_count}</small></div>
+              <div className="run-metrics"><span className={`acquisition-status status-${run.status}`}>{statusLabel(run.status)}</span><small>扫描 {run.total_count} · 跳过 {run.skipped_count} · 忽略 {run.ignored_count}</small><small>下载成功 {run.download_success_count} · 新候选 {run.candidate_count} · 内容重复 {run.content_duplicate_count} · 清晰度重复 {run.resolution_duplicate_count} · 高清替换 {run.resolution_upgrade_count} · 图库重复 {run.gallery_duplicate_count} · 失败 {run.error_count}</small></div>
               <button type="button" className="icon-button" title={loadTitle} aria-label={`${loadTitle} ${run.category_name}`} disabled={!canLoadConfiguration} onClick={() => loadRunConfiguration(run)}><RotateCcw size={16} /></button>
             </div>
           </article>;

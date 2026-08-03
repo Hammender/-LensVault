@@ -750,6 +750,7 @@
             "default": "incremental",
             "enum": [
               "incremental",
+              "full",
               "verify"
             ],
             "title": "Mode",

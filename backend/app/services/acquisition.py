@@ -7,7 +7,7 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable
@@ -56,6 +56,7 @@ from app.services.similarity import (
     GallerySimilarityScanner,
     compute_perceptual_features,
     cosine_similarity,
+    ensure_perceptual_feature_dependencies,
     hash_similarity,
     open_normalized_image,
 )
@@ -259,8 +260,8 @@ class AcquisitionService:
         mode: str,
         parameters: dict[str, object] | None = None,
     ) -> AcquisitionRun:
-        if mode not in {"incremental", "verify"}:
-            raise ValueError("采集模式必须为 incremental 或 verify")
+        if mode not in {"incremental", "full", "verify"}:
+            raise ValueError("采集模式必须为 incremental、full 或 verify")
         source = db.get(AcquisitionSource, category.source_id)
         if source is None or source.workspace_id != workspace_id or not source.enabled or not category.enabled:
             raise ValueError("采集站点或分类不可用")
@@ -278,10 +279,15 @@ class AcquisitionService:
             raise ValueError("该脚本未绑定到分类所属站点")
         if source.page_format_key != definition.page_format_key:
             raise ValueError("脚本网页格式与站点不一致")
-        defaults = definition.validate_parameters(json.loads(binding.default_parameters_json or "{}"))
-        validated_parameters = definition.validate_parameters({**defaults, **(parameters or {})})
-        if mode == "verify" and validated_parameters.get("force_full_scan") is True:
-            raise ValueError("核验模式本身会完整翻页，无需启用强制扫描")
+        default_parameters = json.loads(binding.default_parameters_json or "{}")
+        requested_parameters = dict(parameters or {})
+        legacy_default_force = self._pop_legacy_force_full_scan(default_parameters)
+        legacy_requested_force = self._pop_legacy_force_full_scan(requested_parameters)
+        defaults = definition.validate_parameters(default_parameters)
+        validated_parameters = definition.validate_parameters({**defaults, **requested_parameters})
+        legacy_force = legacy_requested_force if legacy_requested_force is not None else legacy_default_force
+        if legacy_force and mode == "incremental":
+            mode = "full"
         active = db.scalar(
             select(AcquisitionRun).where(
                 AcquisitionRun.category_id == category.id,
@@ -290,6 +296,10 @@ class AcquisitionService:
         )
         if active is not None:
             raise ValueError("该分类已有正在运行的采集任务")
+        try:
+            ensure_perceptual_feature_dependencies()
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
         run = AcquisitionRun(
             id=uuid4().hex,
             workspace_id=workspace_id,
@@ -308,6 +318,15 @@ class AcquisitionService:
         db.commit()
         db.refresh(run)
         return run
+
+    @staticmethod
+    def _pop_legacy_force_full_scan(parameters: dict[str, object]) -> bool | None:
+        if "force_full_scan" not in parameters:
+            return None
+        value = parameters.pop("force_full_scan")
+        if not isinstance(value, bool):
+            raise ValueError("旧参数“强制扫描全部指定页面”必须是布尔值")
+        return value
 
     def _download(self, url: str, referer: str) -> tuple[bytes, str | None]:
         request = Request(
@@ -462,8 +481,15 @@ class AcquisitionService:
             parameters = json.loads(run.parameters_json or "{}")
         except (TypeError, json.JSONDecodeError):
             parameters = {}
+        has_failed_sources = db.scalar(
+            select(AcquisitionSourceItem.id).where(
+                AcquisitionSourceItem.category_id == category.id,
+                AcquisitionSourceItem.script_key == definition.key,
+                AcquisitionSourceItem.status == "failed",
+            )
+        ) is not None
         known_external_keys: set[str] = set()
-        if self._has_completed_full_scan(db, category.id, definition.key):
+        if run.mode == "incremental" and not has_failed_sources and self._has_completed_full_scan(db, category.id, definition.key):
             known_external_keys = set(
                 db.scalars(
                     select(AcquisitionSourceItem.remote_external_key).where(
@@ -584,13 +610,7 @@ class AcquisitionService:
             run.ignored_count += 1
             db.commit()
             return None
-        if run.mode == "incremental" and item.status in self.terminal_source_statuses:
-            run_item.status = "skipped"
-            run_item.collection_outcome = "source_skipped"
-            run.skipped_count += 1
-            db.commit()
-            return None
-        if item.status == "failed" and item.failed_at and now - item.failed_at < timedelta(hours=self.settings.acquisition_failed_retry_hours):
+        if run.mode != "verify" and item.status in self.terminal_source_statuses:
             run_item.status = "skipped"
             run_item.collection_outcome = "source_skipped"
             run.skipped_count += 1

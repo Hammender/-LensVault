@@ -80,6 +80,7 @@
 .acquisition-page .import-batch-scroll button.import-batch-line.selected .import-batch-current { border-color: rgba(255, 255, 255, .7); color: #fffdf8; }
 .icon-button.danger, .danger-command { color: #8e2b37 !important; }
 .mode-switch { display: grid; grid-template-columns: 1fr 1fr; }.mode-switch button:not(.icon-button) { background: transparent; color: var(--muted); border: 1px solid var(--acq-line); }.mode-switch button.active { background: var(--acq-wash); color: var(--acq-ink); border-color: var(--acq-teal); }
+.run-mode-switch { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .run-launcher label { display: grid; gap: 4px; color: var(--acq-ink); font-size: .76rem; font-weight: 700; }
 .run-launcher label input[type="checkbox"] { width: 17px; height: 17px; padding: 0; }
 .run-error { max-width: 560px; margin: 4px 0 0; color: #9f2634; font-size: .72rem; line-height: 1.4; overflow-wrap: anywhere; }

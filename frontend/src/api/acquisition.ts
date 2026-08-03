@@ -96,7 +96,7 @@ export async function deleteAcquisitionCategory(categoryId: number): Promise<voi
 
 export async function startAcquisitionRun(
   categoryId: number,
-  payload: { script_key: string; mode: "incremental" | "verify"; parameters: Record<string, unknown> }
+  payload: { script_key: string; mode: "incremental" | "full" | "verify"; parameters: Record<string, unknown> }
 ): Promise<AcquisitionRun> {
   return parse<AcquisitionRun>(await fetch(`/api/acquisition/categories/${categoryId}/runs`, {
     method: "POST",

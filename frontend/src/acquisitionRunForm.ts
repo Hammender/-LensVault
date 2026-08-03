@@ -7,11 +7,12 @@ import type {
 } from "./types";
 
 export type AcquisitionRunFormParameters = Record<string, string | boolean>;
+export type AcquisitionRunMode = "incremental" | "full" | "verify";
 
 export type AcquisitionRunFormConfiguration = {
   categoryId: string;
   scriptKey: string;
-  mode: "incremental" | "verify";
+  mode: AcquisitionRunMode;
   parameters: AcquisitionRunFormParameters;
 };
 
@@ -42,7 +43,7 @@ export function restoreAcquisitionRunParameters(
   const normalizedSnapshot = script.key === "shfwzwz-raindrop-page"
     && Object.prototype.hasOwnProperty.call(snapshot, "max_pages")
     && !Object.prototype.hasOwnProperty.call(snapshot, "end_page")
-    ? { ...snapshot, start_page: 1, end_page: snapshot.max_pages, force_full_scan: false }
+    ? { ...snapshot, start_page: 1, end_page: snapshot.max_pages }
     : snapshot;
   return Object.fromEntries(script.parameters.map((parameter) => {
     const fallback = parameterDefault(parameter);
@@ -59,17 +60,23 @@ export function getAcquisitionRunFormConfiguration(
   sources: AcquisitionSource[],
   scripts: AcquisitionScript[]
 ): AcquisitionRunFormConfiguration | null {
-  if (!run.script_key || (run.mode !== "incremental" && run.mode !== "verify")) return null;
+  if (!run.script_key) return null;
   const category = categories.find((item) => item.id === run.category_id && item.enabled);
   if (!category) return null;
   const source = sources.find((item) => item.id === category.source_id && item.enabled);
   if (!source?.script_keys.includes(run.script_key)) return null;
   const script = scripts.find((item) => item.key === run.script_key);
   if (!script) return null;
+  const mode: AcquisitionRunMode | null = run.mode === "full" || run.mode === "verify"
+    ? run.mode
+    : run.mode === "incremental"
+      ? run.parameters.force_full_scan === true ? "full" : "incremental"
+      : null;
+  if (!mode) return null;
   return {
     categoryId: String(category.id),
     scriptKey: script.key,
-    mode: run.mode,
+    mode,
     parameters: restoreAcquisitionRunParameters(script, run.parameters)
   };
 }

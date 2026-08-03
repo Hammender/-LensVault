@@ -94,12 +94,22 @@ def open_normalized_image(payload: bytes, max_edge: int | None = None) -> Image.
     return image
 
 
+def ensure_perceptual_feature_dependencies() -> None:
+    unavailable: list[str] = []
+    for module_name, package_name in (("cv2", "opencv-python-headless"), ("imagehash", "ImageHash")):
+        try:
+            __import__(module_name)
+        except Exception:
+            unavailable.append(package_name)
+    if unavailable:
+        packages = "、".join(unavailable)
+        raise RuntimeError(f"图片分析依赖不可用：{packages}。请在后端运行环境重新安装 requirements.txt。")
+
+
 def compute_perceptual_features(payload: bytes) -> PerceptualFeatures:
-    try:
-        import cv2
-        import imagehash
-    except ImportError as exc:
-        raise RuntimeError("相似图片依赖缺失，请安装 requirements.txt") from exc
+    ensure_perceptual_feature_dependencies()
+    import cv2
+    import imagehash
 
     image = open_normalized_image(payload)
     pixels = max(image.width * image.height, 1)

@@ -10,3 +10,4 @@ app.db
 # Prevent leftover database in backend
 backend/app/data/
 .env.example
+.idea

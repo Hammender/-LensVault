@@ -92,7 +92,6 @@ class Settings(BaseSettings):
     acquisition_download_workers: int = 8
     acquisition_download_timeout_seconds: int = 30
     acquisition_download_retries: int = 3
-    acquisition_failed_retry_hours: int = 24
     acquisition_max_file_bytes: int = 100 * 1024 * 1024
     acquisition_quality_min_pixels: int = 512 * 512
     acquisition_quality_max_aspect_ratio: float = 4.0
@@ -101,10 +100,13 @@ class Settings(BaseSettings):
 
     face_model_name: str = "buffalo_l"
     face_embedding_version: str = "buffalo_l-v2-exif"
+    face_execution_providers: str = "CPUExecutionProvider"
+    face_require_primary_provider: bool = False
     face_detection_size: int = 640
     face_search_limit: int = 50
     face_flip_augmentation: bool = False
     face_recognition_threshold: float = 0.45
+    face_recognition_min_margin: float = 0.08
     face_sample_min_size: int = 40
     face_sample_warning_size: int = 80
     face_sample_min_detection_score: float = 0.5

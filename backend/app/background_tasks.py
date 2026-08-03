@@ -140,6 +140,7 @@ def process_gallery_import_task(
                 "rich" if rich_mode else "gallery",
                 total,
                 total - total_duplicated,
+                total_duplicated,
             )
         except Exception:
             logger.exception("Failed to record upload history")

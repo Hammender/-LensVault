@@ -12,8 +12,10 @@ from app.core.config import Settings, get_settings
 
 try:
     from insightface.app import FaceAnalysis
+    from insightface.utils import face_align
 except Exception:
     FaceAnalysis = None  # type: ignore[assignment]
+    face_align = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -39,13 +41,34 @@ class FaceService:
             logger.error("InsightFace load failed, FaceAnalysis is unavailable")
             raise RuntimeError("InsightFace is not installed or failed to load.")
         if self._app is None:
+            providers = [item.strip() for item in self.settings.face_execution_providers.split(",") if item.strip()]
+            if not providers:
+                raise RuntimeError("FACE_EXECUTION_PROVIDERS must contain at least one provider.")
+            try:
+                import onnxruntime as ort
+
+                available = set(ort.get_available_providers())
+            except Exception as exc:
+                raise RuntimeError("ONNX Runtime is not installed or failed to load.") from exc
+            if self.settings.face_require_primary_provider and providers[0] not in available:
+                raise RuntimeError(
+                    f"Required ONNX Runtime provider is unavailable: {providers[0]}; "
+                    f"available={sorted(available)}"
+                )
+            usable_providers = [provider for provider in providers if provider in available]
+            if not usable_providers:
+                raise RuntimeError(
+                    f"None of the configured ONNX Runtime providers are available: {providers}; "
+                    f"available={sorted(available)}"
+                )
             logger.info(
-                "Initializing InsightFace model: name=%s det_size=%s providers=CPUExecutionProvider",
+                "Initializing InsightFace model: name=%s det_size=%s providers=%s",
                 self.settings.face_model_name,
                 self.settings.face_detection_size,
+                usable_providers,
             )
             started_at = time.perf_counter()
-            self._app = FaceAnalysis(name=self.settings.face_model_name, providers=["CPUExecutionProvider"])
+            self._app = FaceAnalysis(name=self.settings.face_model_name, providers=usable_providers)
             size = self.settings.face_detection_size
             self._app.prepare(ctx_id=0, det_size=(size, size))
             elapsed_ms = (time.perf_counter() - started_at) * 1000
@@ -82,13 +105,10 @@ class FaceService:
             crop = array[y1:y2, x1:x2]
             blur_score = self._blur_score(crop)
             pose_yaw = self._pose_yaw(getattr(face, "kps", None))
-            if self.settings.face_flip_augmentation and crop.size:
-                augmented = self._embedding_from_crop(crop[:, ::-1])
+            if self.settings.face_flip_augmentation:
+                augmented = self._embedding_with_aligned_flip(array, getattr(face, "kps", None))
                 if augmented is not None:
-                    embedding = embedding + augmented
-                    norm = np.linalg.norm(embedding)
-                    if norm > 0:
-                        embedding = embedding / norm
+                    embedding = augmented
             results.append(
                 DetectedFace(
                     bbox=bbox,
@@ -112,12 +132,17 @@ class FaceService:
         logger.info("detect_faces completed in %.1fms", elapsed_ms)
         return results
 
-    def _embedding_from_crop(self, crop: np.ndarray) -> np.ndarray | None:
-        faces = self._get_app().get(np.ascontiguousarray(crop))
-        if not faces:
+    def _embedding_with_aligned_flip(self, image: np.ndarray, keypoints: object) -> np.ndarray | None:
+        if face_align is None or keypoints is None:
             return None
-        face = max(faces, key=lambda item: float((item.bbox[2] - item.bbox[0]) * (item.bbox[3] - item.bbox[1])))
-        embedding = np.asarray(face.embedding, dtype=np.float32)
+        recognition = getattr(self._get_app(), "models", {}).get("recognition")
+        if recognition is None or not hasattr(recognition, "get_feat"):
+            return None
+        aligned = face_align.norm_crop(image, landmark=np.asarray(keypoints, dtype=np.float32))
+        features = np.asarray(recognition.get_feat([aligned, np.ascontiguousarray(aligned[:, ::-1])]), dtype=np.float32)
+        if features.ndim != 2 or features.shape[0] != 2:
+            return None
+        embedding = features.sum(axis=0)
         norm = np.linalg.norm(embedding)
         return embedding / norm if norm > 0 else None
 

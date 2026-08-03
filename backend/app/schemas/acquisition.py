@@ -62,7 +62,7 @@ class AcquisitionCategoryRead(BaseModel):
 
 class AcquisitionRunCreate(BaseModel):
     script_key: str = Field(min_length=1, max_length=128)
-    mode: Literal["incremental", "verify"] = "incremental"
+    mode: Literal["incremental", "full", "verify"] = "incremental"
     parameters: dict[str, object] = Field(default_factory=dict)
 
 

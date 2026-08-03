@@ -83,6 +83,11 @@ class PictureService:
         second = ranked[1] if len(ranked) > 1 else (None, None)
         return PersonMatch(ranked[0][0], ranked[0][1], second[0], second[1])
 
+    def _is_confident_match(self, match: PersonMatch, matched_person: Person | None) -> bool:
+        if match.score is None or match.score < self.settings.face_recognition_threshold or matched_person is None:
+            return False
+        return match.margin is None or match.margin >= self.settings.face_recognition_min_margin
+
     def _quality_warnings(self, detected: DetectedFace) -> list[str]:
         warnings: list[str] = []
         if detected.face_size < self.settings.face_sample_warning_size:
@@ -588,11 +593,7 @@ class PictureService:
                     matched_person = None
                     if match.person_id is not None:
                         matched_person = db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == workspace_id))
-                    if (
-                        match.score is not None
-                        and match.score >= self.settings.face_recognition_threshold
-                        and matched_person is not None
-                    ):
+                    if self._is_confident_match(match, matched_person):
                         face = FaceRecord(
                             workspace_id=workspace_id,
                             gallery_photo_id=photo.id,
@@ -1007,11 +1008,7 @@ class PictureService:
                         matched_person = db.scalar(
                             select(Person).where(Person.id == matched_person_id, Person.workspace_id == photo.workspace_id)
                         )
-                    if (
-                        matched_score is not None
-                        and matched_score >= self.settings.face_recognition_threshold
-                        and matched_person is not None
-                    ):
+                    if self._is_confident_match(match, matched_person):
                         face = FaceRecord(
                             workspace_id=photo.workspace_id,
                             gallery_photo_id=photo.id,
