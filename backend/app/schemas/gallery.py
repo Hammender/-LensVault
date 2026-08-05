@@ -26,10 +26,17 @@ class FaceRead(BaseModel):
     bbox_right: float
     bbox_bottom: float
     matched_person_id: int | None
+    predicted_person_id: int | None = None
+    predicted_person_name: str | None = None
     match_score: float | None
     second_person_id: int | None = None
+    second_person_name: str | None = None
     second_match_score: float | None = None
     match_margin: float | None = None
+    rejection_reason: str | None = None
+    recognition_adapter_id: str | None = None
+    decision_threshold: float | None = None
+    decision_min_margin: float | None = None
     embedding_version: str | None = None
     face_size: float | None = None
     blur_score: float | None = None

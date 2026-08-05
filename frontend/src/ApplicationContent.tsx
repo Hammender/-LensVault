@@ -2930,7 +2930,28 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     <article key={face.id}>
                       <strong>Face #{face.id}</strong>
                       <span>{face.needs_review ? "待人工确认" : "已确认"}</span>
-                      <span>{face.match_score ? `score ${face.match_score.toFixed(3)}` : "无匹配分数"}</span>
+                      <span>
+                        {face.predicted_person_id !== null && face.match_score !== null
+                          ? `第一候选 ${face.predicted_person_name ?? `#${face.predicted_person_id}`}（#${face.predicted_person_id}），score ${face.match_score.toFixed(3)}`
+                          : "无第一候选"}
+                      </span>
+                      {face.second_person_id !== null && face.second_match_score !== null && (
+                        <span>
+                          第二候选 {face.second_person_name ?? `#${face.second_person_id}`}（#{face.second_person_id}），score {face.second_match_score.toFixed(3)}
+                        </span>
+                      )}
+                      {face.match_margin !== null && <span>候选差值 {face.match_margin.toFixed(3)}</span>}
+                      {face.rejection_reason && (
+                        <span>
+                          拒绝原因：
+                          {{
+                            no_candidate: "没有候选人物",
+                            candidate_not_found: "候选人物不存在",
+                            below_threshold: "第一候选低于阈值",
+                            insufficient_margin: "前两名差值不足",
+                          }[face.rejection_reason] ?? face.rejection_reason}
+                        </span>
+                      )}
                     </article>
                   ))}
                 </div>
@@ -4434,4 +4455,3 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     </div>
   );
 }
-

@@ -99,14 +99,16 @@ class Settings(BaseSettings):
     acquisition_export_ttl_hours: int = 24
 
     face_model_name: str = "buffalo_l"
+    face_adapter_id: str = "buffalo_l"
+    face_recognition_model_path: str = ""
     face_embedding_version: str = "buffalo_l-v2-exif"
     face_execution_providers: str = "CPUExecutionProvider"
     face_require_primary_provider: bool = False
     face_detection_size: int = 640
     face_search_limit: int = 50
     face_flip_augmentation: bool = False
-    face_recognition_threshold: float = 0.45
-    face_recognition_min_margin: float = 0.08
+    face_recognition_threshold: float = 0.43
+    face_recognition_min_margin: float = 0.04
     face_sample_min_size: int = 40
     face_sample_warning_size: int = 80
     face_sample_min_detection_score: float = 0.5

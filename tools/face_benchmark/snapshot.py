@@ -15,6 +15,7 @@ from minio import Minio
 from PIL import Image, ImageOps
 
 from .config import SourceConfig
+from .geometry import face_crop_box, parse_bbox
 from .sampling import sample_detection_photos, stratified_face_sample
 from .store import initialize_benchmark
 
@@ -143,16 +144,8 @@ def _save_jpeg(image: Image.Image, path: Path) -> None:
 
 
 def _crop_face(image: Image.Image, row: dict[str, Any]) -> Image.Image:
-    left, top, right, bottom = (float(row[key]) for key in ("bbox_left", "bbox_top", "bbox_right", "bbox_bottom"))
-    width, height = right - left, bottom - top
-    padding = max(width, height) * 0.35
-    box = (
-        max(0, int(left - padding)),
-        max(0, int(top - padding)),
-        min(image.width, int(right + padding)),
-        min(image.height, int(bottom + padding)),
-    )
-    return image.crop(box)
+    bbox = parse_bbox([row[key] for key in ("bbox_left", "bbox_top", "bbox_right", "bbox_bottom")])
+    return image.crop(face_crop_box(bbox, image.width, image.height))
 
 
 def create_snapshot(

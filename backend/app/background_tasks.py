@@ -231,7 +231,7 @@ def process_gallery_zip_import_task(
             )
 
         result = picture_service.import_gallery_from_zip(db, zip_bytes, workspace_id, progress_callback)
-        if result["added_photos"] or result["persons_added"]:
+        if result["added_photos"] or result["updated_existing"] or result["persons_added"]:
             mark_similarity_scans_stale(db, workspace_id)
             db.commit()
         message = (

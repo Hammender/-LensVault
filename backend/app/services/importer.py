@@ -12,10 +12,11 @@ from zipfile import ZipFile
 
 import numpy as np
 from PIL import Image, ImageOps
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.core.timezones import as_shanghai_naive, shanghai_now
 from app.models import FaceRecognitionCorrection, FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
 from app.services.face import DetectedFace, FaceService
 from app.services.image_metadata import parse_image_metadata
@@ -47,6 +48,12 @@ class PersonMatch:
         if self.score is None or self.second_score is None:
             return None
         return self.score - self.second_score
+
+
+@dataclass(frozen=True)
+class MatchDecision:
+    accepted: bool
+    rejection_reason: str | None
 
 
 class PictureService:
@@ -84,9 +91,18 @@ class PictureService:
         return PersonMatch(ranked[0][0], ranked[0][1], second[0], second[1])
 
     def _is_confident_match(self, match: PersonMatch, matched_person: Person | None) -> bool:
-        if match.score is None or match.score < self.settings.face_recognition_threshold or matched_person is None:
-            return False
-        return match.margin is None or match.margin >= self.settings.face_recognition_min_margin
+        return self._evaluate_match(match, matched_person).accepted
+
+    def _evaluate_match(self, match: PersonMatch, matched_person: Person | None) -> MatchDecision:
+        if match.person_id is None or match.score is None:
+            return MatchDecision(False, "no_candidate")
+        if matched_person is None:
+            return MatchDecision(False, "candidate_not_found")
+        if match.score < self.settings.face_recognition_threshold:
+            return MatchDecision(False, "below_threshold")
+        if match.margin is not None and match.margin < self.settings.face_recognition_min_margin:
+            return MatchDecision(False, "insufficient_margin")
+        return MatchDecision(True, None)
 
     def _quality_warnings(self, detected: DetectedFace) -> list[str]:
         warnings: list[str] = []
@@ -100,21 +116,35 @@ class PictureService:
             warnings.append(f"侧脸角度较大（{detected.pose_yaw:.0f}°）")
         return warnings
 
-    def _face_fields(self, detected: DetectedFace, match: PersonMatch | None = None) -> dict[str, object]:
+    def _face_fields(
+        self,
+        detected: DetectedFace,
+        match: PersonMatch | None = None,
+        decision: MatchDecision | None = None,
+    ) -> dict[str, object]:
         return {
             "bbox_left": detected.bbox[0],
             "bbox_top": detected.bbox[1],
             "bbox_right": detected.bbox[2],
             "bbox_bottom": detected.bbox[3],
             "detection_score": detected.score,
+            "predicted_person_id": match.person_id if match else None,
             "second_person_id": match.second_person_id if match else None,
             "second_match_score": match.second_score if match else None,
             "match_margin": match.margin if match else None,
+            "rejection_reason": decision.rejection_reason if decision else None,
+            "recognition_adapter_id": self.settings.face_adapter_id,
+            "decision_threshold": self.settings.face_recognition_threshold if match else None,
+            "decision_min_margin": self.settings.face_recognition_min_margin if match else None,
             "embedding_version": self.settings.face_embedding_version,
             "face_size": detected.face_size,
             "blur_score": detected.blur_score,
             "pose_yaw": detected.pose_yaw,
         }
+
+    @staticmethod
+    def _is_preserved_person_tag_source(source: str) -> bool:
+        return source in {"manual", "import", "import_unknown"}
 
     def _recompute_person_centroid(self, db: Session, person_id: int, workspace_id: int | None) -> None:
         face_ids = db.scalars(
@@ -191,6 +221,10 @@ class PictureService:
         )
         if existing is None:
             db.add(GalleryPhotoPersonTag(gallery_photo_id=gallery_photo_id, person_id=person_id, source=source))
+            return
+        source_priority = {"unknown": 0, "auto": 0, "import_unknown": 1, "import": 1, "manual": 2}
+        if source_priority.get(source, 0) > source_priority.get(existing.source, 0):
+            existing.source = source
 
     def ensure_gallery_tag(self, db: Session, gallery_photo_id: int, tag: Tag, source: str = "manual") -> None:
         existing = db.scalar(
@@ -593,7 +627,8 @@ class PictureService:
                     matched_person = None
                     if match.person_id is not None:
                         matched_person = db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == workspace_id))
-                    if self._is_confident_match(match, matched_person):
+                    decision = self._evaluate_match(match, matched_person)
+                    if decision.accepted:
                         face = FaceRecord(
                             workspace_id=workspace_id,
                             gallery_photo_id=photo.id,
@@ -601,7 +636,7 @@ class PictureService:
                             match_score=match.score,
                             needs_review=False,
                             vector_collection=None,
-                            **self._face_fields(detected, match),
+                            **self._face_fields(detected, match, decision),
                         )
                         db.add(face)
                         db.flush()
@@ -633,7 +668,7 @@ class PictureService:
                         match_score=match.score,
                         needs_review=True,
                         vector_collection=None,
-                        **self._face_fields(detected, match),
+                        **self._face_fields(detected, match, decision),
                     )
                     db.add(face)
                     db.flush()
@@ -760,7 +795,7 @@ class PictureService:
                 workspace_id=face.workspace_id,
                 gallery_photo_id=face.gallery_photo_id,
                 face_record_id=face.id,
-                predicted_person_id=face.matched_person_id,
+                predicted_person_id=face.predicted_person_id,
                 predicted_score=face.match_score,
                 second_person_id=face.second_person_id,
                 second_score=face.second_match_score,
@@ -770,7 +805,6 @@ class PictureService:
             ))
         face.vector_collection = None
         face.matched_person_id = person.id
-        face.match_score = 1.0
         face.needs_review = False
         if face.gallery_photo_id is not None:
             self._remove_unknown_person_tag_if_resolved(db, face.gallery_photo_id, face.workspace_id)
@@ -969,14 +1003,20 @@ class PictureService:
         )
         return {"total": len(photo_ids), "succeeded": succeeded, "failed": failed}
 
-    def re_recognize_gallery_photo(self, db: Session, photo: GalleryPhoto) -> GalleryPhoto:
+    def re_recognize_gallery_photo(self, db: Session, photo: GalleryPhoto, *, commit: bool = True) -> GalleryPhoto:
         logger.info("Start re_recognize_gallery_photo photo_id=%s", photo.id)
         payload = self.storage.get_bytes(photo.object_key)
         detected_faces = self.face_service.detect_faces(payload)
         recognition_plan = [(detected, self._match_face(detected, photo.workspace_id)) for detected in detected_faces]
         old_person_ids = {tag.person_id for tag in photo.person_tags}
-        manual_person_ids = {tag.person_id for tag in photo.person_tags if tag.source == "manual"}
-        old_auto_links = [tag for tag in photo.person_tags if tag.source != "manual"]
+        preserved_person_links = [
+            (tag.person_id, tag.source)
+            for tag in photo.person_tags
+            if self._is_preserved_person_tag_source(tag.source)
+        ]
+        old_auto_links = [
+            tag for tag in photo.person_tags if not self._is_preserved_person_tag_source(tag.source)
+        ]
         for link in old_auto_links:
             db.delete(link)
         old_person_gallery_tags = db.scalars(
@@ -1008,11 +1048,12 @@ class PictureService:
                         matched_person = db.scalar(
                             select(Person).where(Person.id == matched_person_id, Person.workspace_id == photo.workspace_id)
                         )
-                    if self._is_confident_match(match, matched_person):
+                    decision = self._evaluate_match(match, matched_person)
+                    if decision.accepted:
                         face = FaceRecord(
                             workspace_id=photo.workspace_id,
                             gallery_photo_id=photo.id,
-                            **self._face_fields(detected, match),
+                            **self._face_fields(detected, match, decision),
                             matched_person_id=matched_person.id,
                             match_score=matched_score,
                             needs_review=False,
@@ -1038,7 +1079,7 @@ class PictureService:
                     face = FaceRecord(
                         workspace_id=photo.workspace_id,
                         gallery_photo_id=photo.id,
-                        **self._face_fields(detected, match),
+                        **self._face_fields(detected, match, decision),
                         matched_person_id=person.id,
                         match_score=matched_score,
                         needs_review=True,
@@ -1057,8 +1098,8 @@ class PictureService:
                 logger.exception("Re-recognize face process failed photo_id=%s", photo.id)
                 raise
 
-        for person_id in manual_person_ids:
-            self.ensure_gallery_person_tag(db, photo.id, person_id, "manual")
+        for person_id, source in preserved_person_links:
+            self.ensure_gallery_person_tag(db, photo.id, person_id, source)
             self.apply_person_tags_to_gallery_photo(db, photo.id, person_id)
         db.flush()
         new_person_ids = set(
@@ -1073,7 +1114,10 @@ class PictureService:
             from app.services.similarity import mark_similarity_scans_stale
 
             mark_similarity_scans_stale(db, int(photo.workspace_id), changed_person_ids)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(photo)
         photo.person_tags
         photo.tags
@@ -1091,7 +1135,8 @@ class PictureService:
             "faces": len(detected_faces),
             "known": summary.known_matches,
             "unknown": summary.unknown_faces,
-            "manual_tags_preserved": len(manual_person_ids),
+            "manual_tags_preserved": sum(1 for _, source in preserved_person_links if source == "manual"),
+            "import_tags_preserved": sum(1 for _, source in preserved_person_links if source.startswith("import")),
         }
         return photo
 
@@ -1289,11 +1334,26 @@ class PictureService:
                 manifest = json.loads(zf.read("metadata.json"))
             except KeyError as exc:
                 raise ValueError("ZIP 中缺少 metadata.json") from exc
+            if not isinstance(manifest, dict) or manifest.get("kind") not in (None, "gallery_export"):
+                raise ValueError("metadata.json 不是有效的展示图库清单")
             photos = manifest.get("photos", [])
             if not isinstance(photos, list):
                 raise ValueError("metadata.json 格式不正确")
 
+            version = manifest.get("version", 1)
+            if version not in (1, 2):
+                raise ValueError(f"不支持的展示图导出版本：{version}")
+            if version == 2:
+                indexes = [item.get("display_index") if isinstance(item, dict) else None for item in photos]
+                if (
+                    any(not isinstance(value, int) or isinstance(value, bool) for value in indexes)
+                    or sorted(indexes) != list(range(len(photos)))
+                ):
+                    raise ValueError("版本 2 metadata.json 的 display_index 必须从 0 连续且不得重复")
+                photos = sorted(photos, key=lambda item: item["display_index"])
+
             total = len(photos)
+            display_batch_at = shanghai_now()
             for index, photo_data in enumerate(photos, start=1):
                 if not isinstance(photo_data, dict):
                     result["skipped_photos"] += 1
@@ -1318,7 +1378,20 @@ class PictureService:
                         progress_callback(index, total)
                     continue
 
-                sha256 = photo_data.get("sha256") or hashlib.sha256(payload).hexdigest()
+                payload_sha256 = hashlib.sha256(payload).hexdigest()
+                declared_sha256 = str(photo_data.get("sha256") or "").strip().lower()
+                if declared_sha256 and declared_sha256 != payload_sha256:
+                    logger.warning(
+                        "Gallery zip import skipped sha mismatch photo=%s declared=%s actual=%s",
+                        photo_data.get("filename"),
+                        declared_sha256,
+                        payload_sha256,
+                    )
+                    result["skipped_photos"] += 1
+                    if progress_callback:
+                        progress_callback(index, total)
+                    continue
+                sha256 = declared_sha256 or payload_sha256
                 is_rich_text = bool(photo_data.get("is_rich_text"))
                 photo = db.scalar(
                     select(GalleryPhoto).where(
@@ -1328,38 +1401,64 @@ class PictureService:
                     )
                 )
                 is_existing = photo is not None
+                raw_tags = photo_data.get("tags", [])
+                raw_persons = photo_data.get("persons", [])
+                if not isinstance(raw_tags, list) or not isinstance(raw_persons, list):
+                    logger.warning("Gallery zip import skipped invalid manifest entry photo=%s", photo_data.get("filename"))
+                    result["skipped_photos"] += 1
+                    if progress_callback:
+                        progress_callback(index, total)
+                    continue
                 tag_names = [
                     str(name).strip()
-                    for name in photo_data.get("tags", [])
+                    for name in raw_tags
                     if str(name).strip() and str(name).strip() != self.rich_text_tag_name
                 ]
 
                 if photo is None:
                     filename = str(photo_data.get("filename") or Path(str(zip_paths[0])).name)
-                    photo, summary = self.import_gallery_photo(
-                        db,
-                        filename,
-                        payload,
-                        photo_data.get("content_type"),
-                        tag_names,
-                        is_rich_text,
-                        photo_data.get("rich_text"),
-                        workspace_id,
+                    object_key = self._build_object_key(workspace_id, "gallery", filename)
+                    self.storage.put_bytes(object_key, payload, photo_data.get("content_type"))
+                    photo = GalleryPhoto(
+                        workspace_id=workspace_id,
+                        filename=filename,
+                        content_type=photo_data.get("content_type"),
+                        sha256=sha256,
+                        object_key=object_key,
+                        width=photo_data.get("width"),
+                        height=photo_data.get("height"),
+                        is_rich_text=is_rich_text,
                     )
-                    if summary.duplicated:
-                        result["updated_existing"] += 1
-                    else:
-                        result["added_photos"] += 1
+                    db.add(photo)
+                    db.flush()
+                    result["added_photos"] += 1
                 else:
                     result["updated_existing"] += 1
 
+                taken_at = None
+                if photo_data.get("taken_at"):
+                    try:
+                        taken_at = as_shanghai_naive(datetime.fromisoformat(str(photo_data["taken_at"])))
+                    except (TypeError, ValueError):
+                        logger.warning("Gallery zip import ignored invalid taken_at photo=%s", photo_data.get("filename"))
+                photo.filename = str(photo_data.get("filename") or photo.filename)
+                photo.content_type = photo_data.get("content_type")
+                photo.width = photo_data.get("width")
+                photo.height = photo_data.get("height")
+                photo.taken_at = taken_at
+                photo.is_rich_text = is_rich_text
+                rich_text = photo_data.get("rich_text")
+                photo.rich_text = str(rich_text) if rich_text is not None else None
+                photo.ocr_status = str(photo_data["ocr_status"]) if photo_data.get("ocr_status") else None
+                photo.display_batch_at = display_batch_at
+                photo.display_index = index - 1
+
+                db.execute(delete(FaceRecord).where(FaceRecord.gallery_photo_id == photo.id))
+                db.execute(delete(GalleryPhotoPersonTag).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id))
+                db.execute(delete(GalleryPhotoTag).where(GalleryPhotoTag.gallery_photo_id == photo.id))
+                db.flush()
+
                 if is_rich_text:
-                    photo.is_rich_text = True
-                    rich_text = photo_data.get("rich_text")
-                    if rich_text is not None:
-                        photo.rich_text = str(rich_text)
-                    if photo_data.get("ocr_status"):
-                        photo.ocr_status = str(photo_data.get("ocr_status"))
                     rich_tag = self.find_or_create_tag(db, self.rich_text_tag_name, workspace_id)
                     rich_tag.is_system = True
                     self.ensure_gallery_tag(db, photo.id, rich_tag, source="system")
@@ -1376,7 +1475,7 @@ class PictureService:
                     if existing_tag_link is None:
                         result["tags_added"] += 1
 
-                for person_data in photo_data.get("persons", []):
+                for person_data in raw_persons:
                     if not isinstance(person_data, dict):
                         continue
                     person_name = str(person_data.get("name") or person_data.get("display_name") or "").strip()
@@ -1407,10 +1506,8 @@ class PictureService:
                             GalleryPhotoPersonTag.person_id == person.id,
                         )
                     )
-                    source = str(person_data.get("source") or ("unknown" if person.is_unknown else "import"))
+                    source = "import_unknown" if person.is_unknown else "import"
                     self.ensure_gallery_person_tag(db, photo.id, person.id, source)
-                    if not person.is_unknown:
-                        self.apply_person_tags_to_gallery_photo(db, photo.id, person.id)
                     if existing_person_link is None:
                         result["persons_added"] += 1
                 db.add(photo)

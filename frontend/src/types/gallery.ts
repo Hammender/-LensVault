@@ -26,10 +26,17 @@ export type Face = {
   bbox_right: number;
   bbox_bottom: number;
   matched_person_id: number | null;
+  predicted_person_id: number | null;
+  predicted_person_name: string | null;
   match_score: number | null;
   second_person_id: number | null;
+  second_person_name: string | null;
   second_match_score: number | null;
   match_margin: number | null;
+  rejection_reason: string | null;
+  recognition_adapter_id: string | null;
+  decision_threshold: number | null;
+  decision_min_margin: number | null;
   embedding_version: string | null;
   face_size: number | null;
   blur_score: number | null;
@@ -63,6 +70,7 @@ export type GalleryPhotoDetail = GalleryPhotoListItem & {
     known: number;
     unknown: number;
     manual_tags_preserved: number;
+    import_tags_preserved?: number;
   } | null;
 };
 

@@ -14,9 +14,8 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.db import Base
 from app.lifecycle import ensure_gallery_photo_type_unique_constraint
-from app.models import FaceRecord, GalleryPhoto, Person, SamplePhoto
+from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, Person, SamplePhoto
 from app.services.face import DetectedFace, FaceService
-from app.services import face as face_module
 from app.services.face_index import build_face_index_health
 from app.services.importer import PersonMatch, PictureService
 from app.services.qdrant import FaceIndexInspection, FaceSearchHit
@@ -97,13 +96,13 @@ def test_face_detection_applies_exif_orientation_before_model_input() -> None:
     image.save(source, format="JPEG", exif=exif)
     captured: dict[str, object] = {}
 
-    class FakeFaceApp:
-        def get(self, array: np.ndarray) -> list[object]:
+    class FakeRuntime:
+        def analyze_bgr(self, array: np.ndarray) -> list[DetectedFace]:
             captured["shape"] = array.shape
             return []
 
     service = FaceService(Settings())
-    service._app = FakeFaceApp()  # type: ignore[assignment]
+    service._runtime = FakeRuntime()  # type: ignore[assignment]
 
     assert service.detect_faces(source.getvalue()) == []
     assert captured["shape"] == (20, 10, 3)
@@ -112,10 +111,6 @@ def test_face_detection_applies_exif_orientation_before_model_input() -> None:
 def test_face_service_rejects_missing_required_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     import onnxruntime as ort
 
-    class FakeFaceAnalysis:
-        pass
-
-    monkeypatch.setattr(face_module, "FaceAnalysis", FakeFaceAnalysis)
     monkeypatch.setattr(ort, "get_available_providers", lambda: ["CPUExecutionProvider"])
     service = FaceService(
         Settings(
@@ -125,7 +120,7 @@ def test_face_service_rejects_missing_required_provider(monkeypatch: pytest.Monk
     )
 
     with pytest.raises(RuntimeError, match="CUDAExecutionProvider"):
-        service._get_app()
+        service._get_runtime()
 
 
 @pytest.mark.parametrize(
@@ -198,6 +193,90 @@ def test_confident_match_requires_top_two_margin() -> None:
     assert service._is_confident_match(PersonMatch(1, 0.70, 2, 0.64), person) is False
     assert service._is_confident_match(PersonMatch(1, 0.44, 2, 0.10), person) is False
     assert service._is_confident_match(PersonMatch(1, 0.70, None, None), person) is True
+
+
+@pytest.mark.parametrize(
+    ("match", "has_person", "expected_reason"),
+    [
+        (PersonMatch(None, None), False, "no_candidate"),
+        (PersonMatch(99, 0.70), False, "candidate_not_found"),
+        (PersonMatch(1, 0.42, 2, 0.10), True, "below_threshold"),
+        (PersonMatch(1, 0.50, 2, 0.47), True, "insufficient_margin"),
+        (PersonMatch(1, 0.50, 2, 0.45), True, None),
+    ],
+)
+def test_match_decision_records_rejection_reason(
+    match: PersonMatch,
+    has_person: bool,
+    expected_reason: str | None,
+) -> None:
+    service = PictureService.__new__(PictureService)
+    service.settings = Settings(face_recognition_threshold=0.43, face_recognition_min_margin=0.04)
+    person = Person(id=1, name="person", display_name="人物") if has_person else None
+
+    decision = service._evaluate_match(match, person)
+
+    assert decision.accepted is (expected_reason is None)
+    assert decision.rejection_reason == expected_reason
+
+
+def test_import_source_upgrades_existing_auto_person_tag() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    service = make_picture_service()
+    with Session(engine) as db:
+        person = Person(name="person", display_name="人物", is_unknown=False)
+        photo = GalleryPhoto(filename="photo.jpg", sha256="a" * 64, object_key="gallery/photo.jpg")
+        db.add_all([person, photo])
+        db.flush()
+        service.ensure_gallery_person_tag(db, photo.id, person.id, "auto")
+        db.flush()
+
+        service.ensure_gallery_person_tag(db, photo.id, person.id, "import")
+        db.flush()
+        link = db.scalar(select(GalleryPhotoPersonTag))
+
+        assert link is not None
+        assert link.source == "import"
+
+
+def test_rerecognition_preserves_manual_and_import_person_tags() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    storage = FakeStorage()
+    service = PictureService(
+        storage,  # type: ignore[arg-type]
+        NoopFaceService(),  # type: ignore[arg-type]
+        FakeVectorStore([]),  # type: ignore[arg-type]
+        NoopOcrService(),  # type: ignore[arg-type]
+        Settings(),
+    )
+    with Session(engine) as db:
+        manual = Person(name="manual", display_name="人工", is_unknown=False)
+        imported = Person(name="imported", display_name="导入", is_unknown=False)
+        automatic = Person(name="automatic", display_name="自动", is_unknown=False)
+        photo = GalleryPhoto(filename="photo.jpg", sha256="b" * 64, object_key="gallery/photo.jpg")
+        db.add_all([manual, imported, automatic, photo])
+        db.flush()
+        db.add_all([
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=manual.id, source="manual"),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=imported.id, source="import"),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=automatic.id, source="auto"),
+        ])
+        db.commit()
+        storage.objects[photo.object_key] = make_image_bytes()
+        photo = db.get(GalleryPhoto, photo.id)
+        assert photo is not None
+
+        service.re_recognize_gallery_photo(db, photo, commit=False)
+        links = db.scalars(
+            select(GalleryPhotoPersonTag).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id)
+        ).all()
+
+        assert {(link.person_id, link.source) for link in links} == {
+            (manual.id, "manual"),
+            (imported.id, "import"),
+        }
 
 
 def test_sample_quality_has_human_readable_warnings() -> None:

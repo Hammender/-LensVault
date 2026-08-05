@@ -69,6 +69,15 @@ router = APIRouter(dependencies=[Depends(_bind_services)])
 logger = logging.getLogger(__name__)
 
 
+def _gallery_display_order() -> tuple[object, ...]:
+    return (
+        GalleryPhoto.display_batch_at.desc(),
+        GalleryPhoto.display_index.asc(),
+        GalleryPhoto.created_at.desc(),
+        GalleryPhoto.id.desc(),
+    )
+
+
 def _parse_gallery_metadata(raw: str | None, file_count: int) -> list[dict[str, list[str] | str | None]]:
     defaults: list[dict[str, list[str] | str | None]] = [
         {"person_names": [], "tag_names": [], "rich_text": None} for _ in range(file_count)
@@ -268,7 +277,11 @@ def export_gallery_photos(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> StreamingResponse:
-    base_query = select(GalleryPhoto).where(GalleryPhoto.workspace_id == current.workspace_id).order_by(GalleryPhoto.taken_at.desc().nullslast(), GalleryPhoto.created_at.desc())
+    base_query = (
+        select(GalleryPhoto)
+        .where(GalleryPhoto.workspace_id == current.workspace_id)
+        .order_by(*_gallery_display_order())
+    )
     query = _apply_gallery_filters(base_query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids) if scope == "filtered" else base_query
     photos = db.scalars(query).unique().all()
     for photo in photos:
@@ -284,7 +297,7 @@ def export_gallery_photos(
     buffer = BytesIO()
     storage = request.app.state.services.storage
     with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
-        for photo in photos:
+        for display_index, photo in enumerate(photos):
             image_bytes = storage.get_bytes(photo.object_key)
             normal_tags = sorted({link.tag.name for link in photo.tags if not link.tag.is_system})
             folder_names = normal_tags or ["_未分类"]
@@ -297,6 +310,7 @@ def export_gallery_photos(
             manifest_photos.append(
                 {
                     "id": photo.id,
+                    "display_index": display_index,
                     "filename": photo.filename,
                     "sha256": photo.sha256,
                     "content_type": photo.content_type,
@@ -316,7 +330,7 @@ def export_gallery_photos(
             )
         archive.writestr(
             "metadata.json",
-            json.dumps({"version": 1, "kind": "gallery_export", "scope": scope, "exported_at": shanghai_isoformat(shanghai_now()), "photos": manifest_photos}, ensure_ascii=False, indent=2),
+            json.dumps({"version": 2, "kind": "gallery_export", "scope": scope, "exported_at": shanghai_isoformat(shanghai_now()), "photos": manifest_photos}, ensure_ascii=False, indent=2),
         )
 
     buffer.seek(0)
@@ -495,7 +509,7 @@ def list_gallery_photos(
     query = (
         select(GalleryPhoto)
         .where(GalleryPhoto.workspace_id == current.workspace_id)
-        .order_by(GalleryPhoto.created_at.desc())
+        .order_by(*_gallery_display_order())
     )
     count_query = select(func.count(GalleryPhoto.id)).where(GalleryPhoto.workspace_id == current.workspace_id)
     query = _apply_gallery_filters(query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
@@ -841,5 +855,4 @@ def re_recognize_unknown_gallery_photos(
     current: CurrentContext = Depends(require_context),
 ) -> dict[str, int]:
     return picture_service.re_recognize_unknown_gallery_photos(db, current.workspace_id)
-
 

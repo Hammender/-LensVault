@@ -56,9 +56,14 @@ def ensure_face_recognition_columns(engine: Engine) -> None:
             "source_gallery_photo_id": "ALTER TABLE sample_photos ADD COLUMN source_gallery_photo_id INTEGER",
         },
         "face_records": {
+            "predicted_person_id": "ALTER TABLE face_records ADD COLUMN predicted_person_id INTEGER",
             "second_person_id": "ALTER TABLE face_records ADD COLUMN second_person_id INTEGER",
             "second_match_score": "ALTER TABLE face_records ADD COLUMN second_match_score FLOAT",
             "match_margin": "ALTER TABLE face_records ADD COLUMN match_margin FLOAT",
+            "rejection_reason": "ALTER TABLE face_records ADD COLUMN rejection_reason VARCHAR(32)",
+            "recognition_adapter_id": "ALTER TABLE face_records ADD COLUMN recognition_adapter_id VARCHAR(64)",
+            "decision_threshold": "ALTER TABLE face_records ADD COLUMN decision_threshold FLOAT",
+            "decision_min_margin": "ALTER TABLE face_records ADD COLUMN decision_min_margin FLOAT",
             "embedding_version": "ALTER TABLE face_records ADD COLUMN embedding_version VARCHAR(64)",
             "face_size": "ALTER TABLE face_records ADD COLUMN face_size FLOAT",
             "blur_score": "ALTER TABLE face_records ADD COLUMN blur_score FLOAT",
@@ -74,6 +79,9 @@ def ensure_face_recognition_columns(engine: Engine) -> None:
             for statement in statements:
                 connection.execute(text(statement))
     with engine.begin() as connection:
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_face_records_predicted_person_id ON face_records (predicted_person_id)")
+        )
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_sample_person_source_gallery "
@@ -99,6 +107,30 @@ def ensure_gallery_similarity_group_columns(engine: Engine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_gallery_similarity_groups_review_status "
                 "ON gallery_similarity_groups (review_status)"
+            )
+        )
+
+
+def ensure_gallery_display_order_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "gallery_photos" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("gallery_photos")}
+    with engine.begin() as connection:
+        if "display_batch_at" not in columns:
+            connection.execute(text("ALTER TABLE gallery_photos ADD COLUMN display_batch_at DATETIME"))
+        if "display_index" not in columns:
+            connection.execute(text("ALTER TABLE gallery_photos ADD COLUMN display_index INTEGER NOT NULL DEFAULT 0"))
+        connection.execute(
+            text(
+                "UPDATE gallery_photos SET display_batch_at = created_at "
+                "WHERE display_batch_at IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_gallery_photos_display_order "
+                "ON gallery_photos (workspace_id, display_batch_at, display_index)"
             )
         )
 
@@ -567,6 +599,7 @@ def initialize_database(engine: Engine) -> None:
         mark_timezone_baseline(engine)
     else:
         migrate_system_timestamps(engine)
+    ensure_gallery_display_order_columns(engine)
 
 
 def initialize_runtime(

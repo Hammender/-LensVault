@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -12,6 +12,12 @@ class GalleryPhoto(Base):
     __tablename__ = "gallery_photos"
     __table_args__ = (
         UniqueConstraint("workspace_id", "sha256", "is_rich_text", name="uq_gallery_photos_workspace_sha256_rich_text"),
+        Index(
+            "ix_gallery_photos_display_order",
+            "workspace_id",
+            "display_batch_at",
+            "display_index",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -26,6 +32,8 @@ class GalleryPhoto(Base):
     is_rich_text: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     rich_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    display_batch_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    display_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -184,10 +192,15 @@ class FaceRecord(Base):
         nullable=True,
         index=True,
     )
+    predicted_person_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     second_person_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     second_match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     match_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    recognition_adapter_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decision_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    decision_min_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
     embedding_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     face_size: Mapped[float | None] = mapped_column(Float, nullable=True)
     blur_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -199,6 +212,14 @@ class FaceRecord(Base):
     sample_photo: Mapped[SamplePhoto | None] = relationship(back_populates="faces")
     gallery_photo: Mapped[GalleryPhoto | None] = relationship(back_populates="faces")
     matched_person: Mapped[Person | None] = relationship(back_populates="faces")
+    predicted_person: Mapped[Person | None] = relationship(
+        primaryjoin="foreign(FaceRecord.predicted_person_id) == Person.id",
+        viewonly=True,
+    )
+    second_person: Mapped[Person | None] = relationship(
+        primaryjoin="foreign(FaceRecord.second_person_id) == Person.id",
+        viewonly=True,
+    )
 
 
 class FaceRecognitionCorrection(Base):

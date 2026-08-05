@@ -1841,6 +1841,28 @@
             ],
             "title": "Blur Score"
           },
+          "decision_min_margin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Min Margin"
+          },
+          "decision_threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Threshold"
+          },
           "embedding_version": {
             "anyOf": [
               {
@@ -1915,6 +1937,50 @@
             ],
             "title": "Pose Yaw"
           },
+          "predicted_person_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Person Id"
+          },
+          "predicted_person_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Person Name"
+          },
+          "recognition_adapter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recognition Adapter Id"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
           "second_match_score": {
             "anyOf": [
               {
@@ -1936,6 +2002,17 @@
               }
             ],
             "title": "Second Person Id"
+          },
+          "second_person_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Second Person Name"
           },
           "vector_collection": {
             "anyOf": [
