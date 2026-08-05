@@ -33,9 +33,9 @@ def gallery_photo_to_list_item(photo: GalleryPhoto) -> GalleryPhotoListItem:
         ocr_status=photo.ocr_status,
         persons=persons,
         tags=tags,
-        thumbnail_url=f"/api/gallery/photos/{photo.id}/thumbnail",
-        animated_thumbnail_url=f"/api/gallery/photos/{photo.id}/animated-thumbnail",
-        original_url=f"/api/gallery/photos/{photo.id}/original",
+        thumbnail_url=f"/api/gallery/photos/{photo.id}/thumbnail?v={photo.sha256}",
+        animated_thumbnail_url=f"/api/gallery/photos/{photo.id}/animated-thumbnail?v={photo.sha256}",
+        original_url=f"/api/gallery/photos/{photo.id}/original?v={photo.sha256}",
     )
 
 
