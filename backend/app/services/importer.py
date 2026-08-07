@@ -75,7 +75,8 @@ class PictureService:
 
     def _match_face(self, detected: DetectedFace, workspace_id: int | None) -> PersonMatch:
         by_person: dict[int, float] = {}
-        for embedding in (detected.embedding, *detected.embedding_variants):
+        embeddings = (detected.embedding, *detected.embedding_variants)
+        for embedding in embeddings:
             hits = self.vector_store.search_candidates(
                 self.settings.qdrant_known_collection,
                 embedding,
@@ -87,9 +88,24 @@ class PictureService:
                 by_person[hit.person_id] = max(by_person.get(hit.person_id, -1.0), hit.score)
         ranked = sorted(by_person.items(), key=lambda item: item[1], reverse=True)
         if not ranked:
+            logger.info(
+                "Face match evaluated embedding_candidates=%d person_id=None score=None margin=None",
+                len(embeddings),
+            )
             return PersonMatch(None, None)
         second = ranked[1] if len(ranked) > 1 else (None, None)
-        return PersonMatch(ranked[0][0], ranked[0][1], second[0], second[1])
+        match = PersonMatch(ranked[0][0], ranked[0][1], second[0], second[1])
+        logger.info(
+            "Face match evaluated embedding_candidates=%d person_id=%s score=%.4f "
+            "second_person_id=%s second_score=%s margin=%s",
+            len(embeddings),
+            match.person_id,
+            match.score,
+            match.second_person_id,
+            f"{match.second_score:.4f}" if match.second_score is not None else "None",
+            f"{match.margin:.4f}" if match.margin is not None else "None",
+        )
+        return match
 
     def _recognition_plan(
         self,
@@ -97,22 +113,76 @@ class PictureService:
         payload: bytes,
         workspace_id: int | None,
     ) -> list[tuple[DetectedFace, PersonMatch]]:
+        def selected_plan(
+            source: str,
+            selected: list[tuple[DetectedFace, PersonMatch]],
+            *,
+            reason: str | None = None,
+        ) -> list[tuple[DetectedFace, PersonMatch]]:
+            best_match = max(
+                (match for _, match in selected),
+                key=lambda match: match.score if match.score is not None else -1.0,
+                default=PersonMatch(None, None),
+            )
+            logger.info(
+                "Recognition plan selected source=%s faces=%d reason=%s person_id=%s score=%s margin=%s",
+                source,
+                len(selected),
+                reason or "best_available",
+                best_match.person_id,
+                f"{best_match.score:.4f}" if best_match.score is not None else "None",
+                f"{best_match.margin:.4f}" if best_match.margin is not None else "None",
+            )
+            return selected
+
         detected_faces = self.face_service.detect_faces(payload)
         plan = [(detected, self._match_face(detected, workspace_id)) for detected in detected_faces]
-        if not plan or self._plan_has_accepted_match(db, plan, workspace_id):
-            return plan
+        if not plan:
+            return selected_plan("primary", plan, reason="no_faces")
+        primary_accepted = self._plan_has_accepted_match(db, plan, workspace_id)
+        logger.info(
+            "Primary recognition evaluated faces=%d accepted=%s",
+            len(plan),
+            primary_accepted,
+        )
+        if primary_accepted:
+            return selected_plan("primary", plan, reason="accepted_match")
         if not self.settings.face_rotation_fallback_enabled:
-            return plan
+            return selected_plan("primary", plan, reason="fallback_disabled")
         fallback = getattr(self.face_service, "detect_faces_with_rotation_fallback", None)
         if not callable(fallback):
-            return plan
+            return selected_plan("primary", plan, reason="fallback_unavailable")
+        logger.info("Rotation fallback triggered reason=all_primary_matches_rejected faces=%d", len(plan))
         fallback_faces = fallback(payload)
         fallback_plan = [(detected, self._match_face(detected, workspace_id)) for detected in fallback_faces]
-        if self._plan_has_accepted_match(db, fallback_plan, workspace_id):
-            return fallback_plan
-        primary_score = max((match.score or -1.0 for _, match in plan), default=-1.0)
-        fallback_score = max((match.score or -1.0 for _, match in fallback_plan), default=-1.0)
-        return fallback_plan if fallback_plan and fallback_score > primary_score else plan
+        fallback_accepted = self._plan_has_accepted_match(db, fallback_plan, workspace_id)
+        logger.info(
+            "Fallback recognition evaluated faces=%d accepted=%s",
+            len(fallback_plan),
+            fallback_accepted,
+        )
+        if fallback_accepted:
+            return selected_plan("fallback", fallback_plan, reason="accepted_match")
+        primary_score = max(
+            (match.score if match.score is not None else -1.0 for _, match in plan),
+            default=-1.0,
+        )
+        fallback_score = max(
+            (match.score if match.score is not None else -1.0 for _, match in fallback_plan),
+            default=-1.0,
+        )
+        use_fallback = bool(fallback_plan and fallback_score > primary_score)
+        selection = fallback_plan if use_fallback else plan
+        logger.info(
+            "Recognition plan compared primary_score=%.4f fallback_score=%.4f",
+            primary_score,
+            fallback_score,
+        )
+        return selected_plan(
+            "fallback" if use_fallback else "primary",
+            selection,
+            reason="higher_rejected_score",
+        )
 
     def _plan_has_accepted_match(
         self,

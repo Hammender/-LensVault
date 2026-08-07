@@ -17,10 +17,12 @@ import {
   Search,
   ScanSearch,
   Settings,
+  SlidersHorizontal,
   Trash2,
   UploadCloud,
   UserPlus,
-  UsersRound
+  UsersRound,
+  X
 } from "lucide-react";
 
 import Home from "./Home";
@@ -175,6 +177,9 @@ function isSystemUnknownPerson(person: Person | null | undefined): boolean {
 const galleryPageSize = 20;
 const videoPageSize = 24;
 const systemUnknownPersonName = "未知人物";
+const compactGalleryMediaQuery = "(max-width: 1600px)";
+
+type GalleryDrawer = "filter" | "detail" | null;
 
 type MainAppProps = {
   authSession: AuthSession;
@@ -206,6 +211,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     availableExcludeUnknownPersons, availableExcludeTags
   } = gallery;
   const [selectedPhoto, setSelectedPhoto] = useState<GalleryPhotoDetail | null>(null);
+  const [galleryDrawer, setGalleryDrawer] = useState<GalleryDrawer>(null);
+  const [galleryCompact, setGalleryCompact] = useState(() => window.matchMedia(compactGalleryMediaQuery).matches);
   const [manualPersonId, setManualPersonId] = useState("");
   const [manualPersonSearch, setManualPersonSearch] = useState("");
   const [manualPersonNotice, setManualPersonNotice] = useState<string | null>(null);
@@ -272,7 +279,12 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const [busy, setBusy] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
   const peopleMainRef = useRef<HTMLElement | null>(null);
+  const galleryFilterRef = useRef<HTMLElement | null>(null);
   const galleryDetailRef = useRef<HTMLElement | null>(null);
+  const galleryFilterTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const galleryFilterCloseRef = useRef<HTMLButtonElement | null>(null);
+  const galleryDetailCloseRef = useRef<HTMLButtonElement | null>(null);
+  const galleryDrawerReturnFocusRef = useRef<HTMLElement | null>(null);
 
   const selectedPersonIsSystemUnknown = isSystemUnknownPerson(selectedPerson);
 
@@ -280,6 +292,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     () => selectedPersonDeleteIds.filter((id) => !isSystemUnknownPerson(persons.find((person) => person.id === id))).length,
     [persons, selectedPersonDeleteIds]
   );
+  const galleryFilterCount = selectedPersonIds.length + selectedTagIds.length + excludePersonIds.length + excludeTagIds.length;
 
   const videoTotalPages = Math.max(1, Math.ceil(videoTotal / videoPageSize));
   const videoCurrentPage = Math.floor(videoOffset / videoPageSize) + 1;
@@ -380,6 +393,107 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     }
     setPersonTags(sortByPinyinName(await listPersonTags(personId)));
   }
+
+  function openGalleryDrawer(nextDrawer: Exclude<GalleryDrawer, null>) {
+    if (!window.matchMedia(compactGalleryMediaQuery).matches) {
+      return;
+    }
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && activeElement !== document.body) {
+      galleryDrawerReturnFocusRef.current = activeElement;
+    } else {
+      galleryDrawerReturnFocusRef.current = galleryFilterTriggerRef.current;
+    }
+    setGalleryDrawer(nextDrawer);
+  }
+
+  function closeGalleryDrawer(restoreFocus = true) {
+    setGalleryDrawer(null);
+    if (!restoreFocus) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const returnTarget = galleryDrawerReturnFocusRef.current;
+      galleryDrawerReturnFocusRef.current = null;
+      if (returnTarget?.isConnected) {
+        returnTarget.focus();
+      } else {
+        galleryFilterTriggerRef.current?.focus();
+      }
+    });
+  }
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(compactGalleryMediaQuery);
+    const handleChange = () => {
+      setGalleryCompact(mediaQuery.matches);
+      if (!mediaQuery.matches) {
+        setGalleryDrawer(null);
+      }
+    };
+    handleChange();
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
+
+  useEffect(() => {
+    if (page !== "gallery") {
+      setGalleryDrawer(null);
+    }
+  }, [page]);
+
+  useEffect(() => {
+    galleryFilterRef.current?.toggleAttribute("inert", galleryCompact && galleryDrawer !== "filter");
+    galleryDetailRef.current?.toggleAttribute("inert", galleryCompact && galleryDrawer !== "detail");
+  }, [galleryCompact, galleryDrawer, page]);
+
+  useEffect(() => {
+    if (!galleryCompact || !galleryDrawer) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    const panel = galleryDrawer === "filter" ? galleryFilterRef.current : galleryDetailRef.current;
+    const closeButton = galleryDrawer === "filter" ? galleryFilterCloseRef.current : galleryDetailCloseRef.current;
+    document.body.style.overflow = "hidden";
+    window.requestAnimationFrame(() => closeButton?.focus());
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeGalleryDrawer();
+        return;
+      }
+      if (event.key !== "Tab" || !panel) {
+        return;
+      }
+      const focusableElements = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((element) => element.getClientRects().length > 0);
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      if (event.shiftKey && (document.activeElement === firstElement || document.activeElement === panel)) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [galleryCompact, galleryDrawer]);
 
   function handleTogglePersonFilter(personId: number) {
     const active = selectedPersonIds.includes(personId);
@@ -741,6 +855,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       setManualTagSearch("");
       setManualTagNotice(null);
       setManualTagName("");
+      openGalleryDrawer("detail");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载图片详情失败。");
     }
@@ -766,9 +881,11 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     const photoId = lightboxPhoto.id;
     closeGalleryLightbox();
     await openGalleryPhoto(photoId);
-    window.setTimeout(() => {
-      galleryDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 0);
+    if (!window.matchMedia(compactGalleryMediaQuery).matches) {
+      window.setTimeout(() => {
+        galleryDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+    }
   }
 
   async function handleCreatePerson() {
@@ -1991,7 +2108,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     setPageState("gallery");
     setRoute("gallery");
     await openGalleryPhoto(photoId);
-    window.setTimeout(() => galleryDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    if (!window.matchMedia(compactGalleryMediaQuery).matches) {
+      window.setTimeout(() => galleryDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    }
   }
 
   async function handleDeletePhotoPerson(personId: number) {
@@ -2325,13 +2444,34 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const GalleryPageComponent = () => {
     return (
         <main className="page-grid gallery-page">
-          <section className="panel filter-panel">
+          <section
+            id="gallery-filter-drawer"
+            ref={galleryFilterRef}
+            className={`panel filter-panel gallery-drawer gallery-filter-drawer${galleryDrawer === "filter" ? " is-open" : ""}`}
+            role={galleryCompact ? "dialog" : undefined}
+            aria-modal={galleryCompact ? true : undefined}
+            aria-hidden={galleryCompact ? galleryDrawer !== "filter" : undefined}
+            aria-labelledby="gallery-filter-title"
+            tabIndex={-1}
+          >
             <div className="section-head">
               <div>
                 <p className="eyebrow">筛选器</p>
-                <h2>人物 + 自定义标签</h2>
+                <h2 id="gallery-filter-title">人物 + 自定义标签</h2>
               </div>
-              <span>组内 OR，组间 AND</span>
+              <div className="gallery-drawer-head-actions">
+                <span>组内 OR，组间 AND</span>
+                <button
+                  ref={galleryFilterCloseRef}
+                  className="gallery-drawer-close"
+                  type="button"
+                  onClick={() => closeGalleryDrawer()}
+                  aria-label="关闭筛选器"
+                  title="关闭筛选器"
+                >
+                  <X size={18} aria-hidden="true" />
+                </button>
+              </div>
             </div>
 
             <div className="filter-group">
@@ -2593,6 +2733,18 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <h2>按条件浏览图片</h2>
               </div>
               <div className="micro-row section-actions">
+                <button
+                  ref={galleryFilterTriggerRef}
+                  className="gallery-drawer-trigger"
+                  type="button"
+                  onClick={() => openGalleryDrawer("filter")}
+                  aria-controls="gallery-filter-drawer"
+                  aria-expanded={galleryDrawer === "filter"}
+                >
+                  <SlidersHorizontal size={17} aria-hidden="true" />
+                  筛选
+                  {galleryFilterCount > 0 && <strong className="gallery-filter-count">{galleryFilterCount}</strong>}
+                </button>
                 <span>{galleryTotal} 张结果</span>
                 <button disabled={busy} onClick={() => toggleGallerySelectionMode()}>
                   {gallerySelectionMode ? "取消选择" : "选择图片"}
@@ -2750,11 +2902,20 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
             </div>
           </section>
 
-          <aside ref={galleryDetailRef} className="panel detail-panel">
+          <aside
+            id="gallery-detail-drawer"
+            ref={galleryDetailRef}
+            className={`panel detail-panel gallery-drawer gallery-detail-drawer${galleryDrawer === "detail" ? " is-open" : ""}`}
+            role={galleryCompact ? "dialog" : undefined}
+            aria-modal={galleryCompact ? true : undefined}
+            aria-hidden={galleryCompact ? galleryDrawer !== "detail" : undefined}
+            aria-labelledby="gallery-detail-title"
+            tabIndex={-1}
+          >
             <div className="section-head">
               <div>
                 <p className="eyebrow">详情</p>
-                <h2>单张图修正</h2>
+                <h2 id="gallery-detail-title">单张图修正</h2>
               </div>
               <div className="micro-row">
                 <span>{selectedPhoto ? `${selectedPhoto.faces.length} 张脸` : "未选中图片"}</span>
@@ -2763,6 +2924,16 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 </button>
                 <button disabled={busy || !selectedPhoto} onClick={() => void handleDeleteCurrentPhoto()}>
                   删除当前图
+                </button>
+                <button
+                  ref={galleryDetailCloseRef}
+                  className="gallery-drawer-close"
+                  type="button"
+                  onClick={() => closeGalleryDrawer()}
+                  aria-label="关闭图片详情"
+                  title="关闭图片详情"
+                >
+                  <X size={18} aria-hidden="true" />
                 </button>
               </div>
             </div>
@@ -2957,9 +3128,17 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 </div>
               </>
             ) : (
-              <div className="empty-card">从左侧图库点击任意图片后，这里会显示识别结果和修正操作。</div>
+              <div className="empty-card">从图库卡片打开详情后，这里会显示识别结果和修正操作。</div>
             )}
           </aside>
+          {galleryCompact && galleryDrawer && (
+            <button
+              className="gallery-drawer-backdrop"
+              type="button"
+              onClick={() => closeGalleryDrawer()}
+              aria-label="关闭图库侧栏"
+            />
+          )}
         </main>
     );
   };

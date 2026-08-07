@@ -82,7 +82,20 @@ class SequenceDetector:
         return next(self.responses)
 
 
-def make_runtime(detector: SequenceDetector, *, min_angle: float = 30) -> FaceRuntime:
+class DetectorWithFailures:
+    def __init__(self, responses: list[list[FakeModelFace] | Exception]) -> None:
+        self.responses = iter(responses)
+        self.calls = 0
+
+    def get(self, _image: np.ndarray) -> list[FakeModelFace]:
+        self.calls += 1
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def make_runtime(detector: object, *, min_angle: float = 30) -> FaceRuntime:
     return FaceRuntime(
         detector_pack="test",
         adapter_id="buffalo_l",
@@ -96,8 +109,11 @@ def make_runtime(detector: SequenceDetector, *, min_angle: float = 30) -> FaceRu
     )
 
 
-def model_face(keypoints: np.ndarray) -> FakeModelFace:
-    return FakeModelFace(np.asarray([20, 20, 80, 80], dtype=np.float32), keypoints)
+def model_face(
+    keypoints: np.ndarray,
+    bbox: tuple[float, float, float, float] = (20, 20, 80, 80),
+) -> FakeModelFace:
+    return FakeModelFace(np.asarray(bbox, dtype=np.float32), keypoints)
 
 
 def test_high_roll_face_is_rotated_and_redetected_before_embedding() -> None:
@@ -107,7 +123,8 @@ def test_high_roll_face_is_rotated_and_redetected_before_embedding() -> None:
 
     def fake_embed(_image: np.ndarray, detection: object) -> tuple[np.ndarray, float]:
         embedded_landmarks.append(detection.keypoints.copy())
-        return np.asarray([1.0, 0.0], dtype=np.float32), 1.0
+        value = 2.0 if np.array_equal(detection.keypoints, NORMAL_KEYPOINTS) else 1.0
+        return np.asarray([value, 0.0], dtype=np.float32), 1.0
 
     runtime.embed_detection = fake_embed  # type: ignore[method-assign]
 
@@ -118,6 +135,28 @@ def test_high_roll_face_is_rotated_and_redetected_before_embedding() -> None:
     assert result[0].orientation_corrected is True
     assert result[0].roll_angle == pytest.approx(-90)
     assert np.array_equal(embedded_landmarks[0], NORMAL_KEYPOINTS)
+    assert np.array_equal(embedded_landmarks[1], rotated_keypoints(90))
+    assert float(result[0].embedding[0]) == 2.0
+    assert [float(vector[0]) for vector in result[0].embedding_variants] == [1.0]
+
+
+def test_large_residual_roll_does_not_discard_corrected_embedding() -> None:
+    original = rotated_keypoints(90)
+    residual_large_roll = rotated_keypoints(60)
+    detector = SequenceDetector([[model_face(original)], [model_face(residual_large_roll)]])
+    runtime = make_runtime(detector)
+
+    def fake_embed(_image: np.ndarray, detection: object) -> tuple[np.ndarray, float]:
+        value = 2.0 if np.array_equal(detection.keypoints, residual_large_roll) else 1.0
+        return np.asarray([value], dtype=np.float32), 1.0
+
+    runtime.embed_detection = fake_embed  # type: ignore[method-assign]
+
+    result = runtime.analyze_bgr(np.zeros((100, 100, 3), dtype=np.uint8))
+
+    assert result[0].orientation_corrected is True
+    assert float(result[0].embedding[0]) == 2.0
+    assert [float(vector[0]) for vector in result[0].embedding_variants] == [1.0]
 
 
 def test_small_roll_does_not_trigger_redetection() -> None:
@@ -167,6 +206,61 @@ def test_rotated_bbox_maps_back_to_original_coordinates() -> None:
     assert mapped_bbox == pytest.approx(original_bbox, abs=1e-4)
 
 
+def test_fixed_rotation_keeps_candidate_with_large_residual_roll() -> None:
+    detector = SequenceDetector([[model_face(rotated_keypoints(60))]])
+    runtime = make_runtime(detector)
+    runtime.embed_detection = lambda _image, _detection: (np.asarray([4.0]), 1.0)  # type: ignore[method-assign]
+
+    result = runtime.analyze_rotations_bgr(
+        np.zeros((100, 100, 3), dtype=np.uint8),
+        (90.0,),
+    )
+
+    assert len(result) == 1
+    assert float(result[0].embedding[0]) == 4.0
+
+
+def test_failed_rotation_angle_does_not_stop_later_angles() -> None:
+    detector = DetectorWithFailures([
+        RuntimeError("first angle failed"),
+        [model_face(NORMAL_KEYPOINTS)],
+    ])
+    runtime = make_runtime(detector)
+    runtime.embed_detection = lambda _image, _detection: (np.asarray([5.0]), 1.0)  # type: ignore[method-assign]
+
+    result = runtime.analyze_rotations_bgr(
+        np.zeros((100, 100, 3), dtype=np.uint8),
+        (90.0, -90.0),
+    )
+
+    assert detector.calls == 2
+    assert len(result) == 1
+    assert float(result[0].embedding[0]) == 5.0
+
+
+def test_failed_rotation_face_does_not_stop_other_faces() -> None:
+    detector = SequenceDetector([[
+        model_face(NORMAL_KEYPOINTS, (10, 10, 40, 40)),
+        model_face(NORMAL_KEYPOINTS, (60, 60, 90, 90)),
+    ]])
+    runtime = make_runtime(detector)
+
+    def fake_embed(_image: np.ndarray, detection: object) -> tuple[np.ndarray, float]:
+        if detection.bbox[0] == 10:
+            raise RuntimeError("first face failed")
+        return np.asarray([6.0]), 1.0
+
+    runtime.embed_detection = fake_embed  # type: ignore[method-assign]
+
+    result = runtime.analyze_rotations_bgr(
+        np.zeros((100, 100, 3), dtype=np.uint8),
+        (90.0,),
+    )
+
+    assert len(result) == 1
+    assert float(result[0].embedding[0]) == 6.0
+
+
 def detected_face(
     value: float,
     *,
@@ -206,6 +300,17 @@ def test_multi_face_rotation_candidates_are_deduplicated_per_face() -> None:
     assert [float(vector[0]) for vector in faces[1].embedding_variants] == [4]
 
 
+def test_merging_rotated_face_preserves_all_primary_and_rotated_embeddings() -> None:
+    primary = detected_face(1, variants=(2,))
+    rotated = detected_face(3, variants=(4,))
+
+    merged = FaceRuntime.prefer_rotated_faces([primary], [rotated])
+
+    assert len(merged) == 1
+    assert float(merged[0].embedding[0]) == 3.0
+    assert [float(vector[0]) for vector in merged[0].embedding_variants] == [4.0, 1.0, 2.0]
+
+
 class VectorStoreByValue:
     def search_candidates(self, _collection: str, vector: np.ndarray, **_kwargs: object) -> list[FaceSearchHit]:
         value = int(vector[0])
@@ -226,6 +331,11 @@ def test_person_matching_aggregates_best_score_across_rotation_variants() -> Non
     assert (match.person_id, match.score) == (10, 0.72)
     assert (match.second_person_id, match.second_score) == (20, 0.55)
     assert match.margin == pytest.approx(0.17)
+    decision = service._evaluate_match(
+        match,
+        Person(id=10, name="person-10", display_name="人物十", is_unknown=False),
+    )
+    assert decision.accepted is True
 
 
 class FallbackFaceService:
