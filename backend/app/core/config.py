@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     face_detection_size: int = 640
     face_search_limit: int = 50
     face_flip_augmentation: bool = False
+    face_roll_correction_enabled: bool = True
+    face_roll_correction_min_angle: float = 30.0
+    face_rotation_fallback_enabled: bool = True
+    face_rotation_fallback_angles: str = "90,-90,180"
     face_recognition_threshold: float = 0.43
     face_recognition_min_margin: float = 0.04
     face_sample_min_size: int = 40

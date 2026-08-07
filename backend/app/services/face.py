@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 import time
 
@@ -45,6 +46,8 @@ class FaceService:
                 providers=providers,
                 detection_size=self.settings.face_detection_size,
                 flip_tta=self.settings.face_flip_augmentation,
+                roll_correction_enabled=self.settings.face_roll_correction_enabled,
+                roll_correction_min_angle=self.settings.face_roll_correction_min_angle,
             )
             self._runtime.warmup()
             elapsed_ms = (time.perf_counter() - started_at) * 1000
@@ -60,11 +63,51 @@ class FaceService:
         started_at = time.perf_counter()
         array = decode_image_bytes(payload)
         logger.info("Decoded image size=%sx%s", array.shape[1], array.shape[0])
-        results = self._get_runtime().analyze_bgr(array)
+        runtime = self._get_runtime()
+        results = runtime.analyze_bgr(array)
+        if not results and self.settings.face_rotation_fallback_enabled:
+            analyze_rotations = getattr(runtime, "analyze_rotations_bgr", None)
+            if callable(analyze_rotations):
+                results = analyze_rotations(array, self._rotation_fallback_angles())
         logger.info("Face detection finished detected_faces=%d", len(results))
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info("detect_faces completed in %.1fms", elapsed_ms)
         return results
+
+    def detect_faces_with_rotation_fallback(self, payload: bytes) -> list[DetectedFace]:
+        logger.info("Start detect_faces_with_rotation_fallback payload_bytes=%d", len(payload))
+        array = decode_image_bytes(payload)
+        runtime = self._get_runtime()
+        primary_faces = runtime.analyze_bgr(array)
+        if not self.settings.face_rotation_fallback_enabled:
+            return primary_faces
+        rotated_faces = runtime.analyze_rotations_bgr(array, self._rotation_fallback_angles())
+        results = runtime.prefer_rotated_faces(primary_faces, rotated_faces)
+        logger.info(
+            "Rotation fallback finished primary_faces=%d rotated_faces=%d merged_faces=%d",
+            len(primary_faces),
+            len(rotated_faces),
+            len(results),
+        )
+        return results
+
+    def _rotation_fallback_angles(self) -> tuple[float, ...]:
+        angles: list[float] = []
+        for raw_angle in self.settings.face_rotation_fallback_angles.split(","):
+            value = raw_angle.strip()
+            if not value:
+                continue
+            try:
+                angle = FaceRuntime.normalize_angle(float(value))
+            except ValueError as exc:
+                raise RuntimeError(f"无效的人脸旋转备选角度：{value}") from exc
+            if not math.isfinite(angle):
+                raise RuntimeError(f"无效的人脸旋转备选角度：{value}")
+            if abs(angle) >= 1e-6 and angle not in angles:
+                angles.append(angle)
+        if not angles:
+            raise RuntimeError("人脸旋转备选角度不能为空。")
+        return tuple(angles)
 
     @staticmethod
     def cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:

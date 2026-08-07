@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
+import logging
+import math
 import time
 
 import numpy as np
 from PIL import Image, ImageOps
 
 from .adapters import OnnxFaceAdapter, create_adapter, model_sha256
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,9 @@ class DetectedFace:
     blur_score: float | None
     pose_yaw: float | None
     keypoints: np.ndarray | None = None
+    roll_angle: float | None = None
+    orientation_corrected: bool = False
+    embedding_variants: tuple[np.ndarray, ...] = ()
 
 
 def decode_image_bytes(payload: bytes) -> np.ndarray:
@@ -54,17 +62,23 @@ class FaceRuntime:
         providers: list[str],
         detection_size: int,
         flip_tta: bool,
+        roll_correction_enabled: bool = True,
+        roll_correction_min_angle: float = 30.0,
         detector: object | None = None,
         adapter: OnnxFaceAdapter | None = None,
     ) -> None:
         if detection_size <= 0:
             raise RuntimeError("检测尺寸必须大于 0。")
+        if not 0 <= roll_correction_min_angle <= 180:
+            raise RuntimeError("人脸滚转校正角度阈值必须在 0 到 180 之间。")
         self.detector_pack = detector_pack
         self.adapter_id = adapter_id
         self.model_path = model_path
         self.providers = providers
         self.detection_size = detection_size
         self.flip_tta = flip_tta
+        self.roll_correction_enabled = roll_correction_enabled
+        self.roll_correction_min_angle = roll_correction_min_angle
         self._detector = detector
         self._adapter = adapter
 
@@ -165,7 +179,28 @@ class FaceRuntime:
         detections, _ = self.detect_bgr(image_bgr)
         results: list[DetectedFace] = []
         for detection in detections:
-            embedding, _ = self.embed_detection(image_bgr, detection)
+            roll_angle = self.estimate_roll_angle(detection.keypoints)
+            corrected: tuple[np.ndarray, FaceDetection] | None = None
+            if (
+                self.roll_correction_enabled
+                and roll_angle is not None
+                and abs(roll_angle) >= self.roll_correction_min_angle
+            ):
+                try:
+                    corrected = self._correct_rolled_detection(image_bgr, detection, roll_angle)
+                except Exception:
+                    logger.warning(
+                        "Rolled face correction failed; use original landmarks bbox=%s roll=%.1f",
+                        detection.bbox,
+                        roll_angle,
+                        exc_info=True,
+                    )
+            if corrected is None:
+                embedding, _ = self.embed_detection(image_bgr, detection)
+                pose_yaw = detection.pose_yaw
+            else:
+                embedding, corrected_detection = corrected
+                pose_yaw = corrected_detection.pose_yaw
             results.append(
                 DetectedFace(
                     bbox=detection.bbox,
@@ -173,11 +208,290 @@ class FaceRuntime:
                     embedding=embedding,
                     face_size=detection.face_size,
                     blur_score=detection.blur_score,
-                    pose_yaw=detection.pose_yaw,
+                    pose_yaw=pose_yaw,
                     keypoints=detection.keypoints,
+                    roll_angle=roll_angle,
+                    orientation_corrected=corrected is not None,
                 )
             )
         return results
+
+    def analyze_rotations_bgr(self, image_bgr: np.ndarray, angles: tuple[float, ...]) -> list[DetectedFace]:
+        candidates: list[DetectedFace] = []
+        for angle in angles:
+            if not math.isfinite(angle) or abs(self.normalize_angle(angle)) < 1e-6:
+                continue
+            rotated, forward_matrix = self.rotate_bound(image_bgr, angle)
+            inverse_matrix = self._invert_affine(forward_matrix)
+            detections, _ = self.detect_bgr(rotated)
+            for detection in detections:
+                detected_roll = self.estimate_roll_angle(detection.keypoints)
+                if detected_roll is not None and abs(detected_roll) >= self.roll_correction_min_angle:
+                    continue
+                embedding, _ = self.embed_detection(rotated, detection)
+                bbox = self.transform_bbox(
+                    detection.bbox,
+                    inverse_matrix,
+                    image_bgr.shape[1],
+                    image_bgr.shape[0],
+                )
+                if bbox is None:
+                    continue
+                mapped_keypoints = self.transform_points(detection.keypoints, inverse_matrix)
+                left, top, right, bottom = bbox
+                crop = image_bgr[
+                    max(0, int(top)):min(image_bgr.shape[0], int(bottom)),
+                    max(0, int(left)):min(image_bgr.shape[1], int(right)),
+                ]
+                candidates.append(
+                    DetectedFace(
+                        bbox=bbox,
+                        score=detection.score,
+                        embedding=embedding,
+                        face_size=max(0.0, min(right - left, bottom - top)),
+                        blur_score=self.blur_score(crop),
+                        pose_yaw=detection.pose_yaw,
+                        keypoints=mapped_keypoints,
+                        roll_angle=self.estimate_roll_angle(mapped_keypoints),
+                        orientation_corrected=True,
+                    )
+                )
+        return self.deduplicate_faces(candidates)
+
+    def _correct_rolled_detection(
+        self,
+        image_bgr: np.ndarray,
+        detection: FaceDetection,
+        roll_angle: float,
+    ) -> tuple[np.ndarray, FaceDetection] | None:
+        crop = self._padded_square_crop(image_bgr, detection.bbox, scale=1.5)
+        rotated = self.rotate_same_size(crop, roll_angle)
+        detections, _ = self.detect_bgr(rotated)
+        if not detections:
+            return None
+        center = np.asarray([rotated.shape[1] / 2.0, rotated.shape[0] / 2.0], dtype=np.float32)
+        corrected_detection = min(
+            detections,
+            key=lambda item: float(
+                np.linalg.norm(
+                    np.asarray(
+                        [
+                            (item.bbox[0] + item.bbox[2]) / 2.0,
+                            (item.bbox[1] + item.bbox[3]) / 2.0,
+                        ],
+                        dtype=np.float32,
+                    )
+                    - center
+                )
+            ),
+        )
+        corrected_roll = self.estimate_roll_angle(corrected_detection.keypoints)
+        if corrected_roll is not None and abs(corrected_roll) >= self.roll_correction_min_angle:
+            return None
+        embedding, _ = self.embed_detection(rotated, corrected_detection)
+        return embedding, corrected_detection
+
+    @staticmethod
+    def normalize_angle(angle: float) -> float:
+        normalized = (float(angle) + 180.0) % 360.0 - 180.0
+        return 0.0 if abs(normalized) < 1e-6 else normalized
+
+    @classmethod
+    def estimate_roll_angle(cls, keypoints: object) -> float | None:
+        points = np.asarray(keypoints, dtype=np.float32)
+        if points.shape != (5, 2) or not np.isfinite(points).all():
+            return None
+        left_eye, right_eye = points[0], points[1]
+        eye_vector = right_eye - left_eye
+        eye_span = float(np.linalg.norm(eye_vector))
+        if eye_span <= 1.0:
+            return None
+        eye_midpoint = (left_eye + right_eye) / 2.0
+        mouth_midpoint = (points[3] + points[4]) / 2.0
+        mouth_vector = mouth_midpoint - eye_midpoint
+        if float(np.linalg.norm(mouth_vector)) <= 1.0:
+            return None
+        angle = math.degrees(math.atan2(float(eye_vector[1]), float(eye_vector[0])))
+        radians = math.radians(angle)
+        rotated_mouth_y = -math.sin(radians) * float(mouth_vector[0]) + math.cos(radians) * float(mouth_vector[1])
+        if rotated_mouth_y < 0:
+            angle += 180.0
+        return cls.normalize_angle(angle)
+
+    @staticmethod
+    def _padded_square_crop(
+        image_bgr: np.ndarray,
+        bbox: tuple[float, float, float, float],
+        *,
+        scale: float,
+    ) -> np.ndarray:
+        import cv2
+
+        left, top, right, bottom = bbox
+        side = max(2, int(math.ceil(max(right - left, bottom - top) * scale)))
+        center_x = (left + right) / 2.0
+        center_y = (top + bottom) / 2.0
+        raw_left = int(math.floor(center_x - side / 2.0))
+        raw_top = int(math.floor(center_y - side / 2.0))
+        raw_right = raw_left + side
+        raw_bottom = raw_top + side
+        x1, y1 = max(0, raw_left), max(0, raw_top)
+        x2, y2 = min(image_bgr.shape[1], raw_right), min(image_bgr.shape[0], raw_bottom)
+        crop = image_bgr[y1:y2, x1:x2]
+        if crop.size == 0:
+            return np.empty((0, 0, 3), dtype=image_bgr.dtype)
+        return cv2.copyMakeBorder(
+            crop,
+            y1 - raw_top,
+            raw_bottom - y2,
+            x1 - raw_left,
+            raw_right - x2,
+            cv2.BORDER_REPLICATE,
+        )
+
+    @staticmethod
+    def rotate_same_size(image_bgr: np.ndarray, angle: float) -> np.ndarray:
+        import cv2
+
+        if image_bgr.size == 0:
+            return image_bgr
+        height, width = image_bgr.shape[:2]
+        center = ((width - 1) / 2.0, (height - 1) / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        return cv2.warpAffine(
+            image_bgr,
+            matrix,
+            (width, height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+
+    @staticmethod
+    def rotate_bound(image_bgr: np.ndarray, angle: float) -> tuple[np.ndarray, np.ndarray]:
+        import cv2
+
+        height, width = image_bgr.shape[:2]
+        center = (width / 2.0, height / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        cosine, sine = abs(float(matrix[0, 0])), abs(float(matrix[0, 1]))
+        target_width = max(1, int(math.ceil(height * sine + width * cosine)))
+        target_height = max(1, int(math.ceil(height * cosine + width * sine)))
+        matrix[0, 2] += target_width / 2.0 - center[0]
+        matrix[1, 2] += target_height / 2.0 - center[1]
+        rotated = cv2.warpAffine(
+            image_bgr,
+            matrix,
+            (target_width, target_height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        return rotated, np.asarray(matrix, dtype=np.float32)
+
+    @staticmethod
+    def _invert_affine(matrix: np.ndarray) -> np.ndarray:
+        import cv2
+
+        return np.asarray(cv2.invertAffineTransform(matrix), dtype=np.float32)
+
+    @staticmethod
+    def transform_points(points: object, matrix: np.ndarray) -> np.ndarray:
+        array = np.asarray(points, dtype=np.float32)
+        homogeneous = np.concatenate([array, np.ones((array.shape[0], 1), dtype=np.float32)], axis=1)
+        return np.asarray(homogeneous @ matrix.T, dtype=np.float32)
+
+    @classmethod
+    def transform_bbox(
+        cls,
+        bbox: tuple[float, float, float, float],
+        matrix: np.ndarray,
+        image_width: int,
+        image_height: int,
+    ) -> tuple[float, float, float, float] | None:
+        left, top, right, bottom = bbox
+        corners = cls.transform_points(
+            np.asarray([[left, top], [right, top], [right, bottom], [left, bottom]], dtype=np.float32),
+            matrix,
+        )
+        mapped_left = max(0.0, float(np.min(corners[:, 0])))
+        mapped_top = max(0.0, float(np.min(corners[:, 1])))
+        mapped_right = min(float(image_width), float(np.max(corners[:, 0])))
+        mapped_bottom = min(float(image_height), float(np.max(corners[:, 1])))
+        if mapped_right <= mapped_left or mapped_bottom <= mapped_top:
+            return None
+        return mapped_left, mapped_top, mapped_right, mapped_bottom
+
+    @staticmethod
+    def bbox_iou(
+        left_bbox: tuple[float, float, float, float],
+        right_bbox: tuple[float, float, float, float],
+    ) -> float:
+        intersection_left = max(left_bbox[0], right_bbox[0])
+        intersection_top = max(left_bbox[1], right_bbox[1])
+        intersection_right = min(left_bbox[2], right_bbox[2])
+        intersection_bottom = min(left_bbox[3], right_bbox[3])
+        intersection = max(0.0, intersection_right - intersection_left) * max(
+            0.0, intersection_bottom - intersection_top
+        )
+        left_area = max(0.0, left_bbox[2] - left_bbox[0]) * max(0.0, left_bbox[3] - left_bbox[1])
+        right_area = max(0.0, right_bbox[2] - right_bbox[0]) * max(0.0, right_bbox[3] - right_bbox[1])
+        union = left_area + right_area - intersection
+        return intersection / union if union > 0 else 0.0
+
+    @classmethod
+    def deduplicate_faces(cls, faces: list[DetectedFace], *, iou_threshold: float = 0.5) -> list[DetectedFace]:
+        deduplicated: list[DetectedFace] = []
+        for face in faces:
+            best_index: int | None = None
+            best_iou = iou_threshold
+            for index, existing in enumerate(deduplicated):
+                overlap = cls.bbox_iou(face.bbox, existing.bbox)
+                if overlap >= best_iou:
+                    best_index = index
+                    best_iou = overlap
+            if best_index is None:
+                deduplicated.append(face)
+                continue
+            existing = deduplicated[best_index]
+            deduplicated[best_index] = replace(
+                existing,
+                embedding_variants=existing.embedding_variants + (face.embedding,) + face.embedding_variants,
+            )
+        return deduplicated
+
+    @classmethod
+    def prefer_rotated_faces(
+        cls,
+        primary_faces: list[DetectedFace],
+        rotated_faces: list[DetectedFace],
+    ) -> list[DetectedFace]:
+        if not rotated_faces:
+            return primary_faces
+        merged: list[DetectedFace] = []
+        unused_rotated = set(range(len(rotated_faces)))
+        for primary in primary_faces:
+            overlaps = [
+                (cls.bbox_iou(primary.bbox, rotated.bbox), index)
+                for index, rotated in enumerate(rotated_faces)
+                if index in unused_rotated
+            ]
+            best_overlap, best_index = max(overlaps, default=(0.0, -1))
+            if best_overlap < 0.3:
+                merged.append(primary)
+                continue
+            rotated = rotated_faces[best_index]
+            unused_rotated.remove(best_index)
+            merged.append(
+                replace(
+                    primary,
+                    embedding=rotated.embedding,
+                    embedding_variants=rotated.embedding_variants,
+                    pose_yaw=rotated.pose_yaw,
+                    roll_angle=primary.roll_angle if primary.roll_angle is not None else rotated.roll_angle,
+                    orientation_corrected=True,
+                )
+            )
+        merged.extend(rotated_faces[index] for index in sorted(unused_rotated))
+        return merged
 
     @staticmethod
     def blur_score(crop: np.ndarray) -> float | None:

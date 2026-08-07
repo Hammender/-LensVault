@@ -74,21 +74,61 @@ class PictureService:
         self.unknown_person_name = "未知人物"
 
     def _match_face(self, detected: DetectedFace, workspace_id: int | None) -> PersonMatch:
-        hits = self.vector_store.search_candidates(
-            self.settings.qdrant_known_collection,
-            detected.embedding,
-            workspace_id=workspace_id,
-            embedding_version=self.settings.face_embedding_version,
-            limit=self.settings.face_search_limit,
-        )
         by_person: dict[int, float] = {}
-        for hit in hits:
-            by_person[hit.person_id] = max(by_person.get(hit.person_id, -1.0), hit.score)
+        for embedding in (detected.embedding, *detected.embedding_variants):
+            hits = self.vector_store.search_candidates(
+                self.settings.qdrant_known_collection,
+                embedding,
+                workspace_id=workspace_id,
+                embedding_version=self.settings.face_embedding_version,
+                limit=self.settings.face_search_limit,
+            )
+            for hit in hits:
+                by_person[hit.person_id] = max(by_person.get(hit.person_id, -1.0), hit.score)
         ranked = sorted(by_person.items(), key=lambda item: item[1], reverse=True)
         if not ranked:
             return PersonMatch(None, None)
         second = ranked[1] if len(ranked) > 1 else (None, None)
         return PersonMatch(ranked[0][0], ranked[0][1], second[0], second[1])
+
+    def _recognition_plan(
+        self,
+        db: Session,
+        payload: bytes,
+        workspace_id: int | None,
+    ) -> list[tuple[DetectedFace, PersonMatch]]:
+        detected_faces = self.face_service.detect_faces(payload)
+        plan = [(detected, self._match_face(detected, workspace_id)) for detected in detected_faces]
+        if not plan or self._plan_has_accepted_match(db, plan, workspace_id):
+            return plan
+        if not self.settings.face_rotation_fallback_enabled:
+            return plan
+        fallback = getattr(self.face_service, "detect_faces_with_rotation_fallback", None)
+        if not callable(fallback):
+            return plan
+        fallback_faces = fallback(payload)
+        fallback_plan = [(detected, self._match_face(detected, workspace_id)) for detected in fallback_faces]
+        if self._plan_has_accepted_match(db, fallback_plan, workspace_id):
+            return fallback_plan
+        primary_score = max((match.score or -1.0 for _, match in plan), default=-1.0)
+        fallback_score = max((match.score or -1.0 for _, match in fallback_plan), default=-1.0)
+        return fallback_plan if fallback_plan and fallback_score > primary_score else plan
+
+    def _plan_has_accepted_match(
+        self,
+        db: Session,
+        plan: list[tuple[DetectedFace, PersonMatch]],
+        workspace_id: int | None,
+    ) -> bool:
+        for _, match in plan:
+            matched_person = None
+            if match.person_id is not None:
+                matched_person = db.scalar(
+                    select(Person).where(Person.id == match.person_id, Person.workspace_id == workspace_id)
+                )
+            if self._evaluate_match(match, matched_person).accepted:
+                return True
+        return False
 
     def _is_confident_match(self, match: PersonMatch, matched_person: Person | None) -> bool:
         return self._evaluate_match(match, matched_person).accepted
@@ -609,7 +649,7 @@ class PictureService:
             logger.info("Gallery manual tags applied photo_id=%s tags=%d", photo.id, len(tag_names))
 
         try:
-            detected_faces = self.face_service.detect_faces(payload)
+            recognition_plan = self._recognition_plan(db, payload, workspace_id)
         except Exception:
             logger.exception(
                 "Gallery face detection failed, keep photo without faces photo_id=%s filename=%s",
@@ -619,11 +659,15 @@ class PictureService:
             db.commit()
             db.refresh(photo)
             return photo, summary
-        logger.info("Gallery face detection result photo_id=%s filename=%s faces=%d", photo.id, filename, len(detected_faces))
-        for detected in detected_faces:
+        logger.info(
+            "Gallery face detection result photo_id=%s filename=%s faces=%d",
+            photo.id,
+            filename,
+            len(recognition_plan),
+        )
+        for detected, match in recognition_plan:
             try:
                 with db.begin_nested():
-                    match = self._match_face(detected, workspace_id)
                     matched_person = None
                     if match.person_id is not None:
                         matched_person = db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == workspace_id))
@@ -1006,8 +1050,7 @@ class PictureService:
     def re_recognize_gallery_photo(self, db: Session, photo: GalleryPhoto, *, commit: bool = True) -> GalleryPhoto:
         logger.info("Start re_recognize_gallery_photo photo_id=%s", photo.id)
         payload = self.storage.get_bytes(photo.object_key)
-        detected_faces = self.face_service.detect_faces(payload)
-        recognition_plan = [(detected, self._match_face(detected, photo.workspace_id)) for detected in detected_faces]
+        recognition_plan = self._recognition_plan(db, payload, photo.workspace_id)
         old_person_ids = {tag.person_id for tag in photo.person_tags}
         preserved_person_links = [
             (tag.person_id, tag.source)
@@ -1038,7 +1081,7 @@ class PictureService:
         db.flush()
 
         summary = GalleryImportSummary()
-        logger.info("Re-recognize detection result photo_id=%s faces=%d", photo.id, len(detected_faces))
+        logger.info("Re-recognize detection result photo_id=%s faces=%d", photo.id, len(recognition_plan))
         for detected, match in recognition_plan:
             try:
                 with db.begin_nested():
@@ -1132,7 +1175,7 @@ class PictureService:
             summary.unknown_faces,
         )
         photo.recognition_summary = {
-            "faces": len(detected_faces),
+            "faces": len(recognition_plan),
             "known": summary.known_matches,
             "unknown": summary.unknown_faces,
             "manual_tags_preserved": sum(1 for _, source in preserved_person_links if source == "manual"),
