@@ -34,12 +34,13 @@ import { useUploadController, type PendingGalleryUpload } from "./controllers/us
 import { useVideoController } from "./controllers/useVideoController";
 import PhotoLightbox from "./PhotoLightbox";
 import SearchableSelect from "./SearchableSelect";
+import UploadPersonPicker from "./UploadPersonPicker";
 import Statistics from "./Statistics";
 import SimilarityReview from "./SimilarityReview";
 import AcquisitionCenter from "./AcquisitionCenter";
 import BiliVideoPlayer from "./BiliVideoPlayer";
 import { useConfirm } from "./ConfirmDialog";
-import { availablePhotoPersons, filterPersonMatches, resolveExistingPerson } from "./personPicker";
+import { availablePhotoPersons, filterPersonMatches, mergePersonIds, resolveExistingPerson } from "./personPicker";
 import { routeFromHash, setRoute, type PageKey } from "./routing";
 import { sortByPinyin, sortByPinyinName } from "./sort";
 import { filterTagMatches, resolveExistingTag } from "./tagPicker";
@@ -234,7 +235,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const upload = useUploadController();
   const {
     pendingSampleUploads, setPendingSampleUploads, pendingGalleryUploads, setPendingGalleryUploads,
-    batchApplyPersonNames, setBatchApplyPersonNames, batchApplyTagNames, setBatchApplyTagNames,
+    batchApplyPersonIds, setBatchApplyPersonIds, batchApplyPersonSearch, setBatchApplyPersonSearch,
+    batchApplyPersonNotice, setBatchApplyPersonNotice, batchApplyTagNames, setBatchApplyTagNames,
     uploadMode, setUploadMode, galleryUploadBusy, setGalleryUploadBusy, importTask, setImportTask,
     galleryImportTask, setGalleryImportTask
   } = upload;
@@ -1223,7 +1225,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       ...Array.from(files).map((file) => ({
         file,
         previewUrl: URL.createObjectURL(file),
-        personNamesText: "",
+        personIds: [],
+        personSearch: "",
+        personNotice: null,
         tagNamesText: "",
         richText: ""
       }))
@@ -1242,18 +1246,20 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }
 
   function handleApplyBatchMetadataToAll() {
-    const personNames = splitCommaList(batchApplyPersonNames);
+    if (batchApplyPersonSearch.trim()) {
+      setBatchApplyPersonNotice("请先从候选列表确认人物，或清空人物搜索内容。");
+      return;
+    }
     const tagNames = splitCommaList(batchApplyTagNames);
-    if (personNames.length === 0 && tagNames.length === 0) {
+    if (batchApplyPersonIds.length === 0 && tagNames.length === 0) {
       return;
     }
     setPendingGalleryUploads((current) =>
       current.map((item) => {
-        const mergedPersons = Array.from(new Set([...splitCommaList(item.personNamesText), ...personNames]));
         const mergedTags = Array.from(new Set([...splitCommaList(item.tagNamesText), ...tagNames]));
         return {
           ...item,
-          personNamesText: mergedPersons.join(", "),
+          personIds: mergePersonIds(item.personIds, batchApplyPersonIds),
           tagNamesText: mergedTags.join(", ")
         };
       })
@@ -1274,12 +1280,32 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     if (pendingGalleryUploads.length === 0) {
       return;
     }
+    const hasUnconfirmedPerson = Boolean(batchApplyPersonSearch.trim())
+      || pendingGalleryUploads.some((item) => item.personSearch.trim());
+    const selectablePersonIds = new Set(
+      persons.filter((person) => !person.is_unknown).map((person) => person.id)
+    );
+    const hasInvalidPerson = pendingGalleryUploads.some((item) =>
+      item.personIds.some((personId) => !selectablePersonIds.has(personId))
+    );
+    if (hasUnconfirmedPerson || hasInvalidPerson) {
+      const message = "所选人物不存在，请先在样本库创建人物后再上传。";
+      if (batchApplyPersonSearch.trim()) setBatchApplyPersonNotice(message);
+      setPendingGalleryUploads((current) => current.map((item) => ({
+        ...item,
+        personNotice: item.personSearch.trim() || item.personIds.some((personId) => !selectablePersonIds.has(personId))
+          ? message
+          : item.personNotice
+      })));
+      setError(message);
+      return;
+    }
     setGalleryUploadBusy(true);
     setError(null);
     try {
       const files = pendingGalleryUploads.map((item) => item.file);
       const metadata: GalleryUploadMetadata[] = pendingGalleryUploads.map((item) => ({
-        person_names: splitCommaList(item.personNamesText),
+        person_ids: item.personIds,
         tag_names: splitCommaList(item.tagNamesText),
         rich_text: uploadMode === "rich" ? item.richText.trim() : undefined
       }));
@@ -1288,6 +1314,10 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       setTask(nextTask);
       pendingGalleryUploads.forEach((item) => URL.revokeObjectURL(item.previewUrl));
       setPendingGalleryUploads([]);
+      setBatchApplyPersonIds([]);
+      setBatchApplyPersonSearch("");
+      setBatchApplyPersonNotice(null);
+      setBatchApplyTagNames("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "展示图上传失败。");
     } finally {
@@ -3529,11 +3559,18 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
               <div className="editor-block">
                 <div className="stack-editor">
                   <label>批量套用到全部待上传图片</label>
-                  <div className="inline-editor">
-                    <input
-                      value={batchApplyPersonNames}
-                      onChange={(event) => setBatchApplyPersonNames(event.target.value)}
-                      placeholder="人物名字（逗号分隔）"
+                  <div className="upload-batch-editor">
+                    <UploadPersonPicker
+                      id="batch-gallery-person-picker"
+                      persons={persons}
+                      selectedIds={batchApplyPersonIds}
+                      query={batchApplyPersonSearch}
+                      notice={batchApplyPersonNotice}
+                      disabled={galleryUploadBusy}
+                      onQueryChange={setBatchApplyPersonSearch}
+                      onNoticeChange={setBatchApplyPersonNotice}
+                      onAdd={(personId) => setBatchApplyPersonIds((current) => mergePersonIds(current, [personId]))}
+                      onRemove={(personId) => setBatchApplyPersonIds((current) => current.filter((id) => id !== personId))}
                     />
                     <input
                       value={batchApplyTagNames}
@@ -3553,10 +3590,21 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                       <div className="pending-card-copy">
                         <strong>待上传图片 {index + 1}</strong>
                         <span>{Math.round(item.file.size / 1024)} KB</span>
-                        <input
-                          value={item.personNamesText}
-                          onChange={(event) => handleUpdatePendingGallery(index, { personNamesText: event.target.value })}
-                          placeholder="人物名字（逗号分隔，可留空）"
+                        <UploadPersonPicker
+                          id={`gallery-person-picker-${index}`}
+                          persons={persons}
+                          selectedIds={item.personIds}
+                          query={item.personSearch}
+                          notice={item.personNotice}
+                          disabled={galleryUploadBusy}
+                          onQueryChange={(personSearch) => handleUpdatePendingGallery(index, { personSearch })}
+                          onNoticeChange={(personNotice) => handleUpdatePendingGallery(index, { personNotice })}
+                          onAdd={(personId) => handleUpdatePendingGallery(index, {
+                            personIds: mergePersonIds(item.personIds, [personId])
+                          })}
+                          onRemove={(personId) => handleUpdatePendingGallery(index, {
+                            personIds: item.personIds.filter((id) => id !== personId)
+                          })}
                         />
                         <input
                           value={item.tagNamesText}

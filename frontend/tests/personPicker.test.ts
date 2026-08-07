@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   availablePhotoPersons,
+  availableUploadPersons,
   filterPersonMatches,
+  mergePersonIds,
   matchesPersonSearch,
   resolveExistingPerson,
   type SelectablePerson
@@ -36,10 +38,19 @@ describe("人物搜索选择", () => {
     expect(availablePhotoPersons(persons, [{ person_id: 3 }]).map((person) => person.id)).toEqual([2, 4]);
   });
 
+  it("上传多选候选排除未知人物和所有已选项", () => {
+    expect(availableUploadPersons(persons, [2, 3]).map((person) => person.id)).toEqual([4]);
+  });
+
+  it("批量套用合并人物并保持去重", () => {
+    expect(mergePersonIds([2, 3], [3, 4, 4])).toEqual([2, 3, 4]);
+  });
+
   it("仅选中项或精确名称可解析为人物", () => {
     expect(resolveExistingPerson(persons, "其他输入", "4")?.id).toBe(4);
     expect(resolveExistingPerson(persons, " alice ", "")?.id).toBe(2);
     expect(resolveExistingPerson(persons, "zhangsan", "")).toBeNull();
     expect(resolveExistingPerson(persons, "张", "")).toBeNull();
+    expect(resolveExistingPerson(persons, "不存在的人", "")).toBeNull();
   });
 });

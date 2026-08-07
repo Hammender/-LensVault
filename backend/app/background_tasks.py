@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+import hashlib
 import logging
 from typing import Any
 
@@ -9,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.timezones import shanghai_now
-from app.models import GallerySimilarityScan, Person, UploadHistory
+from app.models import GalleryPhoto, GallerySimilarityScan, Person, UploadHistory
 from app.services.similarity import mark_similarity_scans_stale
 from app.services.tasks import update_task
 
@@ -34,7 +36,7 @@ def process_gallery_import_task(
     picture_service: Any,
     task_id: str,
     uploads: list[tuple[str, bytes, str | None]],
-    metadata_by_index: list[dict[str, list[str] | str | None]],
+    metadata_by_index: list[dict[str, list[int] | list[str] | str | None]],
     rich_mode: bool,
     workspace_id: int,
 ) -> None:
@@ -46,8 +48,89 @@ def process_gallery_import_task(
         total_known = 0
         total_unknown_faces = 0
         total_duplicated = 0
+
+        requested_person_ids = {
+            person_id
+            for metadata in metadata_by_index
+            for person_id in metadata.get("person_ids", [])
+            if isinstance(person_id, int)
+        }
+        persons_by_id = {
+            person.id: person
+            for person in db.scalars(
+                select(Person).where(
+                    Person.id.in_(requested_person_ids),
+                    Person.workspace_id == workspace_id,
+                    Person.is_unknown.is_(False),
+                )
+            ).all()
+        } if requested_person_ids else {}
+        if set(persons_by_id) != requested_person_ids:
+            raise ValueError("所选人物不存在，请先在样本库创建人物后再上传。")
+
+        upload_hashes = [hashlib.sha256(payload).hexdigest() for _, payload, _ in uploads]
+        existing_hashes = set(
+            db.scalars(
+                select(GalleryPhoto.sha256).where(
+                    GalleryPhoto.workspace_id == workspace_id,
+                    GalleryPhoto.is_rich_text == rich_mode,
+                    GalleryPhoto.sha256.in_(upload_hashes),
+                )
+            ).all()
+        ) if upload_hashes else set()
+        seen_hashes = set(existing_hashes)
+        recognition_indexes: list[int] = []
+        for index, sha256 in enumerate(upload_hashes):
+            if sha256 in seen_hashes:
+                continue
+            seen_hashes.add(sha256)
+            recognition_indexes.append(index)
+
+        recognition_results: dict[int, object | None] = {}
+
+        def prepare_recognition(index: int) -> tuple[int, object]:
+            recognition_db = session_factory()
+            try:
+                return index, picture_service.prepare_gallery_recognition(
+                    recognition_db,
+                    uploads[index][1],
+                    workspace_id,
+                )
+            finally:
+                recognition_db.close()
+
+        configured_workers = max(1, min(int(picture_service.settings.gallery_recognition_workers), 8))
+        worker_count = min(configured_workers, max(len(recognition_indexes), 1))
+        if recognition_indexes:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="gallery-recognition") as executor:
+                futures = {executor.submit(prepare_recognition, index): index for index in recognition_indexes}
+                completed = 0
+                for future in as_completed(futures):
+                    index = futures[future]
+                    try:
+                        result_index, plan = future.result()
+                        recognition_results[result_index] = plan
+                    except Exception:
+                        recognition_results[index] = None
+                        logger.exception(
+                            "Gallery recognition failed task_id=%s index=%d filename=%s",
+                            task_id,
+                            index + 1,
+                            uploads[index][0],
+                        )
+                    completed += 1
+                    update_task(
+                        db,
+                        task_id,
+                        status="running",
+                        progress=0.05 + 0.65 * (completed / len(recognition_indexes)),
+                        message=f"已识别 {completed}/{len(recognition_indexes)} 张待导入图片",
+                    )
+        else:
+            update_task(db, task_id, status="running", progress=0.7, message="图片均已存在，正在整理上传结果")
+
         for index, (filename, payload, content_type) in enumerate(uploads, start=1):
-            metadata = metadata_by_index[index - 1] if index - 1 < len(metadata_by_index) else {"person_names": [], "tag_names": []}
+            metadata = metadata_by_index[index - 1] if index - 1 < len(metadata_by_index) else {"person_ids": [], "tag_names": []}
             logger.info(
                 "Gallery import processing task_id=%s index=%d/%d filename=%s bytes=%d manual_persons=%d manual_tags=%d",
                 task_id,
@@ -55,7 +138,7 @@ def process_gallery_import_task(
                 total,
                 filename,
                 len(payload),
-                len(metadata.get("person_names", [])),
+                len(metadata.get("person_ids", [])),
                 len(metadata.get("tag_names", [])),
             )
             photo, summary = picture_service.import_gallery_photo(
@@ -67,30 +150,13 @@ def process_gallery_import_task(
                 rich_mode,
                 metadata.get("rich_text"),
                 workspace_id,
+                recognition_plan=recognition_results.get(index - 1),
             )
-            for raw_name in metadata.get("person_names", []):
-                person_name = raw_name.strip()
-                if not person_name:
+            for person_id in metadata.get("person_ids", []):
+                if not isinstance(person_id, int):
                     continue
-                person = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
-                if person is None:
-                    person = Person(
-                        workspace_id=workspace_id,
-                        name=person_name,
-                        display_name=person_name,
-                        note=None,
-                        is_unknown=False,
-                    )
-                    db.add(person)
-                    db.flush()
-                    logger.info(
-                        "Created person from gallery upload task_id=%s photo_id=%s person_id=%s name=%s",
-                        task_id,
-                        photo.id,
-                        person.id,
-                        person_name,
-                    )
-                picture_service.ensure_gallery_person_tag(db, photo.id, person.id, "manual_upload")
+                person = persons_by_id[person_id]
+                picture_service.ensure_gallery_person_tag(db, photo.id, person.id, "manual")
                 picture_service.apply_person_tags_to_gallery_photo(db, photo.id, person.id)
             db.commit()
             total_known += summary.known_matches
@@ -110,7 +176,7 @@ def process_gallery_import_task(
                 db,
                 task_id,
                 status="running",
-                progress=index / total,
+                progress=0.7 + 0.3 * (index / total),
                 message=(
                     f"已处理 {index}/{total} 张，识别 {total_known} 个已知人物，"
                     f"标记 {total_unknown_faces} 张未知人脸，重复跳过 {total_duplicated} 张"

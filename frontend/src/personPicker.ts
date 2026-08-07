@@ -55,3 +55,15 @@ export function availablePhotoPersons<T extends SelectablePerson>(persons: T[], 
     (person) => person.display_name
   );
 }
+
+export function availableUploadPersons<T extends SelectablePerson>(persons: T[], selectedPersonIds: number[]): T[] {
+  const selectedIds = new Set(selectedPersonIds);
+  return sortByPinyin(
+    persons.filter((person) => !person.is_unknown && !selectedIds.has(person.id)),
+    (person) => person.display_name
+  );
+}
+
+export function mergePersonIds(current: number[], additions: number[]): number[] {
+  return Array.from(new Set([...current, ...additions]));
+}

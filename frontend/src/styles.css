@@ -1010,6 +1010,46 @@ input:focus, select:focus, textarea:focus {
   font-weight: 700;
 }
 
+.upload-person-picker {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.upload-person-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.upload-person-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: auto;
+  min-height: 28px;
+  padding: 3px 8px 3px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.upload-person-chip:hover:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+  background: var(--bg-strong);
+}
+
+.upload-batch-editor {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
 .detail-panel { 
   padding: 32px; 
   background: var(--bg); 
@@ -4034,6 +4074,8 @@ time {
 @media (max-width: 720px) {
   .searchable-picker-row { grid-template-columns: 1fr; }
   .searchable-picker-row > button { width: 100%; }
+  .upload-batch-editor { grid-template-columns: 1fr; }
+  .upload-batch-editor > button { width: 100%; }
   .similarity-page { padding: 12px; }
   .similarity-hero { padding: 22px; }
   .similarity-hero-title { gap: 9px; }

@@ -10,7 +10,7 @@ import type {
 import { authFetch, jsonHeaders, parseResponse, withWorkspaceContext } from "../apiClient";
 
 export type GalleryUploadMetadata = {
-  person_names: string[];
+  person_ids: number[];
   tag_names: string[];
   rich_text?: string;
 };

@@ -12,6 +12,11 @@ from app.models import Task, UploadHistory
 
 
 class FakePictureService:
+    settings = SimpleNamespace(gallery_recognition_workers=2)
+
+    def prepare_gallery_recognition(self, _db: Session, _payload: bytes, _workspace_id: int) -> list[object]:
+        return []
+
     def import_gallery_photo(
         self,
         _db: Session,
@@ -22,6 +27,8 @@ class FakePictureService:
         _rich_mode: bool,
         _rich_text: str | None,
         _workspace_id: int,
+        *,
+        recognition_plan: object | None,
     ) -> tuple[SimpleNamespace, SimpleNamespace]:
         return SimpleNamespace(id=1), SimpleNamespace(known_matches=0, unknown_faces=0, duplicated=0)
 
@@ -48,7 +55,7 @@ def test_gallery_import_records_upload_history_without_log_format_error(caplog) 
         FakePictureService(),
         task_id,
         [("photo.jpg", b"image", "image/jpeg")],
-        [{"person_names": [], "tag_names": [], "rich_text": "图文内容"}],
+        [{"person_ids": [], "tag_names": [], "rich_text": "图文内容"}],
         rich_mode=True,
         workspace_id=1,
     )

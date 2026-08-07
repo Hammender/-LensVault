@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     acquisition_quality_max_aspect_ratio: float = 4.0
     acquisition_quality_blur_threshold: float = 45.0
     acquisition_export_ttl_hours: int = 24
+    gallery_recognition_workers: int = Field(default=2, ge=1, le=8)
 
     face_model_name: str = "buffalo_l"
     face_adapter_id: str = "buffalo_l"

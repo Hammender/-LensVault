@@ -20,6 +20,8 @@ type SearchableSelectProps = {
   onOpen?: () => void;
   onCancel?: () => void;
   onEnter?: () => void;
+  selectActiveOnEnter?: boolean;
+  autoActivateFirstOption?: boolean;
 };
 
 export default function SearchableSelect({
@@ -34,7 +36,9 @@ export default function SearchableSelect({
   onSelect,
   onOpen,
   onCancel,
-  onEnter
+  onEnter,
+  selectActiveOnEnter = true,
+  autoActivateFirstOption = true
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -47,8 +51,8 @@ export default function SearchableSelect({
       setActiveIndex(-1);
       return;
     }
-    setActiveIndex(options.length > 0 ? 0 : -1);
-  }, [open, optionKey, options.length]);
+    setActiveIndex(autoActivateFirstOption && options.length > 0 ? 0 : -1);
+  }, [autoActivateFirstOption, open, optionKey, options.length]);
 
   useEffect(() => () => {
     if (blurTimer.current !== null) window.clearTimeout(blurTimer.current);
@@ -106,7 +110,7 @@ export default function SearchableSelect({
             setActiveIndex((current) => Math.max(0, current <= 0 ? 0 : current - 1));
           } else if (event.key === "Enter") {
             event.preventDefault();
-            if (open && activeIndex >= 0 && options[activeIndex]) {
+            if (selectActiveOnEnter && open && activeIndex >= 0 && options[activeIndex]) {
               selectOption(options[activeIndex]);
             } else {
               onEnter?.();

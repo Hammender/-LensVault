@@ -10,7 +10,9 @@ export type PendingSampleUpload = {
 export type PendingGalleryUpload = {
   file: File;
   previewUrl: string;
-  personNamesText: string;
+  personIds: number[];
+  personSearch: string;
+  personNotice: string | null;
   tagNamesText: string;
   richText: string;
 };
@@ -20,7 +22,9 @@ export type UploadMode = "normal" | "rich";
 export function useUploadController() {
   const [pendingSampleUploads, setPendingSampleUploads] = useState<PendingSampleUpload[]>([]);
   const [pendingGalleryUploads, setPendingGalleryUploads] = useState<PendingGalleryUpload[]>([]);
-  const [batchApplyPersonNames, setBatchApplyPersonNames] = useState("");
+  const [batchApplyPersonIds, setBatchApplyPersonIds] = useState<number[]>([]);
+  const [batchApplyPersonSearch, setBatchApplyPersonSearch] = useState("");
+  const [batchApplyPersonNotice, setBatchApplyPersonNotice] = useState<string | null>(null);
   const [batchApplyTagNames, setBatchApplyTagNames] = useState("");
   const [uploadMode, setUploadMode] = useState<UploadMode>("normal");
   const [galleryUploadBusy, setGalleryUploadBusy] = useState(false);
@@ -32,8 +36,12 @@ export function useUploadController() {
     setPendingSampleUploads,
     pendingGalleryUploads,
     setPendingGalleryUploads,
-    batchApplyPersonNames,
-    setBatchApplyPersonNames,
+    batchApplyPersonIds,
+    setBatchApplyPersonIds,
+    batchApplyPersonSearch,
+    setBatchApplyPersonSearch,
+    batchApplyPersonNotice,
+    setBatchApplyPersonNotice,
     batchApplyTagNames,
     setBatchApplyTagNames,
     uploadMode,

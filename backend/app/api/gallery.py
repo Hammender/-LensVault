@@ -78,31 +78,67 @@ def _gallery_display_order() -> tuple[object, ...]:
     )
 
 
-def _parse_gallery_metadata(raw: str | None, file_count: int) -> list[dict[str, list[str] | str | None]]:
-    defaults: list[dict[str, list[str] | str | None]] = [
-        {"person_names": [], "tag_names": [], "rich_text": None} for _ in range(file_count)
+GalleryUploadMetadata = dict[str, list[int] | list[str] | str | None]
+_INVALID_PERSON_SELECTION = "所选人物不存在，请先在样本库创建人物后再上传。"
+
+
+def _parse_gallery_metadata(raw: str | None, file_count: int) -> list[GalleryUploadMetadata]:
+    defaults: list[GalleryUploadMetadata] = [
+        {"person_ids": [], "tag_names": [], "rich_text": None} for _ in range(file_count)
     ]
     if not raw:
         return defaults
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return defaults
-    if not isinstance(payload, list):
-        return defaults
-    for index, item in enumerate(payload[:file_count]):
-        if not isinstance(item, dict):
-            continue
-        person_names = item.get("person_names")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="上传元数据格式无效。") from exc
+    if not isinstance(payload, list) or len(payload) != file_count:
+        raise HTTPException(status_code=422, detail="上传元数据格式无效。")
+    allowed_keys = {"person_ids", "tag_names", "rich_text"}
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict) or not set(item).issubset(allowed_keys):
+            raise HTTPException(status_code=422, detail="上传元数据格式无效。")
+        person_ids = item.get("person_ids", [])
         tag_names = item.get("tag_names")
-        if isinstance(person_names, list):
-            defaults[index]["person_names"] = [str(name).strip() for name in person_names if str(name).strip()]
-        if isinstance(tag_names, list):
-            defaults[index]["tag_names"] = [str(name).strip() for name in tag_names if str(name).strip()]
+        if not isinstance(person_ids, list) or any(
+            isinstance(person_id, bool) or not isinstance(person_id, int) or person_id <= 0 for person_id in person_ids
+        ):
+            raise HTTPException(status_code=422, detail="上传元数据格式无效。")
+        if tag_names is not None and (
+            not isinstance(tag_names, list) or any(not isinstance(name, str) for name in tag_names)
+        ):
+            raise HTTPException(status_code=422, detail="上传元数据格式无效。")
+        defaults[index]["person_ids"] = list(dict.fromkeys(person_ids))
+        defaults[index]["tag_names"] = list(
+            dict.fromkeys(name.strip() for name in (tag_names or []) if name.strip())
+        )
         rich_text = item.get("rich_text")
-        if rich_text is not None:
-            defaults[index]["rich_text"] = str(rich_text).strip() or None
+        if rich_text is not None and not isinstance(rich_text, str):
+            raise HTTPException(status_code=422, detail="上传元数据格式无效。")
+        defaults[index]["rich_text"] = (rich_text.strip() or None) if rich_text is not None else None
     return defaults
+
+
+def _validate_gallery_person_ids(db: Session, metadata: list[GalleryUploadMetadata], workspace_id: int) -> None:
+    requested_ids = {
+        person_id
+        for item in metadata
+        for person_id in item.get("person_ids", [])
+        if isinstance(person_id, int)
+    }
+    if not requested_ids:
+        return
+    valid_ids = set(
+        db.scalars(
+            select(Person.id).where(
+                Person.id.in_(requested_ids),
+                Person.workspace_id == workspace_id,
+                Person.is_unknown.is_(False),
+            )
+        ).all()
+    )
+    if valid_ids != requested_ids:
+        raise HTTPException(status_code=422, detail=_INVALID_PERSON_SELECTION)
 
 
 def _safe_zip_name(value: str | None, fallback: str) -> str:
@@ -223,8 +259,9 @@ async def import_gallery_photos(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
+    metadata = _parse_gallery_metadata(metadata_json, len(files))
+    _validate_gallery_person_ids(db, metadata, current.workspace_id)
     uploads = [(file.filename, await file.read(), file.content_type) for file in files]
-    metadata = _parse_gallery_metadata(metadata_json, len(uploads))
     task = create_task(db, "gallery_import", f"已排队 {len(uploads)} 张普通图片", current.workspace_id)
     logger.info("Gallery import enqueued task_id=%s files=%d metadata_items=%d rich_mode=false", task.id, len(uploads), len(metadata))
     background_tasks.add_task(
@@ -249,8 +286,9 @@ async def import_gallery_rich_photos(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
+    metadata = _parse_gallery_metadata(metadata_json, len(files))
+    _validate_gallery_person_ids(db, metadata, current.workspace_id)
     uploads = [(file.filename, await file.read(), file.content_type) for file in files]
-    metadata = _parse_gallery_metadata(metadata_json, len(uploads))
     task = create_task(db, "gallery_rich_import", f"已排队 {len(uploads)} 张图文图片", current.workspace_id)
     logger.info("Gallery rich import enqueued task_id=%s files=%d metadata_items=%d rich_mode=true", task.id, len(uploads), len(metadata))
     background_tasks.add_task(
@@ -855,4 +893,3 @@ def re_recognize_unknown_gallery_photos(
     current: CurrentContext = Depends(require_context),
 ) -> dict[str, int]:
     return picture_service.re_recognize_unknown_gallery_photos(db, current.workspace_id)
-

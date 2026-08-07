@@ -27,6 +27,7 @@ from app.services.thumbnails import animated_thumbnail_cache_key
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+_RECOGNITION_NOT_PRECOMPUTED = object()
 
 
 @dataclass
@@ -637,6 +638,8 @@ class PictureService:
         rich_text: str | None = None,
         workspace_id: int | None = None,
         source_object_key: str | None = None,
+        *,
+        recognition_plan: list[tuple[DetectedFace, PersonMatch]] | None | object = _RECOGNITION_NOT_PRECOMPUTED,
     ) -> tuple[GalleryPhoto, GalleryImportSummary]:
         summary = GalleryImportSummary()
         logger.info(
@@ -718,14 +721,17 @@ class PictureService:
         if tag_names:
             logger.info("Gallery manual tags applied photo_id=%s tags=%d", photo.id, len(tag_names))
 
-        try:
-            recognition_plan = self._recognition_plan(db, payload, workspace_id)
-        except Exception:
-            logger.exception(
-                "Gallery face detection failed, keep photo without faces photo_id=%s filename=%s",
-                photo.id,
-                filename,
-            )
+        if recognition_plan is _RECOGNITION_NOT_PRECOMPUTED:
+            try:
+                recognition_plan = self._recognition_plan(db, payload, workspace_id)
+            except Exception:
+                logger.exception(
+                    "Gallery face detection failed, keep photo without faces photo_id=%s filename=%s",
+                    photo.id,
+                    filename,
+                )
+                recognition_plan = None
+        if recognition_plan is None:
             db.commit()
             db.refresh(photo)
             return photo, summary
@@ -807,6 +813,14 @@ class PictureService:
             summary.duplicated,
         )
         return photo, summary
+
+    def prepare_gallery_recognition(
+        self,
+        db: Session,
+        payload: bytes,
+        workspace_id: int,
+    ) -> list[tuple[DetectedFace, PersonMatch]]:
+        return self._recognition_plan(db, payload, workspace_id)
 
     def rename_person(self, db: Session, person: Person, new_name: str) -> Person:
         if self.is_singleton_unknown_person(person):
