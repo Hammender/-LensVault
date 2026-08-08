@@ -769,11 +769,7 @@ def delete_gallery_photo_person(
             )
         ).all()
         for face in faces:
-            face.matched_person_id = None
-            face.match_score = None
-            face.needs_review = False
-            face.vector_collection = None
-            db.add(face)
+            db.delete(face)
         db.delete(link)
         mark_similarity_scans_stale(db, current.workspace_id, {person.id})
         db.commit()

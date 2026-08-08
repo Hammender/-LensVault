@@ -28,6 +28,50 @@ INCOMPLETE_TASK_TYPES = (
     "acquisition_similarity_scan",
 )
 
+IGNORED_GALLERY_FACE_CLEANUP_KEY = "2026_08_08_delete_ignored_gallery_face_records"
+
+
+def cleanup_ignored_gallery_face_records(engine: Engine) -> int:
+    """删除旧版取消未知标签后遗留的无归属图库人脸记录。"""
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS app_schema_migrations ("
+                "migration_key VARCHAR(128) PRIMARY KEY, applied_at DATETIME NOT NULL)"
+            )
+        )
+        applied = connection.execute(
+            text("SELECT 1 FROM app_schema_migrations WHERE migration_key=:key"),
+            {"key": IGNORED_GALLERY_FACE_CLEANUP_KEY},
+        ).first()
+        if applied is not None:
+            return 0
+
+        result = connection.execute(
+            text(
+                "DELETE FROM face_records "
+                "WHERE gallery_photo_id IS NOT NULL "
+                "AND sample_photo_id IS NULL "
+                "AND matched_person_id IS NULL "
+                "AND needs_review = 0 "
+                "AND vector_collection IS NULL "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM gallery_photo_person_tags AS photo_person "
+                "JOIN persons AS person ON person.id = photo_person.person_id "
+                "WHERE photo_person.gallery_photo_id = face_records.gallery_photo_id "
+                "AND person.is_unknown = 1"
+                ")"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO app_schema_migrations (migration_key, applied_at) "
+                "VALUES (:key, :applied_at)"
+            ),
+            {"key": IGNORED_GALLERY_FACE_CLEANUP_KEY, "applied_at": shanghai_now()},
+        )
+        return max(result.rowcount or 0, 0)
+
 
 def ensure_video_seek_columns(engine: Engine) -> None:
     inspector = inspect(engine)
@@ -599,6 +643,12 @@ def initialize_database(engine: Engine) -> None:
         mark_timezone_baseline(engine)
     else:
         migrate_system_timestamps(engine)
+    deleted_ignored_faces = cleanup_ignored_gallery_face_records(engine)
+    if deleted_ignored_faces:
+        logging.getLogger(__name__).info(
+            "数据库迁移：已删除旧版遗留的已忽略图库人脸记录 count=%d",
+            deleted_ignored_faces,
+        )
     ensure_gallery_display_order_columns(engine)
 
 

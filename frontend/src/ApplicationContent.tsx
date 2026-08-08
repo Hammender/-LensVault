@@ -40,6 +40,7 @@ import SimilarityReview from "./SimilarityReview";
 import AcquisitionCenter from "./AcquisitionCenter";
 import BiliVideoPlayer from "./BiliVideoPlayer";
 import { useConfirm } from "./ConfirmDialog";
+import { galleryFaceStatusLabel } from "./galleryFaceStatus";
 import { availablePhotoPersons, filterPersonMatches, mergePersonIds, resolveExistingPerson } from "./personPicker";
 import { routeFromHash, setRoute, type PageKey } from "./routing";
 import { sortByPinyin, sortByPinyinName } from "./sort";
@@ -2948,7 +2949,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <h2 id="gallery-detail-title">单张图修正</h2>
               </div>
               <div className="micro-row">
-                <span>{selectedPhoto ? `${selectedPhoto.faces.length} 张脸` : "未选中图片"}</span>
+                <span>{selectedPhoto ? `${selectedPhoto.faces.length} 条人脸记录` : "未选中图片"}</span>
                 <button disabled={busy || !selectedPhoto} onClick={() => void handleReRecognize()}>
                   重新识别
                 </button>
@@ -3045,7 +3046,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   </div>
                   {manualPersonNotice && <p className="searchable-picker-notice" role="alert">{manualPersonNotice}</p>}
                   <p className="tip">
-                    添加人物只修正当前图片标签；标签添加后，可在人物名称旁单独加入样本库或撤销。
+                    单脸图片添加人物会同步纠正人脸绑定；多人图片只添加图片级人物标签。标签添加后，可在人物名称旁单独加入样本库或撤销。
                   </p>
                 </div>
 
@@ -3130,7 +3131,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   {selectedPhoto.faces.map((face) => (
                     <article key={face.id}>
                       <strong>Face #{face.id}</strong>
-                      <span>{face.needs_review ? "待人工确认" : "已确认"}</span>
+                      <span>{galleryFaceStatusLabel(face.needs_review, face.matched_person_id)}</span>
                       <span>
                         {face.predicted_person_id !== null && face.match_score !== null
                           ? `第一候选 ${face.predicted_person_name ?? `#${face.predicted_person_id}`}（#${face.predicted_person_id}），score ${face.match_score.toFixed(3)}`

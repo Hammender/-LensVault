@@ -935,6 +935,7 @@ class PictureService:
         face.matched_person_id = person.id
         face.needs_review = False
         if face.gallery_photo_id is not None:
+            db.flush()
             self._remove_unknown_person_tag_if_resolved(db, face.gallery_photo_id, face.workspace_id)
         logger.info(
             "Confirmed gallery face as known face_id=%s photo_id=%s person_id=%s previous_collection=%s",
