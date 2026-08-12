@@ -2723,6 +2723,60 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImageIntakeActivity": {
+        "properties": {
+          "completed_at": {
+            "format": "date-time",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "imported_count": {
+            "title": "Imported Count",
+            "type": "integer"
+          },
+          "skipped_count": {
+            "title": "Skipped Count",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          },
+          "updated_count": {
+            "title": "Updated Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "status",
+          "total_count",
+          "imported_count",
+          "updated_count",
+          "skipped_count",
+          "failed_count",
+          "completed_at"
+        ],
+        "title": "ImageIntakeActivity",
+        "type": "object"
+      },
       "LoginRequest": {
         "properties": {
           "password": {
@@ -2903,6 +2957,37 @@
           "limit"
         ],
         "title": "PaginatedGallerySimilarityGroups",
+        "type": "object"
+      },
+      "PaginatedImageIntakeActivities": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImageIntakeActivity"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "offset",
+          "limit"
+        ],
+        "title": "PaginatedImageIntakeActivities",
         "type": "object"
       },
       "PaginatedVideos": {
@@ -3316,6 +3401,55 @@
           "created_at"
         ],
         "title": "SamplePhotoRead",
+        "type": "object"
+      },
+      "StatisticsOverview": {
+        "properties": {
+          "acquisition_status_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Acquisition Status Counts",
+            "type": "object"
+          },
+          "gallery_photo_count": {
+            "title": "Gallery Photo Count",
+            "type": "integer"
+          },
+          "gallery_total": {
+            "title": "Gallery Total",
+            "type": "integer"
+          },
+          "person_covered_count": {
+            "title": "Person Covered Count",
+            "type": "integer"
+          },
+          "rich_photo_count": {
+            "title": "Rich Photo Count",
+            "type": "integer"
+          },
+          "source_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Source Counts",
+            "type": "object"
+          },
+          "tag_covered_count": {
+            "title": "Tag Covered Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "gallery_total",
+          "gallery_photo_count",
+          "rich_photo_count",
+          "source_counts",
+          "person_covered_count",
+          "tag_covered_count",
+          "acquisition_status_counts"
+        ],
+        "title": "StatisticsOverview",
         "type": "object"
       },
       "SubtitleAsrStatus": {
@@ -13550,6 +13684,232 @@
           }
         },
         "summary": "Unbind Person Tag"
+      }
+    },
+    "/api/statistics/intake-history": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(gallery|rich|gallery_zip|acquisition)?$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedImageIntakeActivities"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Image Intake History"
+      }
+    },
+    "/api/statistics/overview": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticsOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Statistics Overview"
       }
     },
     "/api/statistics/persons": {

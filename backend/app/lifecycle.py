@@ -179,6 +179,39 @@ def ensure_gallery_display_order_columns(engine: Engine) -> None:
         )
 
 
+def ensure_gallery_ingest_source_column(engine: Engine) -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "gallery_photos" not in tables:
+        return
+    columns = {column["name"] for column in inspector.get_columns("gallery_photos")}
+    with engine.begin() as connection:
+        if "ingest_source" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE gallery_photos "
+                    "ADD COLUMN ingest_source VARCHAR(32) NOT NULL DEFAULT 'legacy_unclassified'"
+                )
+            )
+        if "acquisition_imported_photos" in tables:
+            connection.execute(
+                text(
+                    "UPDATE gallery_photos SET ingest_source = 'acquisition' "
+                    "WHERE ingest_source = 'legacy_unclassified' "
+                    "AND id IN ("
+                    "SELECT gallery_photo_id FROM acquisition_imported_photos "
+                    "WHERE gallery_photo_id IS NOT NULL"
+                    ")"
+                )
+            )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_gallery_photos_ingest_source "
+                "ON gallery_photos (ingest_source)"
+            )
+        )
+
+
 def ensure_acquisition_schema(engine: Engine) -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
@@ -650,6 +683,7 @@ def initialize_database(engine: Engine) -> None:
             deleted_ignored_faces,
         )
     ensure_gallery_display_order_columns(engine)
+    ensure_gallery_ingest_source_column(engine)
 
 
 def initialize_runtime(

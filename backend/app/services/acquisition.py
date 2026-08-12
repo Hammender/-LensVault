@@ -948,6 +948,7 @@ class AcquisitionService:
                     asset.content_type,
                     workspace_id=batch.workspace_id,
                     source_object_key=asset.object_key,
+                    ingest_source="acquisition",
                 )
                 if summary.duplicated:
                     self._finish_gallery_duplicate(db, item, asset, photo)

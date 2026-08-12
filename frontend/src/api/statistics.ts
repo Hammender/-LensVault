@@ -1,4 +1,12 @@
-import type { PersonStatistics, TagStatistics, UploadHistory, UploadSummary } from "../types";
+import type {
+  ImageIntakeActivity,
+  PaginatedImageIntakeActivities,
+  PersonStatistics,
+  StatisticsOverview,
+  TagStatistics,
+  UploadHistory,
+  UploadSummary
+} from "../types";
 import { authFetch, parseResponse } from "../apiClient";
 
 export async function getTagStatistics(isSystem?: boolean): Promise<TagStatistics[]> {
@@ -33,4 +41,22 @@ export async function getPersonStatistics(isUnknown?: boolean): Promise<PersonSt
 
 export async function getUploadSummary(): Promise<UploadSummary> {
   return parseResponse<UploadSummary>(await authFetch("/api/statistics/upload-summary"));
+}
+
+export async function getStatisticsOverview(): Promise<StatisticsOverview> {
+  return parseResponse<StatisticsOverview>(await authFetch("/api/statistics/overview"));
+}
+
+export async function getImageIntakeHistory(
+  source?: ImageIntakeActivity["source"],
+  limit: number = 30,
+  offset: number = 0
+): Promise<PaginatedImageIntakeActivities> {
+  const url = new URL("/api/statistics/intake-history", window.location.origin);
+  if (source) {
+    url.searchParams.set("source", source);
+  }
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("offset", String(offset));
+  return parseResponse<PaginatedImageIntakeActivities>(await authFetch(url.pathname + url.search));
 }

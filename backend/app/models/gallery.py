@@ -30,6 +30,12 @@ class GalleryPhoto(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     taken_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_rich_text: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    ingest_source: Mapped[str] = mapped_column(
+        String(32),
+        default="legacy_unclassified",
+        nullable=False,
+        index=True,
+    )
     rich_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     display_batch_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)

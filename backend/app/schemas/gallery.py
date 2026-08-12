@@ -130,6 +130,35 @@ class UploadHistoryRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class StatisticsOverview(BaseModel):
+    gallery_total: int
+    gallery_photo_count: int
+    rich_photo_count: int
+    source_counts: dict[str, int]
+    person_covered_count: int
+    tag_covered_count: int
+    acquisition_status_counts: dict[str, int]
+
+
+class ImageIntakeActivity(BaseModel):
+    id: str
+    source: str
+    status: str
+    total_count: int
+    imported_count: int
+    updated_count: int
+    skipped_count: int
+    failed_count: int
+    completed_at: datetime
+
+
+class PaginatedImageIntakeActivities(BaseModel):
+    items: list[ImageIntakeActivity]
+    total: int
+    offset: int
+    limit: int
+
+
 class PersonStatistics(BaseModel):
     person_id: int
     person_name: str

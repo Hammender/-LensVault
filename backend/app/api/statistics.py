@@ -6,11 +6,148 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies.context import CurrentContext, require_context
-from app.models import GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, SamplePhoto, Tag, UploadHistory
-from app.schemas import PersonStatistics, TagStatistics, UploadHistoryRead
+from app.models import (
+    AcquisitionAsset,
+    AcquisitionImportBatch,
+    GalleryPhoto,
+    GalleryPhotoPersonTag,
+    GalleryPhotoTag,
+    Person,
+    SamplePhoto,
+    Tag,
+    UploadHistory,
+)
+from app.schemas import (
+    ImageIntakeActivity,
+    PaginatedImageIntakeActivities,
+    PersonStatistics,
+    StatisticsOverview,
+    TagStatistics,
+    UploadHistoryRead,
+)
 
 
 router = APIRouter()
+
+
+@router.get("/api/statistics/overview", response_model=StatisticsOverview)
+def get_statistics_overview(
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> StatisticsOverview:
+    workspace_filter = GalleryPhoto.workspace_id == current.workspace_id
+    gallery_total = db.scalar(select(func.count(GalleryPhoto.id)).where(workspace_filter)) or 0
+    rich_photo_count = db.scalar(
+        select(func.count(GalleryPhoto.id)).where(workspace_filter, GalleryPhoto.is_rich_text.is_(True))
+    ) or 0
+    source_counts = {
+        source: count
+        for source, count in db.execute(
+            select(GalleryPhoto.ingest_source, func.count(GalleryPhoto.id))
+            .where(workspace_filter)
+            .group_by(GalleryPhoto.ingest_source)
+        ).all()
+    }
+    person_covered_count = db.scalar(
+        select(func.count(func.distinct(GalleryPhotoPersonTag.gallery_photo_id)))
+        .join(GalleryPhoto, GalleryPhoto.id == GalleryPhotoPersonTag.gallery_photo_id)
+        .where(workspace_filter)
+    ) or 0
+    tag_covered_count = db.scalar(
+        select(func.count(func.distinct(GalleryPhotoTag.gallery_photo_id)))
+        .join(GalleryPhoto, GalleryPhoto.id == GalleryPhotoTag.gallery_photo_id)
+        .where(workspace_filter)
+    ) or 0
+    acquisition_status_counts = {
+        status: count
+        for status, count in db.execute(
+            select(AcquisitionAsset.status, func.count(AcquisitionAsset.id))
+            .where(AcquisitionAsset.workspace_id == current.workspace_id)
+            .group_by(AcquisitionAsset.status)
+        ).all()
+    }
+    return StatisticsOverview(
+        gallery_total=gallery_total,
+        gallery_photo_count=gallery_total - rich_photo_count,
+        rich_photo_count=rich_photo_count,
+        source_counts=source_counts,
+        person_covered_count=person_covered_count,
+        tag_covered_count=tag_covered_count,
+        acquisition_status_counts=acquisition_status_counts,
+    )
+
+
+@router.get("/api/statistics/intake-history", response_model=PaginatedImageIntakeActivities)
+def get_image_intake_history(
+    source: str | None = Query(default=None, pattern="^(gallery|rich|gallery_zip|acquisition)?$"),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> PaginatedImageIntakeActivities:
+    upload_sources = {"gallery", "rich", "gallery_zip"}
+    activities: list[ImageIntakeActivity] = []
+
+    if source is None or source in upload_sources:
+        upload_query = select(UploadHistory).where(UploadHistory.workspace_id == current.workspace_id)
+        if source:
+            upload_query = upload_query.where(UploadHistory.upload_type == source)
+        for record in db.scalars(upload_query).all():
+            if record.upload_type == "gallery_zip":
+                activities.append(
+                    ImageIntakeActivity(
+                        id=f"upload-{record.id}",
+                        source=record.upload_type,
+                        status="completed",
+                        total_count=record.total_count,
+                        imported_count=max(record.success_count - record.duplicate_count, 0),
+                        updated_count=record.duplicate_count,
+                        skipped_count=max(record.total_count - record.success_count, 0),
+                        failed_count=0,
+                        completed_at=record.created_at,
+                    )
+                )
+            else:
+                activities.append(
+                    ImageIntakeActivity(
+                        id=f"upload-{record.id}",
+                        source=record.upload_type,
+                        status="completed",
+                        total_count=record.total_count,
+                        imported_count=record.success_count,
+                        updated_count=0,
+                        skipped_count=record.duplicate_count,
+                        failed_count=0,
+                        completed_at=record.created_at,
+                    )
+                )
+
+    if source is None or source == "acquisition":
+        for batch in db.scalars(
+            select(AcquisitionImportBatch)
+            .where(AcquisitionImportBatch.workspace_id == current.workspace_id)
+        ).all():
+            activities.append(
+                ImageIntakeActivity(
+                    id=f"acquisition-{batch.id}",
+                    source="acquisition",
+                    status=batch.status,
+                    total_count=batch.total_count,
+                    imported_count=batch.imported_count,
+                    updated_count=0,
+                    skipped_count=batch.duplicate_count,
+                    failed_count=batch.failed_count,
+                    completed_at=batch.completed_at or batch.created_at,
+                )
+            )
+
+    activities.sort(key=lambda item: item.completed_at, reverse=True)
+    return PaginatedImageIntakeActivities(
+        items=activities[offset:offset + limit],
+        total=len(activities),
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/api/statistics/tags", response_model=list[TagStatistics])

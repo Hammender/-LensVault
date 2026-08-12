@@ -913,6 +913,8 @@ class AcquisitionWorkflowTests(unittest.TestCase):
         engine.dispose()
 
     def test_deduplicate_import_trace_export_and_deleted_gallery_snapshot(self) -> None:
+        test_case = self
+
         class Stream(io.BytesIO):
             def release_conn(self) -> None:
                 pass
@@ -949,7 +951,9 @@ class AcquisitionWorkflowTests(unittest.TestCase):
                 *,
                 workspace_id: int | None,
                 source_object_key: str,
+                ingest_source: str = "manual_upload",
             ) -> tuple[GalleryPhoto, SimpleNamespace]:
+                test_case.assertEqual(ingest_source, "acquisition")
                 object_key = "gallery/imported.jpg"
                 self.storage.put_bytes(object_key, payload, content_type)
                 photo = GalleryPhoto(
@@ -958,6 +962,7 @@ class AcquisitionWorkflowTests(unittest.TestCase):
                     content_type=content_type,
                     sha256=__import__("hashlib").sha256(payload).hexdigest(),
                     object_key=object_key,
+                    ingest_source=ingest_source,
                 )
                 db.add(photo)
                 db.flush()

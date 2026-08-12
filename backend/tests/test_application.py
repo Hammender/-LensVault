@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from app.application import create_app
 from app.core.config import Settings
 from app.db import Base
-from app.lifecycle import initialize_database
+from app.lifecycle import ensure_gallery_ingest_source_column, initialize_database
 
 
 class FakeStorage:
@@ -144,6 +144,30 @@ def test_initialize_database_adds_similarity_group_review_status_to_legacy_datab
     assert "review_status" in columns
     assert "ix_gallery_similarity_groups_review_status" in indexes
     assert review_status == "pending"
+    engine.dispose()
+
+
+def test_gallery_ingest_source_migration_marks_legacy_acquisition_photos(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{(tmp_path / 'legacy-gallery-source.db').as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE gallery_photos (id INTEGER PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE acquisition_imported_photos (gallery_photo_id INTEGER)"))
+        connection.execute(text("INSERT INTO gallery_photos (id) VALUES (1), (2)"))
+        connection.execute(text("INSERT INTO acquisition_imported_photos (gallery_photo_id) VALUES (1)"))
+
+    ensure_gallery_ingest_source_column(engine)
+
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("gallery_photos")}
+    indexes = {index["name"] for index in inspector.get_indexes("gallery_photos")}
+    with engine.connect() as connection:
+        values = connection.execute(
+            text("SELECT id, ingest_source FROM gallery_photos ORDER BY id")
+        ).all()
+
+    assert "ingest_source" in columns
+    assert "ix_gallery_photos_ingest_source" in indexes
+    assert values == [(1, "acquisition"), (2, "legacy_unclassified")]
     engine.dispose()
 
 

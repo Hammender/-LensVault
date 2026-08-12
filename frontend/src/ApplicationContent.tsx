@@ -182,6 +182,7 @@ const systemUnknownPersonName = "未知人物";
 const compactGalleryMediaQuery = "(max-width: 1600px)";
 
 type GalleryDrawer = "filter" | "detail" | null;
+type GalleryFilterSection = "include-people" | "include-tags" | "exclude-people" | "exclude-tags";
 
 type MainAppProps = {
   authSession: AuthSession;
@@ -205,16 +206,16 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     galleryExportPersonIds, setGalleryExportPersonIds, galleryExportTagIds, setGalleryExportTagIds,
     lightboxPhotoId, setLightboxPhotoId, selectedPersonIds, setSelectedPersonIds, selectedTagIds,
     setSelectedTagIds, excludePersonIds, setExcludePersonIds, excludeTagIds, setExcludeTagIds,
-    personSearch, setPersonSearch, tagSearch, setTagSearch, showUnknownPersons, setShowUnknownPersons,
-    showExcludePersons, setShowExcludePersons, showExcludeTags, setShowExcludeTags, richTag, normalTags,
-    filteredPersons, selectedFilterPersons, knownFilterPersons, unknownFilterPersons, allFilteredUnknownPersons,
-    personSearchActive, visibleUnknownFilterPersons, selectedUnknownPersonCount, allFilteredUnknownSelected,
-    filteredTags, excludedFilterPersons, excludedFilterTags, availableExcludePersons, availableExcludeKnownPersons,
-    availableExcludeUnknownPersons, availableExcludeTags
+    personSearch, setPersonSearch, tagSearch, setTagSearch, richTag, normalTags, filteredPersons,
+    allFilteredUnknownPersons, allFilteredUnknownSelected, filteredTags, excludedFilterPersons,
+    excludedFilterTags, availableExcludePersons, availableExcludeTags
   } = gallery;
   const [selectedPhoto, setSelectedPhoto] = useState<GalleryPhotoDetail | null>(null);
   const [galleryDrawer, setGalleryDrawer] = useState<GalleryDrawer>(null);
   const [galleryCompact, setGalleryCompact] = useState(() => window.matchMedia(compactGalleryMediaQuery).matches);
+  const [activeGalleryFilterSection, setActiveGalleryFilterSection] = useState<GalleryFilterSection | null>("include-people");
+  const [excludePersonSearch, setExcludePersonSearch] = useState("");
+  const [excludeTagSearch, setExcludeTagSearch] = useState("");
   const [manualPersonId, setManualPersonId] = useState("");
   const [manualPersonSearch, setManualPersonSearch] = useState("");
   const [manualPersonNotice, setManualPersonNotice] = useState<string | null>(null);
@@ -296,6 +297,30 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     [persons, selectedPersonDeleteIds]
   );
   const galleryFilterCount = selectedPersonIds.length + selectedTagIds.length + excludePersonIds.length + excludeTagIds.length;
+  const includedKnownPersons = useMemo(
+    () => filteredPersons.filter((person) => !person.is_unknown),
+    [filteredPersons]
+  );
+  const includedUnknownPersons = useMemo(
+    () => filteredPersons.filter((person) => person.is_unknown),
+    [filteredPersons]
+  );
+  const excludedPersonResults = useMemo(
+    () => filterPersonMatches([...excludedFilterPersons, ...availableExcludePersons], excludePersonSearch),
+    [availableExcludePersons, excludePersonSearch, excludedFilterPersons]
+  );
+  const excludedKnownPersonResults = useMemo(
+    () => excludedPersonResults.filter((person) => !person.is_unknown),
+    [excludedPersonResults]
+  );
+  const excludedUnknownPersonResults = useMemo(
+    () => excludedPersonResults.filter((person) => person.is_unknown),
+    [excludedPersonResults]
+  );
+  const excludedTagResults = useMemo(
+    () => filterTagMatches(sortByPinyinName([...excludedFilterTags, ...availableExcludeTags]), excludeTagSearch),
+    [availableExcludeTags, excludeTagSearch, excludedFilterTags]
+  );
 
   const videoTotalPages = Math.max(1, Math.ceil(videoTotal / videoPageSize));
   const videoCurrentPage = Math.floor(videoOffset / videoPageSize) + 1;
@@ -510,6 +535,18 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     void refreshGallery(0, next, selectedTagIds, nextExclude, excludeTagIds);
   }
 
+  function handleToggleTagFilter(tagId: number) {
+    const active = selectedTagIds.includes(tagId);
+    const next = active ? selectedTagIds.filter((id) => id !== tagId) : [...selectedTagIds, tagId];
+    setSelectedTagIds(next);
+    let nextExclude = excludeTagIds;
+    if (!active && excludeTagIds.includes(tagId)) {
+      nextExclude = excludeTagIds.filter((id) => id !== tagId);
+      setExcludeTagIds(nextExclude);
+    }
+    void refreshGallery(0, selectedPersonIds, next, excludePersonIds, nextExclude);
+  }
+
   function handleToggleUnknownPersonFilters() {
     const targetIds = allFilteredUnknownPersons.map((person) => person.id);
     if (targetIds.length === 0) {
@@ -520,13 +557,27 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       ? selectedPersonIds.filter((id) => !targetIdSet.has(id))
       : Array.from(new Set([...selectedPersonIds, ...targetIds]));
     setSelectedPersonIds(next);
-    setShowUnknownPersons(true);
     let nextExclude = excludePersonIds;
     if (!allFilteredUnknownSelected) {
       nextExclude = excludePersonIds.filter((id) => !targetIdSet.has(id));
       setExcludePersonIds(nextExclude);
     }
     void refreshGallery(0, next, selectedTagIds, nextExclude, excludeTagIds);
+  }
+
+  function handleClearGalleryFilters() {
+    if (galleryFilterCount === 0) {
+      return;
+    }
+    setSelectedPersonIds([]);
+    setSelectedTagIds([]);
+    setExcludePersonIds([]);
+    setExcludeTagIds([]);
+    void refreshGallery(0, [], [], [], []);
+  }
+
+  function toggleGalleryFilterSection(section: GalleryFilterSection) {
+    setActiveGalleryFilterSection((current) => current === section ? null : section);
   }
 
   function handleToggleExcludePerson(personId: number) {
@@ -2505,255 +2556,256 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
               </div>
             </div>
 
-            <div className="filter-group">
-              <label>按人物筛选</label>
-              <input
-                className="search-input subtle"
-                value={personSearch}
-                onChange={(event) => setPersonSearch(event.target.value)}
-                placeholder="搜索人物名称、拼音或首字母"
-              />
-              <div className="filter-stack">
-                {selectedFilterPersons.length > 0 && (
-                  <div className="filter-section selected-filter-section">
-                    <div className="filter-section-head">
-                      <strong>已选人物</strong>
-                      <span>
-                        {selectedFilterPersons.length} 个{selectedUnknownPersonCount > 0 ? ` · 未知 ${selectedUnknownPersonCount}` : ""}
-                      </span>
-                    </div>
-                    <div className="chip-cloud compact scroll-cloud selected-cloud">
-                      {selectedFilterPersons.map((person) => (
-                        <button
-                          key={person.id}
-                          className={person.is_unknown ? "soft-chip active unknown-chip" : "soft-chip active"}
-                          onClick={() => handleTogglePersonFilter(person.id)}
-                        >
-                          {person.display_name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="filter-section">
-                  <div className="filter-section-head">
-                    <strong>正式人物</strong>
-                    <span>{knownFilterPersons.length} 个</span>
-                  </div>
-                  <div className="chip-cloud compact scroll-cloud known-person-cloud">
-                    {knownFilterPersons.map((person) => (
-                      <button
-                        key={person.id}
-                        className="soft-chip"
-                        onClick={() => handleTogglePersonFilter(person.id)}
-                      >
-                        {person.display_name}
-                      </button>
-                    ))}
-                    {knownFilterPersons.length === 0 && <span className="filter-empty">没有匹配的正式人物</span>}
-                  </div>
-                </div>
-
-                <div className="filter-section">
-                  <div className="filter-section-toolbar">
+            <div className="gallery-filter-summary" aria-label="当前筛选条件">
+              <div className="gallery-filter-summary-head">
+                <strong>当前筛选</strong>
+                <span>{galleryFilterCount > 0 ? `${galleryFilterCount} 项已生效` : "尚未添加条件"}</span>
+              </div>
+              <div className="gallery-filter-summary-actions">
+                <div className="gallery-filter-summary-tabs" role="group" aria-label="筛选条件分类">
+                  {([
+                    ["include-people", "含人物", selectedPersonIds.length],
+                    ["include-tags", "含标签", selectedTagIds.length],
+                    ["exclude-people", "排人物", excludePersonIds.length],
+                    ["exclude-tags", "排标签", excludeTagIds.length]
+                  ] as const).map(([section, label, count]) => (
                     <button
-                      className="filter-section-toggle"
-                      onClick={() => setShowUnknownPersons((current) => !current)}
+                      key={section}
+                      className={`gallery-filter-summary-tab${activeGalleryFilterSection === section ? " active" : ""}${count > 0 ? " has-filters" : ""}`}
                       type="button"
+                      onClick={() => setActiveGalleryFilterSection(section)}
                     >
-                      <span>未知人物</span>
-                      <small>
-                        {personSearchActive ? `${allFilteredUnknownPersons.length} / ${unknownPersonCount}` : `${unknownPersonCount} 个`}
-                      </small>
-                      <b>{showUnknownPersons || personSearchActive ? "收起" : "展开"}</b>
+                      {label} <b>{count}</b>
                     </button>
-                    <button
-                      className="filter-bulk-action"
-                      disabled={allFilteredUnknownPersons.length === 0}
-                      onClick={handleToggleUnknownPersonFilters}
-                      type="button"
-                    >
-                      {allFilteredUnknownSelected ? "全不选" : "全选"}
-                    </button>
-                  </div>
-                  {(showUnknownPersons || personSearchActive) && (
-                    <div className="chip-cloud compact scroll-cloud unknown-person-cloud">
-                      {visibleUnknownFilterPersons.map((person) => (
-                        <button
-                          key={person.id}
-                          className="soft-chip unknown-chip"
-                          onClick={() => handleTogglePersonFilter(person.id)}
-                        >
-                          {person.display_name}
-                        </button>
-                      ))}
-                      {visibleUnknownFilterPersons.length === 0 && <span className="filter-empty">没有匹配的未知人物</span>}
-                    </div>
-                  )}
+                  ))}
                 </div>
+                <button
+                  className="gallery-filter-clear"
+                  type="button"
+                  disabled={galleryFilterCount === 0}
+                  onClick={handleClearGalleryFilters}
+                >
+                  清除全部
+                </button>
               </div>
             </div>
 
-            <div className="filter-group">
-              <label>按普通标签筛选</label>
-              <input
-                className="search-input subtle"
-                value={tagSearch}
-                onChange={(event) => setTagSearch(event.target.value)}
-                placeholder="搜索标签"
-              />
-              <div className="chip-cloud compact scroll-cloud tag-filter-cloud">
-                {filteredTags.map((tag) => {
-                  const active = selectedTagIds.includes(tag.id);
-                  const inExclude = excludeTagIds.includes(tag.id);
-                  return (
-                    <button
-                      key={tag.id}
-                      className={active ? "soft-chip active" : "soft-chip"}
-                      onClick={() => {
-                        const next = active ? selectedTagIds.filter((id) => id !== tag.id) : [...selectedTagIds, tag.id];
-                        setSelectedTagIds(next);
-                        let nextExclude = excludeTagIds;
-                        if (!active && excludeTagIds.includes(tag.id)) {
-                          nextExclude = excludeTagIds.filter((id) => id !== tag.id);
-                          setExcludeTagIds(nextExclude);
-                        }
-                        void refreshGallery(0, selectedPersonIds, next, excludePersonIds, nextExclude);
-                      }}
-                    >
-                      #{tag.name}
-                    </button>
-                  );
-                })}
-                {filteredTags.length === 0 && <span className="filter-empty">没有匹配的普通标签</span>}
-              </div>
-            </div>
-
-            <div className="filter-group">
-              <label>排除筛选 · 不含所选条件的图片</label>
-
-              <div className="filter-section">
-                <div className="filter-section-toolbar">
-                  <button
-                    className="filter-section-toggle"
-                    onClick={() => setShowExcludePersons((current) => !current)}
-                    type="button"
-                  >
-                    <span>排除的人物</span>
-                    <small>{excludedFilterPersons.length > 0 ? `${excludedFilterPersons.length} 个已选` : `${availableExcludePersons.length} 个可选`}</small>
-                    <b>{showExcludePersons ? "收起" : "展开"}</b>
-                  </button>
-                </div>
-                {showExcludePersons && (
-                  <>
-                    {excludedFilterPersons.length > 0 && (
-                      <div className="filter-section selected-filter-section">
-                        <div className="filter-section-head">
-                          <strong>已选排除</strong>
-                          <span>{excludedFilterPersons.length} 个</span>
+            <div className="gallery-filter-accordions">
+              <section className={`gallery-filter-accordion${activeGalleryFilterSection === "include-people" ? " is-open" : ""}`}>
+                <button
+                  className="gallery-filter-accordion-trigger"
+                  type="button"
+                  onClick={() => toggleGalleryFilterSection("include-people")}
+                  aria-expanded={activeGalleryFilterSection === "include-people"}
+                  aria-controls="gallery-filter-include-people"
+                >
+                  <span>
+                    <strong>包含人物</strong>
+                    <small>{selectedPersonIds.length > 0 ? `${selectedPersonIds.length} 个已选` : `${filteredPersons.length} 个可选`}</small>
+                  </span>
+                  <b>{activeGalleryFilterSection === "include-people" ? "收起" : "展开"}</b>
+                </button>
+                {activeGalleryFilterSection === "include-people" && (
+                  <div className="gallery-filter-accordion-content" id="gallery-filter-include-people">
+                    <input
+                      className="search-input subtle"
+                      value={personSearch}
+                      onChange={(event) => setPersonSearch(event.target.value)}
+                      placeholder="搜索人物名称、拼音或首字母"
+                    />
+                    <div className="gallery-filter-results" aria-label="人物搜索结果">
+                      <div className="gallery-filter-result-section">
+                        <div className="gallery-filter-result-head">
+                          <strong>正式人物</strong>
+                          <span>{includedKnownPersons.length} 个</span>
                         </div>
-                        <div className="chip-cloud compact scroll-cloud selected-cloud">
-                          {excludedFilterPersons.map((person) => (
+                        <div className="chip-cloud compact">
+                          {includedKnownPersons.map((person) => (
                             <button
                               key={person.id}
-                              className={person.is_unknown ? "soft-chip active unknown-chip" : "soft-chip active"}
+                              className={selectedPersonIds.includes(person.id) ? "soft-chip active" : "soft-chip"}
+                              onClick={() => handleTogglePersonFilter(person.id)}
+                            >
+                              {person.display_name}
+                            </button>
+                          ))}
+                          {includedKnownPersons.length === 0 && <span className="filter-empty">没有匹配的正式人物</span>}
+                        </div>
+                      </div>
+                      <div className="gallery-filter-result-section">
+                        <div className="gallery-filter-result-head">
+                          <strong>未知人物</strong>
+                          <span>{personSearch.trim() ? `${includedUnknownPersons.length} / ${unknownPersonCount}` : `${unknownPersonCount} 个`}</span>
+                          <button
+                            className="filter-bulk-action"
+                            disabled={allFilteredUnknownPersons.length === 0}
+                            onClick={handleToggleUnknownPersonFilters}
+                            type="button"
+                          >
+                            {allFilteredUnknownSelected ? "全不选" : "全选"}
+                          </button>
+                        </div>
+                        <div className="chip-cloud compact">
+                          {includedUnknownPersons.map((person) => (
+                            <button
+                              key={person.id}
+                              className={selectedPersonIds.includes(person.id) ? "soft-chip active unknown-chip" : "soft-chip unknown-chip"}
+                              onClick={() => handleTogglePersonFilter(person.id)}
+                            >
+                              {person.display_name}
+                            </button>
+                          ))}
+                          {includedUnknownPersons.length === 0 && <span className="filter-empty">没有匹配的未知人物</span>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              <section className={`gallery-filter-accordion${activeGalleryFilterSection === "include-tags" ? " is-open" : ""}`}>
+                <button
+                  className="gallery-filter-accordion-trigger"
+                  type="button"
+                  onClick={() => toggleGalleryFilterSection("include-tags")}
+                  aria-expanded={activeGalleryFilterSection === "include-tags"}
+                  aria-controls="gallery-filter-include-tags"
+                >
+                  <span>
+                    <strong>包含标签</strong>
+                    <small>{selectedTagIds.length > 0 ? `${selectedTagIds.length} 个已选` : `${filteredTags.length} 个可选`}</small>
+                  </span>
+                  <b>{activeGalleryFilterSection === "include-tags" ? "收起" : "展开"}</b>
+                </button>
+                {activeGalleryFilterSection === "include-tags" && (
+                  <div className="gallery-filter-accordion-content" id="gallery-filter-include-tags">
+                    <input
+                      className="search-input subtle"
+                      value={tagSearch}
+                      onChange={(event) => setTagSearch(event.target.value)}
+                      placeholder="搜索标签"
+                    />
+                    <div className="gallery-filter-results" aria-label="标签搜索结果">
+                      <div className="chip-cloud compact">
+                        {filteredTags.map((tag) => (
+                          <button
+                            key={tag.id}
+                            className={selectedTagIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                            onClick={() => handleToggleTagFilter(tag.id)}
+                          >
+                            #{tag.name}
+                          </button>
+                        ))}
+                        {filteredTags.length === 0 && <span className="filter-empty">没有匹配的普通标签</span>}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              <section className={`gallery-filter-accordion${activeGalleryFilterSection === "exclude-people" ? " is-open" : ""}`}>
+                <button
+                  className="gallery-filter-accordion-trigger"
+                  type="button"
+                  onClick={() => toggleGalleryFilterSection("exclude-people")}
+                  aria-expanded={activeGalleryFilterSection === "exclude-people"}
+                  aria-controls="gallery-filter-exclude-people"
+                >
+                  <span>
+                    <strong>排除人物</strong>
+                    <small>{excludePersonIds.length > 0 ? `${excludePersonIds.length} 个已选` : `${availableExcludePersons.length} 个可选`}</small>
+                  </span>
+                  <b>{activeGalleryFilterSection === "exclude-people" ? "收起" : "展开"}</b>
+                </button>
+                {activeGalleryFilterSection === "exclude-people" && (
+                  <div className="gallery-filter-accordion-content" id="gallery-filter-exclude-people">
+                    <input
+                      className="search-input subtle"
+                      value={excludePersonSearch}
+                      onChange={(event) => setExcludePersonSearch(event.target.value)}
+                      placeholder="搜索要排除的人物"
+                    />
+                    <div className="gallery-filter-results" aria-label="排除人物搜索结果">
+                      <div className="gallery-filter-result-section">
+                        <div className="gallery-filter-result-head">
+                          <strong>正式人物</strong>
+                          <span>{excludedKnownPersonResults.length} 个</span>
+                        </div>
+                        <div className="chip-cloud compact">
+                          {excludedKnownPersonResults.map((person) => (
+                            <button
+                              key={person.id}
+                              className={excludePersonIds.includes(person.id) ? "soft-chip active" : "soft-chip"}
                               onClick={() => handleToggleExcludePerson(person.id)}
                             >
-                              {person.display_name} ✕
+                              {person.display_name}
                             </button>
                           ))}
+                          {excludedKnownPersonResults.length === 0 && <span className="filter-empty">没有匹配的正式人物</span>}
                         </div>
                       </div>
-                    )}
-                    <div className="filter-section">
-                      <div className="filter-section-head">
-                        <strong>正式人物</strong>
-                        <span>{availableExcludeKnownPersons.length} 个</span>
-                      </div>
-                      <div className="chip-cloud compact scroll-cloud known-person-cloud">
-                        {availableExcludeKnownPersons.map((person) => (
-                          <button
-                            key={person.id}
-                            className="soft-chip"
-                            onClick={() => handleToggleExcludePerson(person.id)}
-                          >
-                            {person.display_name}
-                          </button>
-                        ))}
-                        {availableExcludeKnownPersons.length === 0 && <span className="filter-empty">没有可选人物</span>}
-                      </div>
-                    </div>
-                    <div className="filter-section">
-                      <div className="filter-section-head">
-                        <strong>未知人物</strong>
-                        <span>{availableExcludeUnknownPersons.length} 个</span>
-                      </div>
-                      <div className="chip-cloud compact scroll-cloud unknown-person-cloud">
-                        {availableExcludeUnknownPersons.map((person) => (
-                          <button
-                            key={person.id}
-                            className="soft-chip"
-                            onClick={() => handleToggleExcludePerson(person.id)}
-                          >
-                            {person.display_name}
-                          </button>
-                        ))}
-                        {availableExcludeUnknownPersons.length === 0 && <span className="filter-empty">没有可选人物</span>}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="filter-section">
-                <div className="filter-section-toolbar">
-                  <button
-                    className="filter-section-toggle"
-                    onClick={() => setShowExcludeTags((current) => !current)}
-                    type="button"
-                  >
-                    <span>排除的标签</span>
-                    <small>{excludedFilterTags.length > 0 ? `${excludedFilterTags.length} 个已选` : `${availableExcludeTags.length} 个可选`}</small>
-                    <b>{showExcludeTags ? "收起" : "展开"}</b>
-                  </button>
-                </div>
-                {showExcludeTags && (
-                  <>
-                    {excludedFilterTags.length > 0 && (
-                      <div className="filter-section selected-filter-section">
-                        <div className="filter-section-head">
-                          <strong>已选排除</strong>
-                          <span>{excludedFilterTags.length} 个</span>
+                      <div className="gallery-filter-result-section">
+                        <div className="gallery-filter-result-head">
+                          <strong>未知人物</strong>
+                          <span>{excludedUnknownPersonResults.length} 个</span>
                         </div>
-                        <div className="chip-cloud compact scroll-cloud selected-cloud">
-                          {excludedFilterTags.map((tag) => (
+                        <div className="chip-cloud compact">
+                          {excludedUnknownPersonResults.map((person) => (
                             <button
-                              key={tag.id}
-                              className="soft-chip active"
-                              onClick={() => handleToggleExcludeTag(tag.id)}
+                              key={person.id}
+                              className={excludePersonIds.includes(person.id) ? "soft-chip active unknown-chip" : "soft-chip unknown-chip"}
+                              onClick={() => handleToggleExcludePerson(person.id)}
                             >
-                              #{tag.name}
+                              {person.display_name}
                             </button>
                           ))}
+                          {excludedUnknownPersonResults.length === 0 && <span className="filter-empty">没有匹配的未知人物</span>}
                         </div>
                       </div>
-                    )}
-                    <div className="chip-cloud compact scroll-cloud tag-filter-cloud">
-                      {availableExcludeTags.map((tag) => (
-                        <button
-                          key={tag.id}
-                          className="soft-chip"
-                          onClick={() => handleToggleExcludeTag(tag.id)}
-                        >
-                          #{tag.name}
-                        </button>
-                      ))}
-                      {availableExcludeTags.length === 0 && <span className="filter-empty">没有可选标签</span>}
                     </div>
-                  </>
+                  </div>
                 )}
-              </div>
+              </section>
+
+              <section className={`gallery-filter-accordion${activeGalleryFilterSection === "exclude-tags" ? " is-open" : ""}`}>
+                <button
+                  className="gallery-filter-accordion-trigger"
+                  type="button"
+                  onClick={() => toggleGalleryFilterSection("exclude-tags")}
+                  aria-expanded={activeGalleryFilterSection === "exclude-tags"}
+                  aria-controls="gallery-filter-exclude-tags"
+                >
+                  <span>
+                    <strong>排除标签</strong>
+                    <small>{excludeTagIds.length > 0 ? `${excludeTagIds.length} 个已选` : `${availableExcludeTags.length} 个可选`}</small>
+                  </span>
+                  <b>{activeGalleryFilterSection === "exclude-tags" ? "收起" : "展开"}</b>
+                </button>
+                {activeGalleryFilterSection === "exclude-tags" && (
+                  <div className="gallery-filter-accordion-content" id="gallery-filter-exclude-tags">
+                    <input
+                      className="search-input subtle"
+                      value={excludeTagSearch}
+                      onChange={(event) => setExcludeTagSearch(event.target.value)}
+                      placeholder="搜索要排除的标签"
+                    />
+                    <div className="gallery-filter-results" aria-label="排除标签搜索结果">
+                      <div className="chip-cloud compact">
+                        {excludedTagResults.map((tag) => (
+                          <button
+                            key={tag.id}
+                            className={excludeTagIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
+                            onClick={() => handleToggleExcludeTag(tag.id)}
+                          >
+                            #{tag.name}
+                          </button>
+                        ))}
+                        {excludedTagResults.length === 0 && <span className="filter-empty">没有匹配的普通标签</span>}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </section>
             </div>
           </section>
 

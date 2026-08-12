@@ -639,6 +639,7 @@ class PictureService:
         workspace_id: int | None = None,
         source_object_key: str | None = None,
         *,
+        ingest_source: str = "manual_upload",
         recognition_plan: list[tuple[DetectedFace, PersonMatch]] | None | object = _RECOGNITION_NOT_PRECOMPUTED,
     ) -> tuple[GalleryPhoto, GalleryImportSummary]:
         summary = GalleryImportSummary()
@@ -692,6 +693,7 @@ class PictureService:
             height=height,
             taken_at=taken_at,
             is_rich_text=is_rich_text,
+            ingest_source=ingest_source,
             rich_text=rich_text.strip() if rich_text else None,
             ocr_status="manual" if rich_text and rich_text.strip() else None,
         )
@@ -1556,6 +1558,7 @@ class PictureService:
                         width=photo_data.get("width"),
                         height=photo_data.get("height"),
                         is_rich_text=is_rich_text,
+                        ingest_source="gallery_zip",
                     )
                     db.add(photo)
                     db.flush()

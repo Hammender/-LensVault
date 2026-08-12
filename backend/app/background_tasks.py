@@ -308,6 +308,16 @@ def process_gallery_zip_import_task(
             f"绑定 {result['persons_added']} 个人物标签"
         )
         update_task(db, task_id, status="completed", progress=1.0, message=message)
+        db.add(
+            UploadHistory(
+                workspace_id=workspace_id,
+                upload_type="gallery_zip",
+                total_count=result["added_photos"] + result["updated_existing"] + result["skipped_photos"],
+                success_count=result["added_photos"] + result["updated_existing"],
+                duplicate_count=result["updated_existing"],
+            )
+        )
+        db.commit()
         logger.info("Gallery zip import task completed task_id=%s %s", task_id, message)
     except Exception as exc:
         logger.exception("Gallery zip import task failed task_id=%s", task_id)

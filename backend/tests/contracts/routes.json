@@ -822,6 +822,18 @@
     ]
   },
   {
+    "path": "/api/statistics/overview",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/statistics/intake-history",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/statistics/tags",
     "methods": [
       "GET"

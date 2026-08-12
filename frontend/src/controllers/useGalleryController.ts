@@ -27,9 +27,6 @@ export function useGalleryController({ persons, tags }: UseGalleryControllerOpti
   const [excludeTagIds, setExcludeTagIds] = useState<number[]>([]);
   const [personSearch, setPersonSearch] = useState("");
   const [tagSearch, setTagSearch] = useState("");
-  const [showUnknownPersons, setShowUnknownPersons] = useState(false);
-  const [showExcludePersons, setShowExcludePersons] = useState(false);
-  const [showExcludeTags, setShowExcludeTags] = useState(false);
 
   const richTag = useMemo(() => tags.find((tag) => tag.name === "图文") ?? null, [tags]);
   const normalTags = useMemo(() => sortByPinyinName(tags.filter((tag) => !tag.is_system)), [tags]);
@@ -37,25 +34,10 @@ export function useGalleryController({ persons, tags }: UseGalleryControllerOpti
     () => filterPersonMatches(persons, personSearch),
     [personSearch, persons]
   );
-  const selectedFilterPersons = useMemo(
-    () => sortByPinyin(persons.filter((person) => selectedPersonIds.includes(person.id)), (person) => person.display_name),
-    [persons, selectedPersonIds]
-  );
-  const knownFilterPersons = useMemo(
-    () => filteredPersons.filter((person) => !person.is_unknown && !selectedPersonIds.includes(person.id)),
-    [filteredPersons, selectedPersonIds]
-  );
-  const unknownFilterPersons = useMemo(
-    () => filteredPersons.filter((person) => person.is_unknown && !selectedPersonIds.includes(person.id)),
-    [filteredPersons, selectedPersonIds]
-  );
   const allFilteredUnknownPersons = useMemo(
     () => filteredPersons.filter((person) => person.is_unknown),
     [filteredPersons]
   );
-  const personSearchActive = personSearch.trim().length > 0;
-  const visibleUnknownFilterPersons = showUnknownPersons || personSearchActive ? unknownFilterPersons : [];
-  const selectedUnknownPersonCount = selectedFilterPersons.filter((person) => person.is_unknown).length;
   const allFilteredUnknownSelected =
     allFilteredUnknownPersons.length > 0 &&
     allFilteredUnknownPersons.every((person) => selectedPersonIds.includes(person.id));
@@ -81,14 +63,6 @@ export function useGalleryController({ persons, tags }: UseGalleryControllerOpti
         (person) => person.display_name
       ),
     [persons, selectedPersonIds, excludePersonIds]
-  );
-  const availableExcludeKnownPersons = useMemo(
-    () => availableExcludePersons.filter((person) => !person.is_unknown),
-    [availableExcludePersons]
-  );
-  const availableExcludeUnknownPersons = useMemo(
-    () => availableExcludePersons.filter((person) => person.is_unknown),
-    [availableExcludePersons]
   );
   const availableExcludeTags = useMemo(
     () => sortByPinyinName(tags.filter((tag) => !selectedTagIds.includes(tag.id) && !excludeTagIds.includes(tag.id))),
@@ -128,29 +102,15 @@ export function useGalleryController({ persons, tags }: UseGalleryControllerOpti
     setPersonSearch,
     tagSearch,
     setTagSearch,
-    showUnknownPersons,
-    setShowUnknownPersons,
-    showExcludePersons,
-    setShowExcludePersons,
-    showExcludeTags,
-    setShowExcludeTags,
     richTag,
     normalTags,
     filteredPersons,
-    selectedFilterPersons,
-    knownFilterPersons,
-    unknownFilterPersons,
     allFilteredUnknownPersons,
-    personSearchActive,
-    visibleUnknownFilterPersons,
-    selectedUnknownPersonCount,
     allFilteredUnknownSelected,
     filteredTags,
     excludedFilterPersons,
     excludedFilterTags,
     availableExcludePersons,
-    availableExcludeKnownPersons,
-    availableExcludeUnknownPersons,
     availableExcludeTags
   };
 }

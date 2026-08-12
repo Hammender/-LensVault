@@ -126,3 +126,32 @@ export type UploadSummary = {
     rich: { count: number; photos: number };
   };
 };
+
+export type StatisticsOverview = {
+  gallery_total: number;
+  gallery_photo_count: number;
+  rich_photo_count: number;
+  source_counts: Record<string, number>;
+  person_covered_count: number;
+  tag_covered_count: number;
+  acquisition_status_counts: Record<string, number>;
+};
+
+export type ImageIntakeActivity = {
+  id: string;
+  source: "gallery" | "rich" | "gallery_zip" | "acquisition";
+  status: string;
+  total_count: number;
+  imported_count: number;
+  updated_count: number;
+  skipped_count: number;
+  failed_count: number;
+  completed_at: string;
+};
+
+export type PaginatedImageIntakeActivities = {
+  items: ImageIntakeActivity[];
+  total: number;
+  offset: number;
+  limit: number;
+};

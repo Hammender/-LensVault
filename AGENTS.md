@@ -3,15 +3,6 @@
 ## Project Structure & Module Organization
 `backend/` contains the FastAPI service. Main API routes live in `backend/app/main.py`, configuration in `backend/app/core/config.py`, database setup in `backend/app/db.py`, and domain logic in `backend/app/services/`. `frontend/` contains the Vite + React client, with app entry points in `frontend/src/main.tsx` and `frontend/src/App.tsx`. Shared frontend request and type definitions live in `frontend/src/api.ts` and `frontend/src/types.ts`. Runtime data is stored under `data/`; treat `data/app.db` as local state, not source.
 
-## Build, Test, and Development Commands
-Use the Windows helper script for normal local work:
-
-```powershell
-.\start-dev.ps1
-```
-
-This launches the backend on `http://127.0.0.1:8000` and the frontend on `http://127.0.0.1:5173`.
-
 Key manual commands:
 
 ```powershell
@@ -40,3 +31,4 @@ Do not commit real secrets in `.env`. Keep `.env.example` updated when adding se
 ## 约束
 1.你在运行过程中绝对不能主动启动前端或后端程序，除非得到用户的授权，否则启动程序只能让用户自己手动启动。
 2.写文档时用中文，请勿用英文。
+3.未经允许不可以执行git提交、合并等具有修改性的git操作。
