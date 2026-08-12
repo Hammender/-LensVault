@@ -1,9 +1,10 @@
-# Repository Guidelines
+# 仓库开发指南
 
-## Project Structure & Module Organization
-`backend/` contains the FastAPI service. Main API routes live in `backend/app/main.py`, configuration in `backend/app/core/config.py`, database setup in `backend/app/db.py`, and domain logic in `backend/app/services/`. `frontend/` contains the Vite + React client, with app entry points in `frontend/src/main.tsx` and `frontend/src/App.tsx`. Shared frontend request and type definitions live in `frontend/src/api.ts` and `frontend/src/types.ts`. Runtime data is stored under `data/`; treat `data/app.db` as local state, not source.
+## 项目结构与模块组织
 
-Key manual commands:
+`backend/` 包含 FastAPI 后端服务。主要 API 路由位于 `backend/app/main.py`，配置位于 `backend/app/core/config.py`，数据库初始化位于 `backend/app/db.py`，领域逻辑位于 `backend/app/services/`。`frontend/` 包含 Vite + React 前端，入口文件为 `frontend/src/main.tsx` 和 `frontend/src/App.tsx`。前端通用请求与类型定义位于 `frontend/src/api.ts` 和 `frontend/src/types.ts`。运行时数据位于 `data/`；`data/app.db` 属于本地状态，不是源代码。
+
+常用手工命令：
 
 ```powershell
 python -m uvicorn app.main:app --reload --app-dir backend
@@ -12,23 +13,43 @@ cmd /c npm.cmd run dev
 cmd /c npm.cmd run build
 ```
 
-Run `npm.cmd run build` before submitting frontend changes; it also runs the TypeScript project build. MinIO must be running, and `.env` should match `.env.example`.
+提交前端改动前必须运行 `npm.cmd run build`，该命令也会执行 TypeScript 项目构建。运行依赖 MinIO，`.env` 的字段应与 `.env.example` 对应。
 
-## Coding Style & Naming Conventions
-Follow the existing style: 4-space indentation in Python, 2-space indentation in TypeScript/TSX, and double quotes in frontend files. Keep Python modules and service files `snake_case`; use `PascalCase` for React components and Pydantic/SQLAlchemy models. Prefer small helper functions over deeply nested route handlers. Keep user-facing frontend copy in Chinese unless the surrounding UI is already English.
+## 运行环境
+当前项目默认运行环境是名为 "pictureshow"的Conda环境。
 
-## Testing Guidelines
-No automated test suite is checked in yet. For backend changes, do a quick API smoke test against `/api/health` and the affected endpoints. For frontend changes, run `cmd /c npm.cmd run build` and manually verify the changed flow in the browser. If you add tests, place frontend tests under `frontend/src/` next to the feature and backend tests under `backend/tests/`.
+## 代码风格与命名规范
 
-## Commit & Pull Request Guidelines
-This repository currently has no commit history, so use clear imperative commit subjects such as `Add cluster reassignment validation`. Keep commits focused by feature or fix. Pull requests should include a short summary, setup or migration notes if `.env` or MinIO behavior changed, and screenshots for visible frontend updates.
+遵循现有代码风格：Python 使用 4 个空格缩进，TypeScript/TSX 使用 2 个空格缩进，前端文件使用双引号。Python 模块和服务文件使用 `snake_case`；React 组件、Pydantic 模型和 SQLAlchemy 模型使用 `PascalCase`。优先使用小型辅助函数，避免在路由处理函数中出现过深嵌套。除非周边界面已使用英文，前端面向用户的文案应使用中文。
 
-## Configuration & Data Notes
-Do not commit real secrets in `.env`. Keep `.env.example` updated when adding settings. Avoid committing generated data, model downloads, or local database changes from `data/`.
+## 测试规范
 
-配置变更必须优先维护本地 `.env` 的完整字段和值，程序运行时只读取 `.env`（不得读取 `.env.example`），而 `.env.example` 仅保留完整字段名及不泄露隐私的示例默认值。
+后端自动化测试位于 `backend/tests/`。后端改动应运行受影响的测试；涉及通用行为时运行完整后端测试。前端改动应运行 `cmd /c npm.cmd run build`，并在浏览器中手工验证修改流程。新增前端测试应放在 `frontend/src/` 下、靠近对应功能的位置；新增后端测试应放在 `backend/tests/`。
+
+## 提交与合并请求规范
+
+提交信息使用清晰的祈使句，例如 `新增集群重分配校验`。每个提交应聚焦一个功能或修复。合并请求应包含简短说明；若 `.env` 或 MinIO 行为有变化，应说明配置或迁移步骤。
+
+## 配置与数据说明
+
+不得将 `.env` 中的真实密钥提交到仓库。新增配置时应同步维护 `.env.example`。避免提交生成数据、模型下载文件或 `data/` 中的本地数据库改动。
+
+配置变更必须优先维护本地 `.env` 的完整字段和值。程序运行时只读取 `.env`，不得读取 `.env.example`；`.env.example` 仅保留完整字段名与不泄露隐私的示例默认值。
+
+## AI Agent 工作准则
+
+1. 先阅读与任务直接相关的代码、配置、文档和当前 Git 状态，再实施改动；不根据文件名或历史印象臆测实现细节。
+2. 改动应保持最小且聚焦。除非任务明确要求，不进行无关重构、格式化全仓库文件、升级依赖或修改生成文件。
+3. 工作区中已有的未提交改动默认属于用户或其他协作者。不得撤销、覆盖、暂存或混入这些改动；若其与当前任务冲突，应说明冲突并请求处理方向。
+4. 不执行可能造成数据丢失的操作，例如递归删除、清空数据库、强制重置 Git、覆盖配置或批量迁移。确有必要时，先核实目标范围、说明影响并取得用户明确授权。
+5. 仅在任务确有需要且用户已授权的范围内安装、升级或卸载依赖。安装后应将依赖声明同步到对应的依赖清单，并说明实际变更。
+6. 数据库模型、迁移和 `sql/tables.sql` 必须保持一致。新增或修改表、字段、索引、约束时，同步补充中文注释并更新全量表设计文件。
+7. 修改 API、配置、数据结构或前端交互时，应追踪调用方和受影响流程，避免只修改单一入口而破坏兼容性；无法兼容时明确写出迁移要求。
+8. 代码改动完成后，按改动风险运行必要的构建、测试或静态检查。因环境、权限或时间无法执行的检查，必须在交付说明中明确未执行项与原因。
+9. 最终说明应简要列出改动内容、涉及的配置或迁移、验证结果及仍需用户手工操作的事项；不得声称未实际完成的验证或运行结果。
 
 ## 约束
-1.你在运行过程中绝对不能主动启动前端或后端程序，除非得到用户的授权，否则启动程序只能让用户自己手动启动。
-2.写文档时用中文，请勿用英文。
-3.未经允许不可以执行git提交、合并等具有修改性的git操作。
+
+1. 未经用户明确授权，运行过程中不得主动启动前端或后端程序；启动程序由用户手工执行。
+2. 编写文档时使用中文，不使用英文。
+3. 未经允许，不得执行 Git 提交、合并等会修改仓库历史或分支状态的操作。

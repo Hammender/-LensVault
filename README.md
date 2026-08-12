@@ -142,8 +142,6 @@ cmd /c npm.cmd run dev
 
 ## 人脸识别准确度
 
-独立人工评测集、分层抽样、候选 ONNX 模型和 Windows CUDA 配置见 [人脸识别离线评测](docs/face-benchmark.md)。该工具不依赖主程序启动，也不会修改正式图库、标签或向量集合。
-
 针对某一张低分展示图，可以在切换前对新集合执行只读诊断：
 
 ```powershell
