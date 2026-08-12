@@ -438,6 +438,12 @@
     ]
   },
   {
+    "path": "/api/gallery/photos/export",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/gallery/photos/import-zip",
     "methods": [
       "POST"

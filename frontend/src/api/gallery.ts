@@ -14,9 +14,11 @@ export type GalleryUploadMetadata = {
   tag_names: string[];
   rich_text?: string;
 };
-export type GalleryExportScope = "all" | "filtered";
+export type GalleryExportScope = "all" | "filtered" | "selected" | "from_start";
 export type GalleryExportOptions = {
   scope: GalleryExportScope;
+  photoIds?: number[];
+  startPhotoId?: number;
   personIds?: number[];
   tagIds?: number[];
   excludePersonIds?: number[];
@@ -118,6 +120,36 @@ export async function deleteGalleryPhotoTag(photoId: number, tagId: number): Pro
 export async function importGalleryPhotos(files: File[], metadata: GalleryUploadMetadata[]): Promise<Task> { const form = new FormData(); files.forEach((file) => form.append("files", file)); form.append("metadata_json", JSON.stringify(metadata)); return parseResponse<Task>(await authFetch("/api/gallery/photos/import", { method: "POST", body: form })); }
 export async function importGalleryRichPhotos(files: File[], metadata: GalleryUploadMetadata[]): Promise<Task> { const form = new FormData(); files.forEach((file) => form.append("files", file)); form.append("metadata_json", JSON.stringify(metadata)); return parseResponse<Task>(await authFetch("/api/gallery/rich-photos/import", { method: "POST", body: form })); }
 export function getGalleryExportUrl(options: GalleryExportOptions): string { const url = new URL("/api/gallery/photos/export", window.location.origin); url.searchParams.set("scope", options.scope); options.personIds?.forEach((id) => url.searchParams.append("person_ids", String(id))); options.tagIds?.forEach((id) => url.searchParams.append("tag_ids", String(id))); options.excludePersonIds?.forEach((id) => url.searchParams.append("exclude_person_ids", String(id))); options.excludeTagIds?.forEach((id) => url.searchParams.append("exclude_tag_ids", String(id))); return withWorkspaceContext(url.pathname + url.search); }
+export async function downloadGalleryExport(options: GalleryExportOptions): Promise<{ blob: Blob; filename: string }> {
+  const response = await authFetch("/api/gallery/photos/export", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      scope: options.scope,
+      photo_ids: options.photoIds ?? [],
+      start_photo_id: options.startPhotoId ?? null,
+      person_ids: options.personIds ?? [],
+      tag_ids: options.tagIds ?? [],
+      exclude_person_ids: options.excludePersonIds ?? [],
+      exclude_tag_ids: options.excludeTagIds ?? []
+    })
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text || "导出失败。";
+    try {
+      const payload = JSON.parse(text) as { detail?: string | Array<{ msg?: string }> };
+      if (typeof payload.detail === "string") message = payload.detail;
+      if (Array.isArray(payload.detail)) message = payload.detail[0]?.msg ?? message;
+    } catch {
+      // 非 JSON 错误直接显示响应文本。
+    }
+    throw new Error(message);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] ?? "gallery_export.zip";
+  return { blob: await response.blob(), filename };
+}
 export async function importGalleryExportZip(file: File): Promise<Task> { const formData = new FormData(); formData.append("file", file); return parseResponse<Task>(await authFetch("/api/gallery/photos/import-zip", { method: "POST", body: formData })); }
 export async function updateGalleryPhotoRichText(photoId: number, richText: string): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/rich-text`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ rich_text: richText }) })); }
 export async function getTask(taskId: string): Promise<Task> { return parseResponse<Task>(await authFetch(`/api/tasks/${taskId}`)); }

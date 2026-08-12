@@ -2251,6 +2251,71 @@
         "title": "GalleryPhotoDetail",
         "type": "object"
       },
+      "GalleryPhotoExportRequest": {
+        "properties": {
+          "exclude_person_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Exclude Person Ids",
+            "type": "array"
+          },
+          "exclude_tag_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Exclude Tag Ids",
+            "type": "array"
+          },
+          "person_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Person Ids",
+            "type": "array"
+          },
+          "photo_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Photo Ids",
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "all",
+              "filtered",
+              "selected",
+              "from_start"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "start_photo_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Photo Id"
+          },
+          "tag_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Tag Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "title": "GalleryPhotoExportRequest",
+        "type": "object"
+      },
       "GalleryPhotoListItem": {
         "properties": {
           "animated_thumbnail_url": {
@@ -9325,6 +9390,105 @@
           }
         },
         "summary": "Export Gallery Photos"
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GalleryPhotoExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Gallery Photos By Selection"
       }
     },
     "/api/gallery/photos/import": {

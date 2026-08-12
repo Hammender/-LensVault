@@ -107,6 +107,7 @@ import {
   deleteVideo,
   deleteVideoCategoryTag,
   deleteVideoPerson,
+  downloadGalleryExport,
   cancelVideoSubtitles,
   generateVideoSubtitles,
   getSubtitleServiceLogs,
@@ -114,7 +115,6 @@ import {
   getVideo,
   getVideoPlaybackDiagnostics,
   getVideoUploadSession,
-  getGalleryExportUrl,
   getGalleryPhoto,
   getPersonExportUrl,
   getTask,
@@ -171,6 +171,12 @@ import type {
   VideoPerson,
   VideoUploadSession,
 } from "./types";
+import {
+  deselectGalleryPage,
+  isGalleryPageSelected,
+  selectGalleryPage,
+  toggleGalleryPhotoSelection
+} from "./gallerySelection";
 
 function isSystemUnknownPerson(person: Person | null | undefined): boolean {
   return Boolean(person?.is_unknown && person.display_name === systemUnknownPersonName);
@@ -204,6 +210,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     gallerySelectionMode, setGallerySelectionMode, selectedGalleryPhotoIds, setSelectedGalleryPhotoIds,
     galleryExportModalOpen, setGalleryExportModalOpen, galleryExportScope, setGalleryExportScope,
     galleryExportPersonIds, setGalleryExportPersonIds, galleryExportTagIds, setGalleryExportTagIds,
+    galleryExportExcludePersonIds, setGalleryExportExcludePersonIds,
+    galleryExportExcludeTagIds, setGalleryExportExcludeTagIds,
+    galleryExportStartPhotoId, setGalleryExportStartPhotoId,
     lightboxPhotoId, setLightboxPhotoId, selectedPersonIds, setSelectedPersonIds, selectedTagIds,
     setSelectedTagIds, excludePersonIds, setExcludePersonIds, excludeTagIds, setExcludeTagIds,
     personSearch, setPersonSearch, tagSearch, setTagSearch, richTag, normalTags, filteredPersons,
@@ -357,7 +366,6 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     setGalleryPhotos(response.items);
     setGalleryTotal(response.total);
     setGalleryOffset(response.offset);
-    setSelectedGalleryPhotoIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
   }
 
   async function refreshVideoTaxonomy() {
@@ -471,6 +479,19 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }, [page]);
 
   useEffect(() => {
+    setSelectedGalleryPhotoIds([]);
+    setGallerySelectionMode(false);
+    setGalleryExportModalOpen(false);
+    setGalleryExportStartPhotoId(null);
+  }, [
+    authSession.workspace.id,
+    setGalleryExportModalOpen,
+    setGalleryExportStartPhotoId,
+    setGallerySelectionMode,
+    setSelectedGalleryPhotoIds
+  ]);
+
+  useEffect(() => {
     galleryFilterRef.current?.toggleAttribute("inert", galleryCompact && galleryDrawer !== "filter");
     galleryDetailRef.current?.toggleAttribute("inert", galleryCompact && galleryDrawer !== "detail");
   }, [galleryCompact, galleryDrawer, page]);
@@ -524,6 +545,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }, [galleryCompact, galleryDrawer]);
 
   function handleTogglePersonFilter(personId: number) {
+    setSelectedGalleryPhotoIds([]);
     const active = selectedPersonIds.includes(personId);
     const next = active ? selectedPersonIds.filter((id) => id !== personId) : [...selectedPersonIds, personId];
     setSelectedPersonIds(next);
@@ -536,6 +558,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }
 
   function handleToggleTagFilter(tagId: number) {
+    setSelectedGalleryPhotoIds([]);
     const active = selectedTagIds.includes(tagId);
     const next = active ? selectedTagIds.filter((id) => id !== tagId) : [...selectedTagIds, tagId];
     setSelectedTagIds(next);
@@ -552,6 +575,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     if (targetIds.length === 0) {
       return;
     }
+    setSelectedGalleryPhotoIds([]);
     const targetIdSet = new Set(targetIds);
     const next = allFilteredUnknownSelected
       ? selectedPersonIds.filter((id) => !targetIdSet.has(id))
@@ -569,6 +593,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     if (galleryFilterCount === 0) {
       return;
     }
+    setSelectedGalleryPhotoIds([]);
     setSelectedPersonIds([]);
     setSelectedTagIds([]);
     setExcludePersonIds([]);
@@ -581,6 +606,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }
 
   function handleToggleExcludePerson(personId: number) {
+    setSelectedGalleryPhotoIds([]);
     const active = excludePersonIds.includes(personId);
     let nextExclude: number[];
     let nextInclude = selectedPersonIds;
@@ -598,6 +624,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }
 
   function handleToggleExcludeTag(tagId: number) {
+    setSelectedGalleryPhotoIds([]);
     const active = excludeTagIds.includes(tagId);
     let nextExclude: number[];
     let nextInclude = selectedTagIds;
@@ -1157,32 +1184,73 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     }
   }
 
-  function handleExportGalleryPhotos() {
-    const url = getGalleryExportUrl({
-      scope: galleryExportScope,
-      personIds: galleryExportPersonIds,
-      tagIds: galleryExportTagIds
-    });
-    window.open(url, "_blank");
-    setGalleryExportModalOpen(false);
+  function copyCurrentGalleryFiltersToExport() {
+    setGalleryExportPersonIds(selectedPersonIds);
+    setGalleryExportTagIds(selectedTagIds.filter((tagId) => tags.some((tag) => tag.id === tagId && !tag.is_system)));
+    setGalleryExportExcludePersonIds(excludePersonIds);
+    setGalleryExportExcludeTagIds(excludeTagIds);
   }
 
   function openGalleryExportModal() {
     setGalleryExportScope("filtered");
-    setGalleryExportPersonIds(selectedPersonIds);
-    setGalleryExportTagIds(selectedTagIds.filter((tagId) => tags.some((tag) => tag.id === tagId && !tag.is_system)));
+    setGalleryExportStartPhotoId(null);
+    copyCurrentGalleryFiltersToExport();
     setGalleryExportModalOpen(true);
   }
 
+  function openSelectedGalleryExportModal() {
+    if (selectedGalleryPhotoIds.length === 0) {
+      return;
+    }
+    setGalleryExportScope("selected");
+    setGalleryExportStartPhotoId(null);
+    copyCurrentGalleryFiltersToExport();
+    setGalleryExportModalOpen(true);
+  }
+
+  function openGalleryExportFromPhoto(photoId: number) {
+    setGalleryExportScope("from_start");
+    setGalleryExportStartPhotoId(photoId);
+    copyCurrentGalleryFiltersToExport();
+    setGalleryExportModalOpen(true);
+  }
+
+  async function handleExportGalleryPhotos() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { blob, filename } = await downloadGalleryExport({
+        scope: galleryExportScope,
+        photoIds: galleryExportScope === "selected" ? selectedGalleryPhotoIds : undefined,
+        startPhotoId: galleryExportScope === "from_start" ? galleryExportStartPhotoId ?? undefined : undefined,
+        personIds: galleryExportPersonIds,
+        tagIds: galleryExportTagIds,
+        excludePersonIds: galleryExportExcludePersonIds,
+        excludeTagIds: galleryExportExcludeTagIds
+      });
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
+      setGalleryExportModalOpen(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "导出展示图失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function handleToggleGalleryExportPerson(personId: number) {
-    setGalleryExportScope("filtered");
     setGalleryExportPersonIds((current) =>
       current.includes(personId) ? current.filter((id) => id !== personId) : [...current, personId]
     );
   }
 
   function handleToggleGalleryExportTag(tagId: number) {
-    setGalleryExportScope("filtered");
     setGalleryExportTagIds((current) =>
       current.includes(tagId) ? current.filter((id) => id !== tagId) : [...current, tagId]
     );
@@ -2326,6 +2394,15 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     });
   }
 
+  function toggleCurrentGalleryPageSelection() {
+    const pageIds = galleryPhotos.map((photo) => photo.id);
+    setSelectedGalleryPhotoIds((current) =>
+      isGalleryPageSelected(current, pageIds)
+        ? deselectGalleryPage(current, pageIds)
+        : selectGalleryPage(current, pageIds)
+    );
+  }
+
   async function handleDeleteSelectedGalleryPhotos() {
     if (selectedGalleryPhotoIds.length === 0) {
       return;
@@ -2397,6 +2474,20 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
   const totalPages = Math.ceil(galleryTotal / galleryPageSize);
   const currentPage = Math.floor(galleryOffset / galleryPageSize) + 1;
+  const galleryExportStartIndex = galleryExportStartPhotoId === null
+    ? -1
+    : galleryPhotos.findIndex((photo) => photo.id === galleryExportStartPhotoId);
+  const galleryExportStartCount = galleryExportStartIndex < 0
+    ? 0
+    : galleryOffset + galleryExportStartIndex + 1;
+  const galleryExportFiltersDisabled =
+    galleryExportScope === "all" ||
+    galleryExportScope === "selected" ||
+    galleryExportScope === "from_start";
+  const galleryExportDisabled =
+    busy ||
+    (galleryExportScope === "selected" && selectedGalleryPhotoIds.length === 0) ||
+    (galleryExportScope === "from_start" && galleryExportStartPhotoId === null);
 
   function handleJumpToPage() {
     const pageNum = parseInt(jumpPageInput, 10);
@@ -2832,6 +2923,33 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <button disabled={busy} onClick={() => toggleGallerySelectionMode()}>
                   {gallerySelectionMode ? "取消选择" : "选择图片"}
                 </button>
+                {gallerySelectionMode && (
+                  <>
+                    <button disabled={busy || galleryPhotos.length === 0} onClick={toggleCurrentGalleryPageSelection}>
+                      {isGalleryPageSelected(selectedGalleryPhotoIds, galleryPhotos.map((photo) => photo.id))
+                        ? "取消本页"
+                        : "选中本页"}
+                    </button>
+                    <button
+                      disabled={busy || selectedGalleryPhotoIds.length === 0}
+                      onClick={openSelectedGalleryExportModal}
+                    >
+                      导出选中（{selectedGalleryPhotoIds.length}）
+                    </button>
+                    <button
+                      disabled={busy || selectedGalleryPhotoIds.length !== 1}
+                      onClick={() => openGalleryExportFromPhoto(selectedGalleryPhotoIds[0])}
+                    >
+                      从此图开始导出
+                    </button>
+                    <button
+                      disabled={busy || selectedGalleryPhotoIds.length === 0}
+                      onClick={() => setSelectedGalleryPhotoIds([])}
+                    >
+                      清空选择
+                    </button>
+                  </>
+                )}
                 <button disabled={busy} onClick={openGalleryExportModal}>
                   导出展示图
                 </button>
@@ -2879,7 +2997,16 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
                 return (
                   <article key={photo.id} className={wrapClass}>
-                    <button className={photo.is_rich_text ? "photo-card rich-card" : "photo-card"} onClick={() => openGalleryLightbox(photo.id)}>
+                    <button
+                      className={`${photo.is_rich_text ? "photo-card rich-card" : "photo-card"}${selectedGalleryPhotoIds.includes(photo.id) ? " selected" : ""}`}
+                      onClick={() => {
+                        if (gallerySelectionMode) {
+                          setSelectedGalleryPhotoIds((current) => toggleGalleryPhotoSelection(current, photo.id));
+                        } else {
+                          openGalleryLightbox(photo.id);
+                        }
+                      }}
+                    >
                     {photo.is_rich_text ? (
                       <div className="rich-card-layout">
                         <img src={photo.animated_thumbnail_url} alt="图库预览" loading="lazy" />
@@ -2937,11 +3064,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                       <input
                         type="checkbox"
                         checked={selectedGalleryPhotoIds.includes(photo.id)}
-                        onChange={(event) => {
-                          setSelectedGalleryPhotoIds((current) =>
-                            event.target.checked ? [...current, photo.id] : current.filter((id) => id !== photo.id)
-                          );
-                        }}
+                        onChange={() => setSelectedGalleryPhotoIds((current) => toggleGalleryPhotoSelection(current, photo.id))}
                       />
                     </label>
                   )}
@@ -4566,10 +4689,24 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
             <div className="export-choice-row">
               <button
+                className={galleryExportScope === "selected" ? "soft-chip active" : "soft-chip"}
+                disabled={selectedGalleryPhotoIds.length === 0}
+                onClick={() => setGalleryExportScope("selected")}
+              >
+                已选图片
+              </button>
+              <button
+                className={galleryExportScope === "from_start" ? "soft-chip active" : "soft-chip"}
+                disabled={galleryExportStartPhotoId === null}
+                onClick={() => setGalleryExportScope("from_start")}
+              >
+                从指定图片起
+              </button>
+              <button
                 className={galleryExportScope === "filtered" ? "soft-chip active" : "soft-chip"}
                 onClick={() => setGalleryExportScope("filtered")}
               >
-                自定义范围
+                当前筛选结果
               </button>
               <button
                 className={galleryExportScope === "all" ? "soft-chip active" : "soft-chip"}
@@ -4578,13 +4715,20 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 全部展示图
               </button>
               <span>
-                {galleryExportScope === "all"
-                  ? "将导出图库中的全部展示图"
-                  : `按 ${galleryExportPersonIds.length} 个人物、${galleryExportTagIds.length} 个普通标签导出`}
+                {galleryExportScope === "selected" && `将导出跨页选中的 ${selectedGalleryPhotoIds.length} 张图片`}
+                {galleryExportScope === "from_start" && (
+                  galleryExportStartCount > 0
+                    ? `将导出当前筛选结果中的前 ${galleryExportStartCount} 张，包含起点及所有更新图片`
+                    : "将导出起点图片及当前筛选结果中所有更新图片"
+                )}
+                {galleryExportScope === "filtered" && (
+                  `当前筛选：包含 ${galleryExportPersonIds.length} 个人物、${galleryExportTagIds.length} 个标签，排除 ${galleryExportExcludePersonIds.length} 个人物、${galleryExportExcludeTagIds.length} 个标签`
+                )}
+                {galleryExportScope === "all" && "将导出图库中的全部展示图"}
               </span>
             </div>
 
-            <div className={galleryExportScope === "all" ? "export-filter-grid disabled" : "export-filter-grid"}>
+            <div className={galleryExportFiltersDisabled ? "export-filter-grid disabled" : "export-filter-grid"}>
               <section className="export-filter-block">
                 <div className="filter-section-head">
                   <strong>人物标签</strong>
@@ -4595,7 +4739,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     <button
                       key={`export-person-${person.id}`}
                       className={galleryExportPersonIds.includes(person.id) ? "soft-chip active" : "soft-chip"}
-                      disabled={galleryExportScope === "all"}
+                      disabled={galleryExportFiltersDisabled}
                       onClick={() => handleToggleGalleryExportPerson(person.id)}
                     >
                       {person.display_name}
@@ -4615,7 +4759,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     <button
                       key={`export-tag-${tag.id}`}
                       className={galleryExportTagIds.includes(tag.id) ? "soft-chip active" : "soft-chip"}
-                      disabled={galleryExportScope === "all"}
+                      disabled={galleryExportFiltersDisabled}
                       onClick={() => handleToggleGalleryExportTag(tag.id)}
                     >
                       #{tag.name}
@@ -4625,6 +4769,12 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 </div>
               </section>
             </div>
+            {(galleryExportScope === "filtered" || galleryExportScope === "from_start") && (
+              <p className="export-filter-note">
+                排除条件：{galleryExportExcludePersonIds.length} 个人物、{galleryExportExcludeTagIds.length} 个普通标签。
+                {galleryExportScope === "from_start" && " 起点导出固定沿用打开弹窗时的图库筛选条件。"}
+              </p>
+            )}
 
             <div className="modal-actions">
               <button
@@ -4632,12 +4782,14 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   setGalleryExportScope("filtered");
                   setGalleryExportPersonIds([]);
                   setGalleryExportTagIds([]);
+                  setGalleryExportExcludePersonIds([]);
+                  setGalleryExportExcludeTagIds([]);
                 }}
               >
                 清空筛选
               </button>
-              <button disabled={busy} onClick={handleExportGalleryPhotos}>
-                导出 ZIP
+              <button disabled={galleryExportDisabled} onClick={() => void handleExportGalleryPhotos()}>
+                {busy ? "正在生成 ZIP" : "导出 ZIP"}
               </button>
             </div>
           </div>

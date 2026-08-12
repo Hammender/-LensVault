@@ -64,7 +64,7 @@ export {
 
 export {
   addGalleryPhotoPerson, addGalleryPhotoTag, batchDeleteGalleryPhotos, createGallerySimilarityScan,
-  deleteGalleryPhoto, deleteGalleryPhotoPerson, deleteGalleryPhotoTag, getGalleryExportUrl,
+  deleteGalleryPhoto, deleteGalleryPhotoPerson, deleteGalleryPhotoTag, downloadGalleryExport, getGalleryExportUrl,
   getGalleryPhoto, getGallerySimilarityGroup, getGallerySimilarityScanOverview, getLatestGallerySimilarityScan,
   getTask, importGalleryExportZip, importGalleryPhotos, importGalleryRichPhotos, listGalleryPhotos,
   listGallerySimilarityGroups, promoteGalleryPhotoPersonSample, reRecognizeGalleryPhoto,

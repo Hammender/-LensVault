@@ -12,11 +12,14 @@ import pytest
 from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.orm import Session
 
-from app.api.gallery import _gallery_display_order, export_gallery_photos
+from fastapi import HTTPException
+
+from app.api.gallery import _gallery_display_order, _resolve_gallery_export_photos, export_gallery_photos
 from app.core.config import Settings
 from app.db import Base
 from app.lifecycle import ensure_gallery_display_order_columns
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, Tag
+from app.schemas import GalleryPhotoExportRequest
 from app.services.importer import PictureService
 from app.tools.cleanup_gallery_zip_import import cleanup_gallery_zip_import
 
@@ -274,6 +277,97 @@ def test_export_v2_uses_the_same_stable_display_order(db_session: Session) -> No
         "older.jpg",
     ]
     assert [item["display_index"] for item in manifest["photos"]] == [0, 1, 2]
+
+
+def test_selected_export_uses_gallery_order_and_rejects_unknown_ids(db_session: Session) -> None:
+    photos = [
+        GalleryPhoto(
+            filename=f"{name}.jpg",
+            content_type="image/jpeg",
+            sha256=str(index) * 64,
+            object_key=f"gallery/{name}.jpg",
+            is_rich_text=False,
+            display_batch_at=datetime(2026, 8, 5, hour),
+            display_index=0,
+        )
+        for index, (name, hour) in enumerate(
+            [("older", 10), ("newer", 11), ("newest", 12)],
+            start=1,
+        )
+    ]
+    db_session.add_all(photos)
+    db_session.commit()
+
+    selected = _resolve_gallery_export_photos(
+        db_session,
+        None,  # type: ignore[arg-type]
+        GalleryPhotoExportRequest(scope="selected", photo_ids=[photos[0].id, photos[2].id]),
+    )
+
+    assert [photo.filename for photo in selected] == ["newest.jpg", "older.jpg"]
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_gallery_export_photos(
+            db_session,
+            None,  # type: ignore[arg-type]
+            GalleryPhotoExportRequest(scope="selected", photo_ids=[photos[0].id, 999999]),
+        )
+    assert exc_info.value.detail == "所选图片不存在或不属于当前空间。"
+
+
+def test_from_start_export_includes_newer_filtered_photos_and_start(db_session: Session) -> None:
+    included_tag = Tag(name="保留", is_system=False)
+    excluded_tag = Tag(name="排除", is_system=False)
+    photos = [
+        GalleryPhoto(
+            filename=f"{name}.jpg",
+            content_type="image/jpeg",
+            sha256=str(index) * 64,
+            object_key=f"gallery/{name}.jpg",
+            is_rich_text=False,
+            display_batch_at=datetime(2026, 8, 5, hour),
+            display_index=0,
+        )
+        for index, (name, hour) in enumerate(
+            [("old", 9), ("start", 10), ("hidden", 11), ("new", 12)],
+            start=1,
+        )
+    ]
+    db_session.add_all([included_tag, excluded_tag, *photos])
+    db_session.flush()
+    db_session.add_all(
+        [
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=included_tag.id, source="manual")
+            for photo in photos
+        ]
+        + [
+            GalleryPhotoTag(gallery_photo_id=photos[2].id, tag_id=excluded_tag.id, source="manual"),
+        ]
+    )
+    db_session.commit()
+
+    result = _resolve_gallery_export_photos(
+        db_session,
+        None,  # type: ignore[arg-type]
+        GalleryPhotoExportRequest(
+            scope="from_start",
+            start_photo_id=photos[1].id,
+            tag_ids=[included_tag.id],
+            exclude_tag_ids=[excluded_tag.id],
+        ),
+    )
+
+    assert [photo.filename for photo in result] == ["new.jpg", "start.jpg"]
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_gallery_export_photos(
+            db_session,
+            None,  # type: ignore[arg-type]
+            GalleryPhotoExportRequest(
+                scope="from_start",
+                start_photo_id=photos[2].id,
+                exclude_tag_ids=[excluded_tag.id],
+            ),
+        )
+    assert exc_info.value.detail == "起点图片不在当前筛选结果中。"
 
 
 def test_display_order_migration_backfills_without_changing_old_order() -> None:

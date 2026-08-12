@@ -32,6 +32,7 @@ from app.schemas import (
     GallerySimilarityScanRead,
     GalleryPhotoBatchDeleteRequest,
     GalleryPhotoDetail,
+    GalleryPhotoExportRequest,
     GalleryPhotoPersonTagCreate,
     GalleryPhotoRichTextUpdate,
     GalleryPhotoTagCreate,
@@ -304,24 +305,50 @@ async def import_gallery_rich_photos(
     return TaskRead.model_validate(task)
 
 
-@imports_router.get("/api/gallery/photos/export")
-def export_gallery_photos(
-    request: Request,
-    scope: str = Query(default="all", pattern="^(all|filtered)$"),
-    person_ids: list[int] = Query(default=[]),
-    tag_ids: list[int] = Query(default=[]),
-    exclude_person_ids: list[int] = Query(default=[]),
-    exclude_tag_ids: list[int] = Query(default=[]),
-    db: Session = Depends(get_db),
-    current: CurrentContext = Depends(require_context),
-) -> StreamingResponse:
+def _resolve_gallery_export_photos(
+    db: Session,
+    workspace_id: int,
+    payload: GalleryPhotoExportRequest,
+) -> list[GalleryPhoto]:
     base_query = (
         select(GalleryPhoto)
-        .where(GalleryPhoto.workspace_id == current.workspace_id)
+        .where(GalleryPhoto.workspace_id == workspace_id)
         .order_by(*_gallery_display_order())
     )
-    query = _apply_gallery_filters(base_query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids) if scope == "filtered" else base_query
-    photos = db.scalars(query).unique().all()
+    if payload.scope == "all":
+        photos = db.scalars(base_query).unique().all()
+    elif payload.scope == "selected":
+        requested_ids = set(payload.photo_ids)
+        photos = db.scalars(base_query.where(GalleryPhoto.id.in_(requested_ids))).unique().all()
+        if {photo.id for photo in photos} != requested_ids:
+            raise HTTPException(status_code=422, detail="所选图片不存在或不属于当前空间。")
+    else:
+        filtered_query = _apply_gallery_filters(
+            base_query,
+            payload.person_ids,
+            payload.tag_ids,
+            payload.exclude_person_ids,
+            payload.exclude_tag_ids,
+        )
+        photos = db.scalars(filtered_query).unique().all()
+        if payload.scope == "from_start":
+            start_index = next(
+                (index for index, photo in enumerate(photos) if photo.id == payload.start_photo_id),
+                None,
+            )
+            if start_index is None:
+                raise HTTPException(status_code=422, detail="起点图片不在当前筛选结果中。")
+            photos = photos[: start_index + 1]
+    if not photos:
+        raise HTTPException(status_code=422, detail="当前导出范围内没有图片。")
+    return list(photos)
+
+
+def _build_gallery_export_response(
+    request: Request,
+    photos: list[GalleryPhoto],
+    scope: str,
+) -> StreamingResponse:
     for photo in photos:
         photo.person_tags
         photo.tags
@@ -377,6 +404,39 @@ def export_gallery_photos(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="gallery_export_{shanghai_now():%Y%m%d_%H%M%S}.zip"'},
     )
+
+
+@imports_router.get("/api/gallery/photos/export")
+def export_gallery_photos(
+    request: Request,
+    scope: str = Query(default="all", pattern="^(all|filtered)$"),
+    person_ids: list[int] = Query(default=[]),
+    tag_ids: list[int] = Query(default=[]),
+    exclude_person_ids: list[int] = Query(default=[]),
+    exclude_tag_ids: list[int] = Query(default=[]),
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> StreamingResponse:
+    payload = GalleryPhotoExportRequest(
+        scope=scope,
+        person_ids=person_ids,
+        tag_ids=tag_ids,
+        exclude_person_ids=exclude_person_ids,
+        exclude_tag_ids=exclude_tag_ids,
+    )
+    photos = _resolve_gallery_export_photos(db, current.workspace_id, payload)
+    return _build_gallery_export_response(request, photos, scope)
+
+
+@imports_router.post("/api/gallery/photos/export")
+def export_gallery_photos_by_selection(
+    payload: GalleryPhotoExportRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> StreamingResponse:
+    photos = _resolve_gallery_export_photos(db, current.workspace_id, payload)
+    return _build_gallery_export_response(request, photos, payload.scope)
 
 
 @imports_router.post("/api/gallery/photos/import-zip", response_model=TaskRead)

@@ -20,6 +20,9 @@ export function useGalleryController({ persons, tags }: UseGalleryControllerOpti
   const [galleryExportScope, setGalleryExportScope] = useState<GalleryExportScope>("filtered");
   const [galleryExportPersonIds, setGalleryExportPersonIds] = useState<number[]>([]);
   const [galleryExportTagIds, setGalleryExportTagIds] = useState<number[]>([]);
+  const [galleryExportExcludePersonIds, setGalleryExportExcludePersonIds] = useState<number[]>([]);
+  const [galleryExportExcludeTagIds, setGalleryExportExcludeTagIds] = useState<number[]>([]);
+  const [galleryExportStartPhotoId, setGalleryExportStartPhotoId] = useState<number | null>(null);
   const [lightboxPhotoId, setLightboxPhotoId] = useState<number | null>(null);
   const [selectedPersonIds, setSelectedPersonIds] = useState<number[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
@@ -88,6 +91,12 @@ export function useGalleryController({ persons, tags }: UseGalleryControllerOpti
     setGalleryExportPersonIds,
     galleryExportTagIds,
     setGalleryExportTagIds,
+    galleryExportExcludePersonIds,
+    setGalleryExportExcludePersonIds,
+    galleryExportExcludeTagIds,
+    setGalleryExportExcludeTagIds,
+    galleryExportStartPhotoId,
+    setGalleryExportStartPhotoId,
     lightboxPhotoId,
     setLightboxPhotoId,
     selectedPersonIds,

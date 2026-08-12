@@ -112,6 +112,24 @@ class GalleryPhotoBatchDeleteRequest(BaseModel):
     photo_ids: list[int] = Field(min_length=1)
 
 
+class GalleryPhotoExportRequest(BaseModel):
+    scope: Literal["all", "filtered", "selected", "from_start"]
+    photo_ids: list[int] = Field(default_factory=list)
+    start_photo_id: int | None = None
+    person_ids: list[int] = Field(default_factory=list)
+    tag_ids: list[int] = Field(default_factory=list)
+    exclude_person_ids: list[int] = Field(default_factory=list)
+    exclude_tag_ids: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "GalleryPhotoExportRequest":
+        if self.scope == "selected" and not self.photo_ids:
+            raise ValueError("请至少选择一张图片。")
+        if self.scope == "from_start" and self.start_photo_id is None:
+            raise ValueError("请选择范围起点图片。")
+        return self
+
+
 class TagStatistics(BaseModel):
     tag_id: int
     tag_name: str
