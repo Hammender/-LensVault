@@ -26,6 +26,9 @@ INCOMPLETE_TASK_TYPES = (
     "video_subtitle_generation",
     "gallery_similarity_scan",
     "acquisition_similarity_scan",
+    "acquisition_similarity_scan_mirror_pending",
+    "acquisition_similarity_scan_normal_gallery",
+    "acquisition_similarity_scan_mirror_gallery",
 )
 
 IGNORED_GALLERY_FACE_CLEANUP_KEY = "2026_08_08_delete_ignored_gallery_face_records"
@@ -153,6 +156,39 @@ def ensure_gallery_similarity_group_columns(engine: Engine) -> None:
                 "ON gallery_similarity_groups (review_status)"
             )
         )
+
+
+def ensure_similarity_scan_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    additions = {
+        "gallery_similarity_features": {
+            "mirror_phash": "ALTER TABLE gallery_similarity_features ADD COLUMN mirror_phash VARCHAR(64)",
+            "mirror_dhash": "ALTER TABLE gallery_similarity_features ADD COLUMN mirror_dhash VARCHAR(64)",
+        },
+        "gallery_similarity_scans": {
+            "scan_type": "ALTER TABLE gallery_similarity_scans ADD COLUMN scan_type VARCHAR(32) NOT NULL DEFAULT 'normal'",
+        },
+        "acquisition_similarity_candidates": {
+            "scan_type": "ALTER TABLE acquisition_similarity_candidates ADD COLUMN scan_type VARCHAR(32) NOT NULL DEFAULT 'normal'",
+            "scan_scope": "ALTER TABLE acquisition_similarity_candidates ADD COLUMN scan_scope VARCHAR(32) NOT NULL DEFAULT 'pending_only'",
+            "relation_type": "ALTER TABLE acquisition_similarity_candidates ADD COLUMN relation_type VARCHAR(32) NOT NULL DEFAULT 'near_duplicate'",
+        },
+    }
+    with engine.begin() as connection:
+        for table_name, columns in additions.items():
+            if table_name not in tables:
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, statement in columns.items():
+                if column_name not in existing:
+                    connection.execute(text(statement))
+        if "gallery_similarity_scans" in tables:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_gallery_similarity_scans_scan_type ON gallery_similarity_scans (scan_type)"))
+        if "acquisition_similarity_candidates" in tables:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_acquisition_similarity_candidates_scan_type ON acquisition_similarity_candidates (scan_type)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_acquisition_similarity_candidates_scan_scope ON acquisition_similarity_candidates (scan_scope)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_acquisition_similarity_candidates_relation_type ON acquisition_similarity_candidates (relation_type)"))
 
 
 def ensure_gallery_display_order_columns(engine: Engine) -> None:
@@ -672,6 +708,7 @@ def initialize_database(engine: Engine) -> None:
     ensure_video_seek_columns(engine)
     ensure_face_recognition_columns(engine)
     ensure_gallery_similarity_group_columns(engine)
+    ensure_similarity_scan_columns(engine)
     if is_fresh_database:
         mark_timezone_baseline(engine)
     else:

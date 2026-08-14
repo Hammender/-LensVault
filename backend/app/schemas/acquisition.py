@@ -6,7 +6,9 @@ from pydantic import Field, model_validator
 
 from app.schemas.base import BaseModel, ShanghaiDateTime as datetime
 
-from .gallery import TaskRead
+from .gallery import GalleryPhotoListItem, TaskRead
+
+
 class AcquisitionSourceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     base_url: str = Field(min_length=1, max_length=1024)
@@ -164,9 +166,24 @@ class AcquisitionSimilarityGroupRead(BaseModel):
     max_score: float
     average_score: float
     members: list[AcquisitionAssetRead]
+    gallery_members: list["AcquisitionSimilarityGalleryMemberRead"] = Field(default_factory=list)
+
+
+class AcquisitionSimilarityGalleryMemberRead(BaseModel):
+    photo: GalleryPhotoListItem
+    score: float
+    quality_score: float
+    recommended_keep: bool = False
+
+
+class AcquisitionSimilarityScanCreate(BaseModel):
+    scan_type: Literal["normal", "mirror"] = "normal"
+    scope: Literal["pending_only", "pending_to_gallery"] = "pending_only"
 
 
 class AcquisitionSimilarityResultRead(BaseModel):
+    scan_type: Literal["normal", "mirror"] = "normal"
+    scope: Literal["pending_only", "pending_to_gallery"] = "pending_only"
     task: TaskRead | None
     generated_at: datetime | None
     is_stale: bool

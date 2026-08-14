@@ -1,4 +1,4 @@
-import type { Task } from "./gallery";
+import type { GalleryPhotoListItem, Task } from "./gallery";
 
 export type AcquisitionSource = {
   id: number;
@@ -183,9 +183,17 @@ export type AcquisitionSimilarityGroup = {
   max_score: number;
   average_score: number;
   members: AcquisitionAsset[];
+  gallery_members: Array<{
+    photo: GalleryPhotoListItem;
+    score: number;
+    quality_score: number;
+    recommended_keep: boolean;
+  }>;
 };
 
 export type AcquisitionSimilarityResult = {
+  scan_type: "normal" | "mirror";
+  scope: "pending_only" | "pending_to_gallery";
   task: Task | null;
   generated_at: string | null;
   is_stale: boolean;

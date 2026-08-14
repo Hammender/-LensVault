@@ -102,6 +102,8 @@
 .review-toolbar-leading { min-width: 0; flex-wrap: wrap; }
 .acquisition-review-mode { flex: 0 0 auto; }
 .acquisition-review-mode button { min-height: 34px; white-space: nowrap; }
+.similarity-scan-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.similarity-option-switch button { min-height: 32px; padding: 5px 8px; font-size: .72rem; white-space: nowrap; }
 .similarity-workspace { display: grid; gap: 12px; }
 .similarity-task { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(180px, .7fr) 42px; align-items: center; gap: 12px; border-left: 4px solid #b77c22; background: #fffdf8; padding: 10px 12px; }
 .similarity-task.status-completed { border-left-color: var(--acq-teal); }
@@ -124,13 +126,18 @@
 .similarity-members { display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); gap: 7px; }
 .similarity-member { min-width: 0; border: 1px solid var(--acq-line); background: var(--surface); }
 .similarity-member.selected { border-color: var(--acq-teal); box-shadow: inset 0 0 0 1px var(--acq-teal); }
-.acquisition-page button.similarity-image-button { display: grid; width: 100%; aspect-ratio: 1 / 1; place-items: center; overflow: hidden; border: 0; background: var(--surface); color: var(--muted); padding: 0; cursor: zoom-in; }
-.acquisition-page button.similarity-image-button:focus-visible { outline: 3px solid var(--acq-teal); outline-offset: -3px; }
+.acquisition-page .similarity-image-button { display: grid; width: 100%; aspect-ratio: 1 / 1; place-items: center; overflow: hidden; border: 0; background: var(--surface); color: var(--muted); padding: 0; cursor: zoom-in; }
+.acquisition-page .similarity-image-button:focus-visible { outline: 3px solid var(--acq-teal); outline-offset: -3px; }
 .similarity-image-button img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .similarity-image-button span { font-size: .7rem; }
 .similarity-member > label { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; gap: 5px; min-height: 34px; padding: 5px 6px; cursor: pointer; }
 .similarity-member > label input { width: 14px; height: 14px; margin: 0; padding: 0; }
 .similarity-member > label span { overflow: hidden; color: var(--acq-ink); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+.similarity-source-label { display: block; border-top: 1px solid var(--acq-line); padding: 4px 6px; color: var(--muted); font-size: .64rem; }
+.similarity-member.gallery-readonly { border-style: dashed; }
+.similarity-gallery-meta { display: grid; gap: 2px; padding: 6px; }
+.similarity-gallery-meta > span { overflow: hidden; color: var(--acq-ink); font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+.similarity-gallery-meta > small { color: var(--muted); font-size: .62rem; line-height: 1.35; }
 .similarity-empty { display: grid; min-height: 190px; place-items: center; align-content: center; gap: 7px; border: 1px dashed var(--acq-line); color: var(--muted); text-align: center; }
 .similarity-empty svg { color: var(--acq-teal); }
 .similarity-empty strong { color: var(--acq-ink); font-size: .88rem; }

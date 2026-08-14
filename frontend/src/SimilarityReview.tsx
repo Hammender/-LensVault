@@ -31,6 +31,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
   const [personId, setPersonId] = useState<number | null>(null);
   const [personSearch, setPersonSearch] = useState("全部人物");
   const [includeCrossType, setIncludeCrossType] = useState(false);
+  const [scanType, setScanType] = useState<"normal" | "mirror">("normal");
   const [tier, setTier] = useState<"near_duplicate" | "same_scene">("near_duplicate");
   const [activeScan, setActiveScan] = useState<GallerySimilarityScan | null>(null);
   const [resultScan, setResultScan] = useState<GallerySimilarityScan | null>(null);
@@ -74,8 +75,8 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     ];
   }, [matchingScanPersons, personSearch]);
   const targetResult = useMemo(
-    () => findScanForScope(scanHistory, personId, includeCrossType),
-    [includeCrossType, personId, scanHistory]
+    () => findScanForScope(scanHistory, personId, includeCrossType, scanType),
+    [includeCrossType, personId, scanHistory, scanType]
   );
 
   function personLabel(targetPersonId: number | null): string {
@@ -87,6 +88,8 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     setPersonId(targetScan.person_id);
     setPersonSearch(personLabel(targetScan.person_id));
     setIncludeCrossType(targetScan.include_cross_type);
+    setScanType(targetScan.scan_type);
+    if (targetScan.scan_type === "mirror") setTier("near_duplicate");
     setOffset(0);
   }
 
@@ -100,13 +103,21 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     setPersonSearch(personLabel(nextPersonId));
     setIncludeCrossType(nextIncludeCrossType);
     setOffset(0);
-    selectResult(findScanForScope(scanHistory, nextPersonId, nextIncludeCrossType), false);
+    selectResult(findScanForScope(scanHistory, nextPersonId, nextIncludeCrossType, scanType), false);
+  }
+
+  function selectScanType(nextScanType: "normal" | "mirror") {
+    setScanType(nextScanType);
+    if (nextScanType === "mirror") setTier("near_duplicate");
+    setOffset(0);
+    selectResult(findScanForScope(scanHistory, personId, includeCrossType, nextScanType), false);
   }
 
   function scanHistoryLabel(targetScan: GallerySimilarityScan): string {
     const scope = targetScan.include_cross_type ? "跨类型" : "分类型";
     const timestamp = formatDate(targetScan.completed_at || targetScan.created_at);
-    return `${personLabel(targetScan.person_id)} · ${scope} · ${timestamp} · ${targetScan.group_count} 组${targetScan.is_stale ? " · 已过期" : ""}`;
+    const type = targetScan.scan_type === "mirror" ? "镜像相似" : "普通相似";
+    return `${type} · ${personLabel(targetScan.person_id)} · ${scope} · ${timestamp} · ${targetScan.group_count} 组${targetScan.is_stale ? " · 已过期" : ""}`;
   }
 
   const loadGroups = useCallback(async (
@@ -225,7 +236,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       : "普通图库与图文图库分别匹配";
     const confirmed = await confirm({
       title: "开始相似图片扫描",
-      message: `确认开始相似图片扫描吗？\n\n扫描人物：${personLabel(personId)}\n匹配方式：${matchMode}\n\n扫描耗时较长，完成前会继续保留当前成功结果。`,
+      message: `确认开始${scanType === "mirror" ? "镜像相似" : "普通相似"}图片扫描吗？\n\n扫描人物：${personLabel(personId)}\n匹配方式：${matchMode}\n\n扫描耗时较长，完成前会继续保留当前成功结果。`,
       confirmLabel: "开始扫描"
     });
     if (!confirmed) return;
@@ -233,7 +244,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     setBusy(true);
     setNotice(null);
     try {
-      const created = await createGallerySimilarityScan({ person_id: personId, include_cross_type: includeCrossType });
+      const created = await createGallerySimilarityScan({ person_id: personId, include_cross_type: includeCrossType, scan_type: scanType });
       setActiveScan(created);
       setSelectedIds([]);
     } catch (error) {
@@ -325,6 +336,10 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       </section>
 
       <section className="panel similarity-controls">
+        <div className="similarity-check-type" aria-label="相似检查类型">
+          <button type="button" className={scanType === "normal" ? "active" : ""} onClick={() => selectScanType("normal")}>普通相似</button>
+          <button type="button" className={scanType === "mirror" ? "active" : ""} onClick={() => selectScanType("mirror")}>镜像相似</button>
+        </div>
         <div className="similarity-person-control">
           <span>扫描人物</span>
           <SearchableSelect
@@ -387,7 +402,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
         <section className={`panel similarity-status ${resultScan.is_stale ? "stale" : ""}`}>
           <div>
             <strong>当前成功结果</strong>
-            <span>{personLabel(resultScan.person_id)} · {resultScan.include_cross_type ? "跨类型" : "分类型"} · 完成于 {formatDate(resultScan.completed_at || resultScan.created_at)}</span>
+            <span>{resultScan.scan_type === "mirror" ? "镜像相似" : "普通相似"} · {personLabel(resultScan.person_id)} · {resultScan.include_cross_type ? "跨类型" : "分类型"} · 完成于 {formatDate(resultScan.completed_at || resultScan.created_at)}</span>
           </div>
           <small>{resultScan.photo_count} 张图片 · {resultScan.candidate_pair_count} 个候选对 · {resultScan.group_count} 个相似组</small>
           {resultScan.is_stale && <b>图库内容已变化，当前结果可能过期</b>}
@@ -397,7 +412,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       <section className="similarity-results">
         <div className="similarity-tabs">
           <button className={tier === "near_duplicate" ? "active" : ""} onClick={() => { setTier("near_duplicate"); setOffset(0); }}>近重复</button>
-          <button className={tier === "same_scene" ? "active" : ""} onClick={() => { setTier("same_scene"); setOffset(0); }}>同场景相似</button>
+          {resultScan?.scan_type !== "mirror" && <button className={tier === "same_scene" ? "active" : ""} onClick={() => { setTier("same_scene"); setOffset(0); }}>同场景相似</button>}
           <span>{total} 组</span>
           <button className="danger-button" disabled={!canDelete || !selectedIds.length || busy} onClick={() => void deleteSelected()}>
             <Trash2 size={15} /> 删除选中（{selectedIds.length}）

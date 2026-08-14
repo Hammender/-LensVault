@@ -78,6 +78,8 @@ class GallerySimilarityFeature(Base):
     feature_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     phash: Mapped[str] = mapped_column(String(64), nullable=False)
     dhash: Mapped[str] = mapped_column(String(64), nullable=False)
+    mirror_phash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mirror_dhash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     blur_score: Mapped[float] = mapped_column(Float, nullable=False)
     quality_score: Mapped[float] = mapped_column(Float, nullable=False)
     vector_point_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
@@ -104,6 +106,7 @@ class GallerySimilarityScan(Base):
         ForeignKey("persons.id", ondelete="SET NULL"), nullable=True, index=True
     )
     include_cross_type: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    scan_type: Mapped[str] = mapped_column(String(32), default="normal", nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     is_stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     feature_version: Mapped[str] = mapped_column(String(64), nullable=False)

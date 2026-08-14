@@ -6,6 +6,7 @@ export type GallerySimilarityScan = {
   task_id: string | null;
   person_id: number | null;
   include_cross_type: boolean;
+  scan_type: "normal" | "mirror";
   status: string;
   is_stale: boolean;
   feature_version: string;

@@ -12,6 +12,7 @@ from .people import PersonRead
 class GallerySimilarityScanCreate(BaseModel):
     person_id: int | None = None
     include_cross_type: bool = False
+    scan_type: Literal["normal", "mirror"] = "normal"
 
 
 class GallerySimilarityScanRead(BaseModel):
@@ -19,6 +20,7 @@ class GallerySimilarityScanRead(BaseModel):
     task_id: str | None
     person_id: int | None
     include_cross_type: bool
+    scan_type: Literal["normal", "mirror"]
     status: str
     is_stale: bool
     feature_version: str

@@ -5,6 +5,7 @@ from datetime import datetime
 from io import BytesIO
 import json
 import logging
+from typing import Literal
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -209,6 +210,7 @@ def _gallery_similarity_scan_read(db: Session, scan: GallerySimilarityScan) -> G
         task_id=scan.task_id,
         person_id=scan.person_id,
         include_cross_type=scan.include_cross_type,
+        scan_type=scan.scan_type,
         status=scan.status,
         is_stale=scan.is_stale,
         feature_version=scan.feature_version,
@@ -494,6 +496,7 @@ def create_gallery_similarity_scan(
         task_id=task.id,
         person_id=payload.person_id,
         include_cross_type=payload.include_cross_type,
+        scan_type=payload.scan_type,
         status="pending",
         feature_version=request.app.state.settings.gallery_similarity_model_version,
     )
@@ -514,12 +517,14 @@ def create_gallery_similarity_scan(
 def get_latest_gallery_similarity_scan(
     person_id: int | None = None,
     include_cross_type: bool = False,
+    scan_type: Literal["normal", "mirror"] = "normal",
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> GallerySimilarityScanRead | None:
     query = select(GallerySimilarityScan).where(
         GallerySimilarityScan.workspace_id == current.workspace_id,
         GallerySimilarityScan.include_cross_type == include_cross_type,
+        GallerySimilarityScan.scan_type == scan_type,
     )
     query = query.where(GallerySimilarityScan.person_id.is_(None) if person_id is None else GallerySimilarityScan.person_id == person_id)
     scan = db.scalar(query.order_by(GallerySimilarityScan.created_at.desc()).limit(1))

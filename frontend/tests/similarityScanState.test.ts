@@ -6,13 +6,15 @@ import type { GallerySimilarityScan } from "../src/types";
 function scan(
   id: string,
   personId: number | null,
-  includeCrossType: boolean
+  includeCrossType: boolean,
+  scanType: "normal" | "mirror" = "normal"
 ): GallerySimilarityScan {
   return {
     id,
     task_id: null,
     person_id: personId,
     include_cross_type: includeCrossType,
+    scan_type: scanType,
     status: "completed",
     is_stale: false,
     feature_version: "dinov2-v1",
@@ -45,6 +47,12 @@ describe("相似扫描结果恢复", () => {
     expect(findScanForScope(scans, 7, false)?.id).toBe("person");
     expect(findScanForScope(scans, 7, true)).toBeNull();
     expect(scanScopeKey(null, true)).not.toBe(scanScopeKey(null, false));
+  });
+
+  it("普通与镜像扫描结果彼此隔离", () => {
+    const scoped = [scan("normal", 7, false), scan("mirror", 7, false, "mirror")];
+    expect(findScanForScope(scoped, 7, false, "normal")?.id).toBe("normal");
+    expect(findScanForScope(scoped, 7, false, "mirror")?.id).toBe("mirror");
   });
 
   it("没有成功结果时返回空", () => {

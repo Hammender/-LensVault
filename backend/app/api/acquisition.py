@@ -4,9 +4,9 @@ import json
 from collections.abc import Iterator
 from datetime import datetime
 from threading import BoundedSemaphore
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session, aliased
@@ -28,6 +28,7 @@ from app.models import (
     AcquisitionSource,
     AcquisitionSourceScript,
     GalleryPhoto,
+    GallerySimilarityFeature,
     Task,
 )
 from app.schemas import (
@@ -51,11 +52,13 @@ from app.schemas import (
     AcquisitionSourceScriptBind,
     AcquisitionSourceUpdate,
     AcquisitionSimilarityResultRead,
+    AcquisitionSimilarityScanCreate,
     PaginatedAcquisitionAssets,
     PaginatedAcquisitionImportBatchItems,
     PaginatedAcquisitionImportBatches,
     TaskRead,
 )
+from app.mappers.gallery import gallery_photo_to_list_item
 from app.services.acquisition import AcquisitionService
 from app.services.tasks import create_task, update_task
 from app.services.thumbnails import render_acquisition_preview
@@ -63,6 +66,12 @@ from app.services.thumbnails import render_acquisition_preview
 
 router = APIRouter(prefix="/api/acquisition", tags=["图片采集"])
 _preview_render_slots = BoundedSemaphore(value=2)
+_SIMILARITY_TASK_KINDS = {
+    ("normal", "pending_only"): "acquisition_similarity_scan",
+    ("mirror", "pending_only"): "acquisition_similarity_scan_mirror_pending",
+    ("normal", "pending_to_gallery"): "acquisition_similarity_scan_normal_gallery",
+    ("mirror", "pending_to_gallery"): "acquisition_similarity_scan_mirror_gallery",
+}
 
 
 def _service(request: Request) -> AcquisitionService:
@@ -325,7 +334,14 @@ def _batch_item_details(
     return details
 
 
-def _process_similarity(session_factory, service: AcquisitionService, workspace_id: int, task_id: str) -> None:
+def _process_similarity(
+    session_factory,
+    service: AcquisitionService,
+    workspace_id: int,
+    task_id: str,
+    scan_type: str,
+    scope: str,
+) -> None:
     db = session_factory()
     try:
         update_task(db, task_id, status="running", progress=0.02, message="正在准备待审核图片")
@@ -334,6 +350,8 @@ def _process_similarity(session_factory, service: AcquisitionService, workspace_
             workspace_id,
             scan_task_id=task_id,
             progress=lambda value, message: update_task(db, task_id, progress=value, message=message),
+            scan_type=scan_type,
+            scope=scope,
         )
         update_task(db, task_id, status="completed", progress=1.0, message=f"扫描完成，发现 {created} 条相似关系")
     except Exception as exc:
@@ -341,6 +359,133 @@ def _process_similarity(session_factory, service: AcquisitionService, workspace_
         update_task(db, task_id, status="failed", message=f"相似扫描失败：{exc}")
     finally:
         db.close()
+
+
+def _list_gallery_similarity(
+    db: Session,
+    workspace_id: int,
+    latest_task: Task | None,
+    scan_type: str,
+    scope: str,
+    offset: int,
+    limit: int,
+) -> AcquisitionSimilarityResultRead:
+    rows = db.execute(
+        select(
+            AcquisitionSimilarityCandidate,
+            AcquisitionAsset,
+            GalleryPhoto,
+            GallerySimilarityFeature,
+        )
+        .join(AcquisitionAsset, AcquisitionAsset.id == AcquisitionSimilarityCandidate.asset_id)
+        .join(GalleryPhoto, GalleryPhoto.id == AcquisitionSimilarityCandidate.gallery_photo_id)
+        .outerjoin(
+            GallerySimilarityFeature,
+            GallerySimilarityFeature.gallery_photo_id == GalleryPhoto.id,
+        )
+        .where(
+            AcquisitionSimilarityCandidate.workspace_id == workspace_id,
+            AcquisitionSimilarityCandidate.scan_type == scan_type,
+            AcquisitionSimilarityCandidate.scan_scope == scope,
+            AcquisitionSimilarityCandidate.other_asset_id.is_(None),
+            AcquisitionSimilarityCandidate.gallery_photo_id.is_not(None),
+            AcquisitionAsset.status == "pending_review",
+            AcquisitionAsset.object_key.is_not(None),
+            GalleryPhoto.workspace_id == workspace_id,
+        )
+        .order_by(AcquisitionSimilarityCandidate.score.desc())
+    ).all()
+    parent: dict[str, str] = {}
+    pending_assets: dict[str, AcquisitionAsset] = {}
+    gallery_photos: dict[int, GalleryPhoto] = {}
+    gallery_quality: dict[int, float] = {}
+    edge_scores: dict[tuple[str, str], float] = {}
+
+    def find(node_id: str) -> str:
+        parent.setdefault(node_id, node_id)
+        while parent[node_id] != node_id:
+            parent[node_id] = parent[parent[node_id]]
+            node_id = parent[node_id]
+        return node_id
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for candidate, asset, photo, feature in rows:
+        pending_node = f"pending:{asset.id}"
+        gallery_node = f"gallery:{photo.id}"
+        pending_assets[asset.id] = asset
+        gallery_photos[photo.id] = photo
+        gallery_quality[photo.id] = float(feature.quality_score) if feature is not None else 0.0
+        union(pending_node, gallery_node)
+        edge_scores[(pending_node, gallery_node)] = max(
+            candidate.score,
+            edge_scores.get((pending_node, gallery_node), 0.0),
+        )
+
+    grouped_nodes: dict[str, list[str]] = {}
+    for node_id in parent:
+        grouped_nodes.setdefault(find(node_id), []).append(node_id)
+    groups: list[dict[str, object]] = []
+    for nodes in grouped_nodes.values():
+        pending_ids = sorted(node.removeprefix("pending:") for node in nodes if node.startswith("pending:"))
+        gallery_ids = sorted(int(node.removeprefix("gallery:")) for node in nodes if node.startswith("gallery:"))
+        if not pending_ids or not gallery_ids:
+            continue
+        scores = [
+            score
+            for (left, right), score in edge_scores.items()
+            if left in nodes and right in nodes
+        ]
+        groups.append({
+            "id": "|".join(sorted(nodes)),
+            "max_score": max(scores, default=0.0),
+            "average_score": sum(scores) / len(scores) if scores else 0.0,
+            "members": [_asset_read(pending_assets[asset_id]).model_dump() for asset_id in pending_ids],
+            "gallery_members": [
+                {
+                    "photo": gallery_photo_to_list_item(gallery_photos[photo_id]).model_dump(),
+                    "score": max(
+                        (
+                            score
+                            for (left, right), score in edge_scores.items()
+                            if right == f"gallery:{photo_id}" and left in nodes
+                        ),
+                        default=0.0,
+                    ),
+                    "quality_score": gallery_quality[photo_id],
+                    "recommended_keep": False,
+                }
+                for photo_id in gallery_ids
+            ],
+        })
+    groups.sort(key=lambda group: (-float(group["max_score"]), str(group["id"])))
+    generated_at = max((candidate.created_at for candidate, *_rest in rows), default=None)
+    if generated_at is None and latest_task is not None and latest_task.status == "completed":
+        generated_at = latest_task.updated_at
+    is_stale = False
+    if generated_at is not None:
+        is_stale = bool(db.scalar(select(exists().where(
+            AcquisitionAsset.workspace_id == workspace_id,
+            AcquisitionAsset.status == "pending_review",
+            AcquisitionAsset.created_at > generated_at,
+        )))) or bool(db.scalar(select(exists().where(
+            GalleryPhoto.workspace_id == workspace_id,
+            GalleryPhoto.created_at > generated_at,
+        ))))
+    return AcquisitionSimilarityResultRead(
+        scan_type=scan_type,
+        scope=scope,
+        task=TaskRead.model_validate(latest_task) if latest_task is not None else None,
+        generated_at=generated_at,
+        is_stale=is_stale,
+        groups=groups[offset : offset + limit],
+        total=len(groups),
+        offset=offset,
+        limit=limit,
+    )
 
 
 def _process_export(session_factory, service: AcquisitionService, job_id: str) -> None:
@@ -759,27 +904,34 @@ def reject_assets(
 def start_similarity_scan(
     background_tasks: BackgroundTasks,
     request: Request,
+    payload: AcquisitionSimilarityScanCreate | None = Body(default=None),
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
+    payload = payload or AcquisitionSimilarityScanCreate()
+    task_kind = _SIMILARITY_TASK_KINDS[(payload.scan_type, payload.scope)]
     active = db.scalar(
         select(Task)
         .where(
             Task.workspace_id == current.workspace_id,
-            Task.kind == "acquisition_similarity_scan",
+            Task.kind.in_(tuple(_SIMILARITY_TASK_KINDS.values())),
             Task.status.in_(("pending", "running")),
         )
         .order_by(Task.created_at.desc())
     )
     if active is not None:
-        return TaskRead.model_validate(active)
-    task = create_task(db, "acquisition_similarity_scan", "相似扫描已进入队列", current.workspace_id)
+        if active.kind == task_kind:
+            return TaskRead.model_validate(active)
+        raise HTTPException(status_code=409, detail="已有其他相似检查正在运行，请等待完成后再试")
+    task = create_task(db, task_kind, "相似扫描已进入队列", current.workspace_id)
     background_tasks.add_task(
         _process_similarity,
         request.app.state.session_factory,
         _service(request),
         current.workspace_id,
         task.id,
+        payload.scan_type,
+        payload.scope,
     )
     return TaskRead.model_validate(task)
 
@@ -788,14 +940,27 @@ def start_similarity_scan(
 def list_similarity(
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    scan_type: Literal["normal", "mirror"] = "normal",
+    scope: Literal["pending_only", "pending_to_gallery"] = "pending_only",
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> AcquisitionSimilarityResultRead:
+    task_kind = _SIMILARITY_TASK_KINDS[(scan_type, scope)]
     latest_task = db.scalar(
         select(Task)
-        .where(Task.workspace_id == current.workspace_id, Task.kind == "acquisition_similarity_scan")
+        .where(Task.workspace_id == current.workspace_id, Task.kind == task_kind)
         .order_by(Task.created_at.desc())
     )
+    if scope == "pending_to_gallery":
+        return _list_gallery_similarity(
+            db,
+            current.workspace_id,
+            latest_task,
+            scan_type,
+            scope,
+            offset,
+            limit,
+        )
     other_asset = aliased(AcquisitionAsset)
     rows = db.execute(
         select(AcquisitionSimilarityCandidate, AcquisitionAsset, other_asset)
@@ -803,6 +968,8 @@ def list_similarity(
         .join(other_asset, other_asset.id == AcquisitionSimilarityCandidate.other_asset_id)
         .where(
             AcquisitionSimilarityCandidate.workspace_id == current.workspace_id,
+            AcquisitionSimilarityCandidate.scan_type == scan_type,
+            AcquisitionSimilarityCandidate.scan_scope == scope,
             AcquisitionAsset.status == "pending_review",
             other_asset.status == "pending_review",
             AcquisitionAsset.object_key.is_not(None),
@@ -847,6 +1014,7 @@ def list_similarity(
             "max_score": max(scores, default=0.0),
             "average_score": sum(scores) / len(scores) if scores else 0.0,
             "members": [_asset_read(assets[asset_id]).model_dump() for asset_id in member_ids],
+            "gallery_members": [],
         })
     groups.sort(key=lambda group: (-float(group["max_score"]), str(group["id"])))
     generated_at = max((candidate.created_at for candidate, _asset, _other in rows), default=None)
@@ -860,6 +1028,8 @@ def list_similarity(
             AcquisitionAsset.created_at > generated_at,
         ))))
     return AcquisitionSimilarityResultRead(
+        scan_type=scan_type,
+        scope=scope,
         task=TaskRead.model_validate(latest_task) if latest_task is not None else None,
         generated_at=generated_at,
         is_stale=has_newer_assets,

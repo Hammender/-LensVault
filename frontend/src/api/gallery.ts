@@ -75,6 +75,7 @@ export async function addGalleryPhotoPerson(photoId: number, personId: number): 
 export async function createGallerySimilarityScan(payload: {
   person_id: number | null;
   include_cross_type: boolean;
+  scan_type: "normal" | "mirror";
 }): Promise<GallerySimilarityScan> {
   return parseResponse<GallerySimilarityScan>(
     await authFetch("/api/gallery/similarity-scans", {
@@ -84,12 +85,13 @@ export async function createGallerySimilarityScan(payload: {
     })
   );
 }
-export async function getLatestGallerySimilarityScan(personId: number | null, includeCrossType: boolean): Promise<GallerySimilarityScan | null> {
+export async function getLatestGallerySimilarityScan(personId: number | null, includeCrossType: boolean, scanType: "normal" | "mirror" = "normal"): Promise<GallerySimilarityScan | null> {
   const url = new URL("/api/gallery/similarity-scans/latest", window.location.origin);
   if (personId !== null) {
     url.searchParams.set("person_id", String(personId));
   }
   url.searchParams.set("include_cross_type", String(includeCrossType));
+  url.searchParams.set("scan_type", scanType);
   return parseResponse<GallerySimilarityScan | null>(await authFetch(url.pathname + url.search));
 }
 export async function getGallerySimilarityScanOverview(): Promise<GallerySimilarityScanOverview> {

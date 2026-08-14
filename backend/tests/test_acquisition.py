@@ -19,7 +19,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.api.acquisition import list_asset_ids, list_assets, list_history, list_import_batch_items, list_import_batches, list_sources
+from app.api.acquisition import list_asset_ids, list_assets, list_history, list_import_batch_items, list_import_batches, list_similarity, list_sources
 from app.lifecycle import ensure_acquisition_schema
 from app.models import (
     AcquisitionAsset,
@@ -34,6 +34,7 @@ from app.models import (
     AcquisitionSourceItem,
     AcquisitionSource,
     GalleryPhoto,
+    Workspace,
 )
 from app.services.acquisition import AcquisitionService
 from app.services.acquisition_adapters import (
@@ -584,6 +585,9 @@ class AcquisitionModelTests(unittest.TestCase):
                 "SELECT status FROM acquisition_assets WHERE id = 'legacy-deferred'"
             )).scalar_one()
         self.assertIn("scan_task_id", columns)
+        self.assertIn("scan_type", columns)
+        self.assertIn("scan_scope", columns)
+        self.assertIn("relation_type", columns)
         self.assertIn("ix_acquisition_assets_perceptual_phash", asset_indexes)
         self.assertIn("ix_acquisition_assets_perceptual_dhash", asset_indexes)
         self.assertEqual(status, "pending_review")
@@ -730,6 +734,149 @@ class AcquisitionQualityTests(unittest.TestCase):
 
 
 class AcquisitionSimilarityTests(unittest.TestCase):
+    def test_similarity_scan_supports_all_type_and_scope_combinations(self) -> None:
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        workspace = Workspace(name="镜像联查测试")
+        db.add(workspace)
+        db.flush()
+        db.add_all([
+            AcquisitionAsset(
+                id="asset-a",
+                workspace_id=workspace.id,
+                sha256="a" * 64,
+                filename="a.jpg",
+                object_key="a.jpg",
+                status="pending_review",
+            ),
+            AcquisitionAsset(
+                id="asset-b",
+                workspace_id=workspace.id,
+                sha256="b" * 64,
+                filename="b.jpg",
+                object_key="b.jpg",
+                status="pending_review",
+            ),
+        ])
+        gallery_photo = GalleryPhoto(
+            workspace_id=workspace.id,
+            filename="gallery.jpg",
+            content_type="image/jpeg",
+            sha256="c" * 64,
+            object_key="gallery.jpg",
+            width=32,
+            height=32,
+        )
+        db.add(gallery_photo)
+        db.commit()
+
+        image = Image.new("RGB", (32, 32), color="white")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG")
+        payload = buffer.getvalue()
+
+        class FakeGalleryVectorStore:
+            def search_gallery_similarity(self, **_kwargs):
+                return []
+
+        class FakeGalleryScanner:
+            vector_store = FakeGalleryVectorStore()
+
+            def ensure_features(self, _db, _photos, _progress=None, *, include_vectors=True):
+                original = "0" * 16 if include_vectors else "f" * 16
+                return {
+                    gallery_photo.id: SimpleNamespace(
+                        phash=original,
+                        dhash=original,
+                        mirror_phash="0" * 16,
+                        mirror_dhash="0" * 16,
+                    )
+                }, {}
+
+        settings = SimpleNamespace(
+            gallery_similarity_batch_size=32,
+            gallery_similarity_near_threshold=0.92,
+            gallery_similarity_scene_threshold=0.88,
+            gallery_similarity_model_version="v1",
+        )
+        extractor = SimpleNamespace(
+            encode=lambda images: np.asarray([[1.0, 0.0] for _image in images], dtype=np.float32)
+        )
+        service = AcquisitionService(
+            SimpleNamespace(get_bytes=lambda _key: payload),
+            SimpleNamespace(),
+            settings,
+            extractor,
+            FakeGalleryScanner(),
+        )
+
+        def fingerprint(value: str):
+            return SimpleNamespace(phash=value, dhash=value)
+
+        with patch("app.services.acquisition.compute_orb_features", return_value=SimpleNamespace()), patch(
+            "app.services.acquisition.orb_feature_similarity", return_value=1.0
+        ):
+            with patch(
+                "app.services.acquisition.compute_perceptual_features",
+                side_effect=[fingerprint("0" * 16), fingerprint("0" * 16)],
+            ):
+                self.assertEqual(service.scan_similarity(db, workspace.id, scan_type="normal", scope="pending_only"), 1)
+            with patch(
+                "app.services.acquisition.compute_perceptual_features",
+                side_effect=[fingerprint("0" * 16), fingerprint("f" * 16)],
+            ), patch(
+                "app.services.acquisition.compute_mirrored_perceptual_hashes",
+                side_effect=[("f" * 16, "f" * 16), ("0" * 16, "0" * 16)],
+            ):
+                self.assertEqual(service.scan_similarity(db, workspace.id, scan_type="mirror", scope="pending_only"), 1)
+            with patch(
+                "app.services.acquisition.compute_perceptual_features",
+                side_effect=[fingerprint("0" * 16), fingerprint("0" * 16)],
+            ):
+                self.assertEqual(service.scan_similarity(db, workspace.id, scan_type="normal", scope="pending_to_gallery"), 2)
+            with patch(
+                "app.services.acquisition.compute_perceptual_features",
+                side_effect=[fingerprint("0" * 16), fingerprint("0" * 16)],
+            ), patch(
+                "app.services.acquisition.compute_mirrored_perceptual_hashes",
+                side_effect=[("f" * 16, "f" * 16), ("f" * 16, "f" * 16)],
+            ):
+                self.assertEqual(service.scan_similarity(db, workspace.id, scan_type="mirror", scope="pending_to_gallery"), 2)
+
+        candidates = db.query(AcquisitionSimilarityCandidate).all()
+        counts = {
+            (scan_type, scope): sum(
+                candidate.scan_type == scan_type and candidate.scan_scope == scope
+                for candidate in candidates
+            )
+            for scan_type in ("normal", "mirror")
+            for scope in ("pending_only", "pending_to_gallery")
+        }
+        self.assertEqual(counts, {
+            ("normal", "pending_only"): 1,
+            ("mirror", "pending_only"): 1,
+            ("normal", "pending_to_gallery"): 2,
+            ("mirror", "pending_to_gallery"): 2,
+        })
+        cross_candidates = [candidate for candidate in candidates if candidate.scan_scope == "pending_to_gallery"]
+        self.assertTrue(all(candidate.other_asset_id is None for candidate in cross_candidates))
+        self.assertTrue(all(candidate.asset_id and candidate.gallery_photo_id == gallery_photo.id for candidate in cross_candidates))
+
+        result = list_similarity(
+            offset=0,
+            limit=20,
+            scan_type="mirror",
+            scope="pending_to_gallery",
+            db=db,
+            current=SimpleNamespace(workspace_id=workspace.id),
+        )
+        self.assertTrue(result.groups)
+        self.assertTrue(all(group.members and group.gallery_members for group in result.groups))
+        self.assertTrue(all(not member.recommended_keep for group in result.groups for member in group.gallery_members))
+        db.close()
+        engine.dispose()
+
     def test_vector_similarity_can_match_when_perceptual_hashes_do_not(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine)

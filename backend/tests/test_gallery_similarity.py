@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageOps
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,8 @@ from app.services.similarity import (
     SimilarityCandidate,
     cleanup_deleted_similarity_photos,
     complete_link_clusters,
+    compute_mirrored_perceptual_hashes,
+    compute_perceptual_features,
     cosine_similarity,
     hash_similarity,
     load_similarity_scan_overview,
@@ -39,6 +41,17 @@ from tests.support.app_loader import load_test_main
 def image_bytes(color: tuple[int, int, int], image_format: str = "PNG") -> bytes:
     output = BytesIO()
     Image.new("RGB", (64, 64), color).save(output, format=image_format)
+    return output.getvalue()
+
+
+def asymmetric_image_bytes() -> bytes:
+    image = Image.new("RGB", (96, 64), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((5, 8, 34, 55), fill="black")
+    draw.ellipse((62, 13, 88, 39), fill="red")
+    output = BytesIO()
+    image.save(output, format="PNG")
+    image.close()
     return output.getvalue()
 
 
@@ -173,6 +186,89 @@ def test_feature_generation_is_batched_and_reuses_qdrant_cache(db_session: Sessi
     assert len(cached_features) == len(cached_vectors) == 3
     assert all(feature.vector_ready for feature in features.values())
     assert len(storage.calls) == first_storage_call_count
+
+
+def test_mirror_feature_uses_horizontal_flip_and_keeps_original_quality(db_session: Session) -> None:
+    _, _, photos = create_scope(db_session, photo_count=1)
+    payload = asymmetric_image_bytes()
+    original = compute_perceptual_features(payload)
+    image = Image.open(BytesIO(payload)).convert("RGB")
+    mirrored = ImageOps.mirror(image)
+    output = BytesIO()
+    mirrored.save(output, format="PNG")
+    expected_mirror = compute_perceptual_features(output.getvalue())
+    image.close()
+    mirrored.close()
+
+    mirror_phash, mirror_dhash = compute_mirrored_perceptual_hashes(payload)
+    scanner = GallerySimilarityScanner(
+        FakeStorage({photos[0].object_key: payload}),
+        FakeVectorStore(),
+        Settings(),
+        FakeExtractor(),
+    )
+    features, vectors = scanner._ensure_features(
+        db_session,
+        {photos[0].id: photos[0]},
+        include_vectors=False,
+    )
+    feature = features[photos[0].id]
+
+    assert (mirror_phash, mirror_dhash) == (expected_mirror.phash, expected_mirror.dhash)
+    assert feature.quality_score == pytest.approx(original.quality_score)
+    assert feature.blur_score == pytest.approx(original.blur_score)
+    assert vectors == {}
+
+
+def test_mirror_scan_requires_mirror_score_to_be_strictly_better(db_session: Session) -> None:
+    _, person, photos = create_scope(db_session, photo_count=2)
+    payload = image_bytes((120, 80, 40))
+    scanner = GallerySimilarityScanner(
+        FakeStorage({photo.object_key: payload for photo in photos}),
+        FakeVectorStore(),
+        Settings(gallery_similarity_near_threshold=0.92),
+        FakeExtractor(),
+    )
+    pair = (photos[0].id, photos[1].id)
+    features = {
+        photos[0].id: GallerySimilarityFeature(
+            gallery_photo_id=photos[0].id,
+            phash="0" * 16,
+            dhash="0" * 16,
+            mirror_phash="f" * 16,
+            mirror_dhash="f" * 16,
+        ),
+        photos[1].id: GallerySimilarityFeature(
+            gallery_photo_id=photos[1].id,
+            phash="f" * 16,
+            dhash="f" * 16,
+            mirror_phash="0" * 16,
+            mirror_dhash="0" * 16,
+        ),
+    }
+
+    near_scores, scene_scores = scanner._score_pairs(
+        {person.id: {pair}},
+        features,
+        {},
+        {photo.id: photo for photo in photos},
+        None,
+        "mirror",
+    )
+    assert near_scores[pair] == pytest.approx(1.0)
+    assert scene_scores == {}
+
+    features[photos[1].id].phash = "0" * 16
+    features[photos[1].id].dhash = "0" * 16
+    tied_scores, _ = scanner._score_pairs(
+        {person.id: {pair}},
+        features,
+        {},
+        {photo.id: photo for photo in photos},
+        None,
+        "mirror",
+    )
+    assert tied_scores == {}
 
 
 def test_mark_scans_stale_only_for_affected_person_scope(db_session: Session) -> None:

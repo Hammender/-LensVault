@@ -173,6 +173,42 @@ class QdrantVectorStore:
             if point.vector is not None
         }
 
+    def search_gallery_similarity(
+        self,
+        *,
+        workspace_id: int | None,
+        feature_version: str,
+        vector: np.ndarray,
+        score_threshold: float,
+        limit: int = 200,
+    ) -> list[tuple[int, float]]:
+        response = self._get_client().query_points(
+            collection_name=self.settings.gallery_similarity_qdrant_collection,
+            query=np.asarray(vector, dtype=np.float32).tolist(),
+            limit=limit,
+            score_threshold=score_threshold,
+            with_payload=True,
+            query_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="workspace_id",
+                        match=models.MatchValue(value=workspace_id),
+                    ),
+                    models.FieldCondition(
+                        key="feature_version",
+                        match=models.MatchValue(value=feature_version),
+                    ),
+                ]
+            ),
+        )
+        return [
+            (int(point.payload["gallery_photo_id"]), float(point.score))
+            for point in response.points
+            if point.payload
+            and point.payload.get("gallery_photo_id") is not None
+            and point.score is not None
+        ]
+
     def delete_gallery_similarity_vectors(self, point_ids: list[str]) -> None:
         if not point_ids:
             return

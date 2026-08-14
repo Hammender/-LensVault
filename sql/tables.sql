@@ -717,6 +717,9 @@ CREATE INDEX ix_acquisition_import_batch_items_status ON acquisition_import_batc
 --   asset_id：关联采集图片资产标识
 --   other_asset_id：关联的另一采集图片资产标识
 --   gallery_photo_id：关联图库图片标识
+--   scan_type：检查类型：normal（普通相似）或 mirror（镜像相似）
+--   scan_scope：检查范围：pending_only（审核区内）或 pending_to_gallery（审核区联查图库）
+--   relation_type：相似关系类型：near_duplicate（近重复）或 same_scene（同场景）
 --   score：相似度得分
 --   created_at：记录创建时间（上海时区无时区值）
 CREATE TABLE acquisition_similarity_candidates (
@@ -726,6 +729,9 @@ CREATE TABLE acquisition_similarity_candidates (
 	asset_id VARCHAR(64) NOT NULL, 
 	other_asset_id VARCHAR(64), 
 	gallery_photo_id INTEGER, 
+	scan_type VARCHAR(32) NOT NULL, 
+	scan_scope VARCHAR(32) NOT NULL, 
+	relation_type VARCHAR(32) NOT NULL, 
 	score FLOAT NOT NULL, 
 	created_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
@@ -739,7 +745,10 @@ CREATE TABLE acquisition_similarity_candidates (
 CREATE INDEX ix_acquisition_similarity_candidates_asset_id ON acquisition_similarity_candidates (asset_id);
 CREATE INDEX ix_acquisition_similarity_candidates_gallery_photo_id ON acquisition_similarity_candidates (gallery_photo_id);
 CREATE INDEX ix_acquisition_similarity_candidates_other_asset_id ON acquisition_similarity_candidates (other_asset_id);
+CREATE INDEX ix_acquisition_similarity_candidates_relation_type ON acquisition_similarity_candidates (relation_type);
+CREATE INDEX ix_acquisition_similarity_candidates_scan_scope ON acquisition_similarity_candidates (scan_scope);
 CREATE INDEX ix_acquisition_similarity_candidates_scan_task_id ON acquisition_similarity_candidates (scan_task_id);
+CREATE INDEX ix_acquisition_similarity_candidates_scan_type ON acquisition_similarity_candidates (scan_type);
 CREATE INDEX ix_acquisition_similarity_candidates_workspace_id ON acquisition_similarity_candidates (workspace_id);
 
 -- 表名：acquisition_source_scripts
@@ -860,6 +869,8 @@ CREATE INDEX ix_gallery_photo_tags_tag_id ON gallery_photo_tags (tag_id);
 --   feature_version：相似度特征提取算法版本
 --   phash：感知哈希值
 --   dhash：差异哈希值
+--   mirror_phash：水平镜像后的感知哈希值
+--   mirror_dhash：水平镜像后的差异哈希值
 --   blur_score：人脸清晰度评分
 --   quality_score：图片质量评分
 --   vector_point_id：向量库中的点标识
@@ -873,6 +884,8 @@ CREATE TABLE gallery_similarity_features (
 	feature_version VARCHAR(64) NOT NULL, 
 	phash VARCHAR(64) NOT NULL, 
 	dhash VARCHAR(64) NOT NULL, 
+	mirror_phash VARCHAR(64), 
+	mirror_dhash VARCHAR(64), 
 	blur_score FLOAT NOT NULL, 
 	quality_score FLOAT NOT NULL, 
 	vector_point_id VARCHAR(64), 
@@ -897,6 +910,7 @@ CREATE INDEX ix_gallery_similarity_features_workspace_id ON gallery_similarity_f
 --   task_id：关联后台任务标识
 --   person_id：关联人物标识
 --   include_cross_type：是否跨普通图与图文图进行比较
+--   scan_type：检查类型：normal（普通相似）或 mirror（镜像相似）
 --   status：相似度扫描状态：pending、running、completed 或 failed
 --   is_stale：扫描结果是否因图库变化而过期
 --   feature_version：相似度特征提取算法版本
@@ -912,6 +926,7 @@ CREATE TABLE gallery_similarity_scans (
 	task_id VARCHAR(64), 
 	person_id INTEGER, 
 	include_cross_type BOOLEAN NOT NULL, 
+	scan_type VARCHAR(32) NOT NULL, 
 	status VARCHAR(32) NOT NULL, 
 	is_stale BOOLEAN NOT NULL, 
 	feature_version VARCHAR(64) NOT NULL, 
@@ -929,6 +944,7 @@ CREATE TABLE gallery_similarity_scans (
 CREATE INDEX ix_gallery_similarity_scans_created_at ON gallery_similarity_scans (created_at);
 CREATE INDEX ix_gallery_similarity_scans_is_stale ON gallery_similarity_scans (is_stale);
 CREATE INDEX ix_gallery_similarity_scans_person_id ON gallery_similarity_scans (person_id);
+CREATE INDEX ix_gallery_similarity_scans_scan_type ON gallery_similarity_scans (scan_type);
 CREATE INDEX ix_gallery_similarity_scans_status ON gallery_similarity_scans (status);
 CREATE INDEX ix_gallery_similarity_scans_task_id ON gallery_similarity_scans (task_id);
 CREATE INDEX ix_gallery_similarity_scans_workspace_id ON gallery_similarity_scans (workspace_id);

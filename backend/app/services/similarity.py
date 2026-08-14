@@ -67,9 +67,9 @@ def load_similarity_scan_overview(
             GallerySimilarityScan.created_at.desc(),
         )
     ).all()
-    latest_by_scope: dict[tuple[int | None, bool], GallerySimilarityScan] = {}
+    latest_by_scope: dict[tuple[int | None, bool, str], GallerySimilarityScan] = {}
     for scan in completed:
-        latest_by_scope.setdefault((scan.person_id, scan.include_cross_type), scan)
+        latest_by_scope.setdefault((scan.person_id, scan.include_cross_type, scan.scan_type), scan)
     return active, list(latest_by_scope.values())
 
 
@@ -129,6 +129,21 @@ def compute_perceptual_features(payload: bytes) -> PerceptualFeatures:
     )
 
 
+def compute_mirrored_perceptual_hashes(payload: bytes) -> tuple[str, str]:
+    ensure_perceptual_feature_dependencies()
+    import imagehash
+
+    image = open_normalized_image(payload)
+    try:
+        mirrored = ImageOps.mirror(image)
+        try:
+            return str(imagehash.phash(mirrored)), str(imagehash.dhash(mirrored))
+        finally:
+            mirrored.close()
+    finally:
+        image.close()
+
+
 def hash_similarity(left: str, right: str) -> float:
     if len(left) != len(right) or not left:
         return 0.0
@@ -137,12 +152,16 @@ def hash_similarity(left: str, right: str) -> float:
     return max(0.0, 1.0 - distance / bit_count)
 
 
-def compute_orb_features(payload: bytes) -> OrbFeatures:
+def compute_orb_features(payload: bytes, *, mirrored: bool = False) -> OrbFeatures:
     try:
         import cv2
     except ImportError as exc:
         raise RuntimeError("OpenCV 未安装，无法执行近重复确认") from exc
     image = open_normalized_image(payload, max_edge=1024)
+    if mirrored:
+        mirrored_image = ImageOps.mirror(image)
+        image.close()
+        image = mirrored_image
     gray = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
     image.close()
     orb = cv2.ORB_create(nfeatures=800)
@@ -320,6 +339,8 @@ class GallerySimilarityScanner:
         db: Session,
         photos: dict[int, GalleryPhoto],
         progress: Any | None = None,
+        *,
+        include_vectors: bool = True,
     ) -> tuple[dict[int, GallerySimilarityFeature], dict[int, np.ndarray]]:
         version = self.settings.gallery_similarity_model_version
         cached = {
@@ -333,9 +354,11 @@ class GallerySimilarityScanner:
         vector_ids: list[str] = []
         for photo_id, photo in photos.items():
             feature = cached.get(photo_id)
-            if feature is None or feature.sha256 != photo.sha256 or feature.feature_version != version:
+            base_changed = feature is None or feature.sha256 != photo.sha256 or feature.feature_version != version
+            if base_changed or not feature.mirror_phash or not feature.mirror_dhash:
                 payload = self.storage.get_bytes(photo.object_key)
                 perceptual = compute_perceptual_features(payload)
+                mirror_phash, mirror_dhash = compute_mirrored_perceptual_hashes(payload)
                 if feature is None:
                     feature = GallerySimilarityFeature(gallery_photo_id=photo_id)
                 feature.workspace_id = photo.workspace_id
@@ -343,15 +366,20 @@ class GallerySimilarityScanner:
                 feature.feature_version = version
                 feature.phash = perceptual.phash
                 feature.dhash = perceptual.dhash
+                feature.mirror_phash = mirror_phash
+                feature.mirror_dhash = mirror_dhash
                 feature.blur_score = perceptual.blur_score
                 feature.quality_score = perceptual.quality_score
-                feature.vector_point_id = None
-                feature.vector_ready = False
+                if base_changed:
+                    feature.vector_point_id = None
+                    feature.vector_ready = False
                 db.add(feature)
             features[photo_id] = feature
-            if feature.vector_ready and feature.vector_point_id:
+            if include_vectors and feature.vector_ready and feature.vector_point_id:
                 vector_ids.append(feature.vector_point_id)
         db.flush()
+        if not include_vectors:
+            return features, vectors
         if photos:
             self.vector_store.ensure_gallery_similarity_collection()
         existing_vectors = self.vector_store.get_gallery_similarity_vectors(vector_ids)
@@ -406,9 +434,11 @@ class GallerySimilarityScanner:
         db: Session,
         photos: dict[int, GalleryPhoto],
         progress: Any | None = None,
+        *,
+        include_vectors: bool = True,
     ) -> tuple[dict[int, GallerySimilarityFeature], dict[int, np.ndarray]]:
         """为其他受控工作流复用图库相似特征缓存和 Qdrant 向量。"""
-        return self._ensure_features(db, photos, progress)
+        return self._ensure_features(db, photos, progress, include_vectors=include_vectors)
 
     def _candidate_pairs(
         self,
@@ -438,34 +468,58 @@ class GallerySimilarityScanner:
         vectors: dict[int, np.ndarray],
         photos: dict[int, GalleryPhoto],
         progress: Any | None,
+        scan_type: str = "normal",
     ) -> tuple[dict[tuple[int, int], float], dict[tuple[int, int], float]]:
         unique_pairs = sorted(set().union(*pairs_by_person.values()) if pairs_by_person else set())
         near_scores: dict[tuple[int, int], float] = {}
         scene_scores: dict[tuple[int, int], float] = {}
-        orb_cache: OrderedDict[int, OrbFeatures] = OrderedDict()
+        orb_cache: OrderedDict[tuple[int, bool], OrbFeatures] = OrderedDict()
 
-        def get_orb_features(photo_id: int) -> OrbFeatures:
-            cached = orb_cache.pop(photo_id, None)
+        def get_orb_features(photo_id: int, *, mirrored: bool = False) -> OrbFeatures:
+            cache_key = (photo_id, mirrored)
+            cached = orb_cache.pop(cache_key, None)
             if cached is not None:
-                orb_cache[photo_id] = cached
+                orb_cache[cache_key] = cached
                 return cached
-            feature = compute_orb_features(self.storage.get_bytes(photos[photo_id].object_key))
-            orb_cache[photo_id] = feature
+            feature = compute_orb_features(
+                self.storage.get_bytes(photos[photo_id].object_key),
+                mirrored=mirrored,
+            )
+            orb_cache[cache_key] = feature
             if len(orb_cache) > 256:
                 orb_cache.popitem(last=False)
             return feature
 
-        for index, pair in enumerate(unique_pairs):
-            left_id, right_id = pair
+        def near_score(left_id: int, right_id: int, *, mirrored: bool = False) -> float:
             left = features[left_id]
             right = features[right_id]
-            perceptual = (hash_similarity(left.phash, right.phash) + hash_similarity(left.dhash, right.dhash)) / 2
-            near_score = perceptual
-            if perceptual >= 0.82:
-                local_score = orb_feature_similarity(get_orb_features(left_id), get_orb_features(right_id))
-                near_score = max(perceptual, min(1.0, 0.85 + local_score * 0.15))
-            if near_score >= self.settings.gallery_similarity_near_threshold:
-                near_scores[pair] = near_score
+            right_phash = right.mirror_phash if mirrored else right.phash
+            right_dhash = right.mirror_dhash if mirrored else right.dhash
+            if not right_phash or not right_dhash:
+                return 0.0
+            perceptual = (
+                hash_similarity(left.phash, right_phash) + hash_similarity(left.dhash, right_dhash)
+            ) / 2
+            if perceptual < 0.82:
+                return perceptual
+            local_score = orb_feature_similarity(
+                get_orb_features(left_id),
+                get_orb_features(right_id, mirrored=mirrored),
+            )
+            return max(perceptual, min(1.0, 0.85 + local_score * 0.15))
+
+        for index, pair in enumerate(unique_pairs):
+            left_id, right_id = pair
+            direct_score = near_score(left_id, right_id)
+            if scan_type == "mirror":
+                mirrored_score = near_score(left_id, right_id, mirrored=True)
+                if (
+                    mirrored_score >= self.settings.gallery_similarity_near_threshold
+                    and mirrored_score > direct_score
+                ):
+                    near_scores[pair] = mirrored_score
+            elif direct_score >= self.settings.gallery_similarity_near_threshold:
+                near_scores[pair] = direct_score
             else:
                 scene_score = cosine_similarity(vectors[left_id], vectors[right_id])
                 if scene_score >= self.settings.gallery_similarity_scene_threshold:
@@ -479,19 +533,29 @@ class GallerySimilarityScanner:
         scan.photo_count = len(photos)
         if progress is not None:
             progress(0.05, f"找到 {len(photos)} 张带人物标签的图片")
-        features, vectors = self._ensure_features(db, photos, progress)
+        features, vectors = self._ensure_features(
+            db,
+            photos,
+            progress,
+            include_vectors=scan.scan_type == "normal",
+        )
         pairs_by_person = self._candidate_pairs(photos, people_by_photo, scan.include_cross_type)
         unique_pairs = set().union(*pairs_by_person.values()) if pairs_by_person else set()
         scan.candidate_pair_count = len(unique_pairs)
         near_scores, scene_scores = self._score_pairs(
-            pairs_by_person, features, vectors, photos, progress
+            pairs_by_person,
+            features,
+            vectors,
+            photos,
+            progress,
+            scan.scan_type,
         )
 
         group_specs: dict[tuple[str, tuple[int, ...]], tuple[SimilarityCluster, set[int]]] = {}
-        for tier, scores, threshold in (
-            ("near_duplicate", near_scores, self.settings.gallery_similarity_near_threshold),
-            ("same_scene", scene_scores, self.settings.gallery_similarity_scene_threshold),
-        ):
+        score_tiers = [("near_duplicate", near_scores, self.settings.gallery_similarity_near_threshold)]
+        if scan.scan_type == "normal":
+            score_tiers.append(("same_scene", scene_scores, self.settings.gallery_similarity_scene_threshold))
+        for tier, scores, threshold in score_tiers:
             for person_id, pairs in pairs_by_person.items():
                 candidates = [
                     SimilarityCandidate(left, right, scores[(left, right)])
@@ -546,6 +610,7 @@ class GallerySimilarityScanner:
                 GallerySimilarityScan.workspace_id == scan.workspace_id,
                 GallerySimilarityScan.person_id.is_(None) if scan.person_id is None else GallerySimilarityScan.person_id == scan.person_id,
                 GallerySimilarityScan.include_cross_type == scan.include_cross_type,
+                GallerySimilarityScan.scan_type == scan.scan_type,
                 GallerySimilarityScan.status == "completed",
                 GallerySimilarityScan.id != scan.id,
             )

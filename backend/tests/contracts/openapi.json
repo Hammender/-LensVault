@@ -1159,11 +1159,45 @@
         "title": "AcquisitionScriptRead",
         "type": "object"
       },
+      "AcquisitionSimilarityGalleryMemberRead": {
+        "properties": {
+          "photo": {
+            "$ref": "#/components/schemas/GalleryPhotoListItem"
+          },
+          "quality_score": {
+            "title": "Quality Score",
+            "type": "number"
+          },
+          "recommended_keep": {
+            "default": false,
+            "title": "Recommended Keep",
+            "type": "boolean"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "photo",
+          "score",
+          "quality_score"
+        ],
+        "title": "AcquisitionSimilarityGalleryMemberRead",
+        "type": "object"
+      },
       "AcquisitionSimilarityGroupRead": {
         "properties": {
           "average_score": {
             "title": "Average Score",
             "type": "number"
+          },
+          "gallery_members": {
+            "items": {
+              "$ref": "#/components/schemas/AcquisitionSimilarityGalleryMemberRead"
+            },
+            "title": "Gallery Members",
+            "type": "array"
           },
           "id": {
             "title": "Id",
@@ -1223,6 +1257,24 @@
             "title": "Offset",
             "type": "integer"
           },
+          "scan_type": {
+            "default": "normal",
+            "enum": [
+              "normal",
+              "mirror"
+            ],
+            "title": "Scan Type",
+            "type": "string"
+          },
+          "scope": {
+            "default": "pending_only",
+            "enum": [
+              "pending_only",
+              "pending_to_gallery"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
           "task": {
             "anyOf": [
               {
@@ -1248,6 +1300,30 @@
           "limit"
         ],
         "title": "AcquisitionSimilarityResultRead",
+        "type": "object"
+      },
+      "AcquisitionSimilarityScanCreate": {
+        "properties": {
+          "scan_type": {
+            "default": "normal",
+            "enum": [
+              "normal",
+              "mirror"
+            ],
+            "title": "Scan Type",
+            "type": "string"
+          },
+          "scope": {
+            "default": "pending_only",
+            "enum": [
+              "pending_only",
+              "pending_to_gallery"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "title": "AcquisitionSimilarityScanCreate",
         "type": "object"
       },
       "AcquisitionSourceCreate": {
@@ -2619,6 +2695,15 @@
               }
             ],
             "title": "Person Id"
+          },
+          "scan_type": {
+            "default": "normal",
+            "enum": [
+              "normal",
+              "mirror"
+            ],
+            "title": "Scan Type",
+            "type": "string"
           }
         },
         "title": "GallerySimilarityScanCreate",
@@ -2719,6 +2804,14 @@
             "title": "Photo Count",
             "type": "integer"
           },
+          "scan_type": {
+            "enum": [
+              "normal",
+              "mirror"
+            ],
+            "title": "Scan Type",
+            "type": "string"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -2750,6 +2843,7 @@
           "task_id",
           "person_id",
           "include_cross_type",
+          "scan_type",
           "status",
           "is_stale",
           "feature_version",
@@ -7785,6 +7879,34 @@
           },
           {
             "in": "query",
+            "name": "scan_type",
+            "required": false,
+            "schema": {
+              "default": "normal",
+              "enum": [
+                "normal",
+                "mirror"
+              ],
+              "title": "Scan Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "default": "pending_only",
+              "enum": [
+                "pending_only",
+                "pending_to_gallery"
+              ],
+              "title": "Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "workspace_id",
             "required": false,
             "schema": {
@@ -7944,6 +8066,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AcquisitionSimilarityScanCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -11544,6 +11683,20 @@
               "default": false,
               "title": "Include Cross Type",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scan_type",
+            "required": false,
+            "schema": {
+              "default": "normal",
+              "enum": [
+                "normal",
+                "mirror"
+              ],
+              "title": "Scan Type",
+              "type": "string"
             }
           },
           {

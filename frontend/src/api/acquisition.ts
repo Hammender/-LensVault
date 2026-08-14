@@ -159,12 +159,26 @@ export async function listAcquisitionImportBatchItems(
   );
 }
 
-export async function startAcquisitionSimilarityScan(): Promise<Task> {
-  return parse<Task>(await fetch("/api/acquisition/similarity/scan", { method: "POST" }));
+export async function startAcquisitionSimilarityScan(
+  scanType: "normal" | "mirror" = "normal",
+  scope: "pending_only" | "pending_to_gallery" = "pending_only"
+): Promise<Task> {
+  return parse<Task>(await fetch("/api/acquisition/similarity/scan", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ scan_type: scanType, scope })
+  }));
 }
 
-export async function listAcquisitionSimilarity(offset = 0, limit = 12): Promise<AcquisitionSimilarityResult> {
+export async function listAcquisitionSimilarity(
+  offset = 0,
+  limit = 12,
+  scanType: "normal" | "mirror" = "normal",
+  scope: "pending_only" | "pending_to_gallery" = "pending_only"
+): Promise<AcquisitionSimilarityResult> {
   const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  if (scanType !== "normal") params.set("scan_type", scanType);
+  if (scope !== "pending_only") params.set("scope", scope);
   return parse<AcquisitionSimilarityResult>(await fetch(`/api/acquisition/similarity?${params}`));
 }
 

@@ -1,16 +1,17 @@
 import type { GallerySimilarityScan } from "./types";
 
-export function scanScopeKey(personId: number | null, includeCrossType: boolean): string {
-  return `${personId ?? "all"}:${includeCrossType ? "cross" : "separate"}`;
+export function scanScopeKey(personId: number | null, includeCrossType: boolean, scanType: "normal" | "mirror" = "normal"): string {
+  return `${personId ?? "all"}:${includeCrossType ? "cross" : "separate"}:${scanType}`;
 }
 
 export function findScanForScope(
   scans: GallerySimilarityScan[],
   personId: number | null,
-  includeCrossType: boolean
+  includeCrossType: boolean,
+  scanType: "normal" | "mirror" = "normal"
 ): GallerySimilarityScan | null {
-  const targetKey = scanScopeKey(personId, includeCrossType);
-  return scans.find((scan) => scanScopeKey(scan.person_id, scan.include_cross_type) === targetKey) ?? null;
+  const targetKey = scanScopeKey(personId, includeCrossType, scanType);
+  return scans.find((scan) => scanScopeKey(scan.person_id, scan.include_cross_type, scan.scan_type) === targetKey) ?? null;
 }
 
 export function chooseRecoveredScan(

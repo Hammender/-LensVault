@@ -4138,6 +4138,9 @@ time {
 .similarity-group-actions button { min-height: 40px; padding: 10px 14px; }
 .similarity-group-actions .danger-button { background: var(--accent-strong); color: #fffdf8; }
 .similarity-member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.similarity-check-type { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; padding: 2px; border: 1px solid var(--panel-border); border-radius: 6px; }
+.similarity-check-type button { border: 0; background: transparent; color: var(--muted); }
+.similarity-check-type button.active { background: var(--accent); color: white; }
 .similarity-member { position: relative; overflow: hidden; border: 1px solid var(--panel-border); border-radius: 14px; background: var(--surface); }
 .similarity-member.recommended { border-color: #4f8b62; box-shadow: 0 0 0 2px rgba(79, 139, 98, 0.12); }
 .similarity-member.selected { border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(185, 72, 50, 0.16); }

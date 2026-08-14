@@ -103,6 +103,9 @@ def test_create_app_uses_injected_lifecycle_dependencies(tmp_path, monkeypatch) 
         "video_subtitle_generation",
         "gallery_similarity_scan",
         "acquisition_similarity_scan",
+        "acquisition_similarity_scan_mirror_pending",
+        "acquisition_similarity_scan_normal_gallery",
+        "acquisition_similarity_scan_mirror_gallery",
     ]
     engine.dispose()
 

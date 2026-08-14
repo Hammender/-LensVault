@@ -232,6 +232,9 @@ class AcquisitionSimilarityCandidate(Base):
     asset_id: Mapped[str] = mapped_column(ForeignKey("acquisition_assets.id", ondelete="CASCADE"), nullable=False, index=True)
     other_asset_id: Mapped[str | None] = mapped_column(ForeignKey("acquisition_assets.id", ondelete="CASCADE"), nullable=True, index=True)
     gallery_photo_id: Mapped[int | None] = mapped_column(ForeignKey("gallery_photos.id", ondelete="CASCADE"), nullable=True, index=True)
+    scan_type: Mapped[str] = mapped_column(String(32), default="normal", nullable=False, index=True)
+    scan_scope: Mapped[str] = mapped_column(String(32), default="pending_only", nullable=False, index=True)
+    relation_type: Mapped[str] = mapped_column(String(32), default="near_duplicate", nullable=False, index=True)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 

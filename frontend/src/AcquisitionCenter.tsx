@@ -145,8 +145,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [importHistoryLoading, setImportHistoryLoading] = useState(false);
   const [exports, setExports] = useState<AcquisitionExport[]>([]);
   const [reviewMode, setReviewMode] = useState<"list" | "similarity">("list");
+  const [similarityScanType, setSimilarityScanType] = useState<"normal" | "mirror">("normal");
+  const [similarityScope, setSimilarityScope] = useState<"pending_only" | "pending_to_gallery">("pending_only");
   const [similarity, setSimilarity] = useState<AcquisitionSimilarityResult>({
-    task: null, generated_at: null, is_stale: false, groups: [], total: 0, offset: 0, limit: similarityGroupPageSize
+    scan_type: "normal", scope: "pending_only", task: null, generated_at: null, is_stale: false, groups: [], total: 0, offset: 0, limit: similarityGroupPageSize
   });
   const [similarityOffset, setSimilarityOffset] = useState(0);
   const [similarityLoading, setSimilarityLoading] = useState(false);
@@ -303,10 +305,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const loadSimilarityPage = useCallback(async (requestedOffset: number): Promise<AcquisitionSimilarityResult> => {
     setSimilarityLoading(true);
     try {
-      let result = await listAcquisitionSimilarity(Math.max(0, requestedOffset), similarityGroupPageSize);
+      let result = await listAcquisitionSimilarity(Math.max(0, requestedOffset), similarityGroupPageSize, similarityScanType, similarityScope);
       const validOffset = clampAcquisitionOffset(result.total, requestedOffset, similarityGroupPageSize);
       if (validOffset !== result.offset) {
-        result = await listAcquisitionSimilarity(validOffset, similarityGroupPageSize);
+        result = await listAcquisitionSimilarity(validOffset, similarityGroupPageSize, similarityScanType, similarityScope);
       }
       setSimilarity(result);
       setSimilarityOffset(result.offset);
@@ -317,7 +319,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     } finally {
       setSimilarityLoading(false);
     }
-  }, []);
+  }, [similarityScanType, similarityScope]);
 
   const refresh = useCallback(async () => {
     const requests: Promise<unknown>[] = [
@@ -415,7 +417,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setBusy(true);
     setNotice(null);
     try {
-      const task = await startAcquisitionSimilarityScan();
+      const task = await startAcquisitionSimilarityScan(similarityScanType, similarityScope);
       changeReviewMode("similarity");
       setSimilarity((current) => ({ ...current, task }));
       setNotice(task.status === "running" ? "相似扫描正在进行" : "相似扫描已进入队列");
@@ -990,12 +992,22 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
             <button type="button" className={reviewMode === "list" ? "active" : ""} onClick={() => changeReviewMode("list")}><Images size={15} /> 图片列表</button>
             <button type="button" className={reviewMode === "similarity" ? "active" : ""} onClick={() => changeReviewMode("similarity")}><ScanSearch size={15} /> 相似整理</button>
           </div>
+          {reviewMode === "similarity" && <div className="similarity-scan-options">
+            <div className="mode-switch similarity-option-switch" aria-label="相似检查类型">
+              <button type="button" className={similarityScanType === "normal" ? "active" : ""} disabled={busy} onClick={() => { setSimilarityScanType("normal"); setSimilarityOffset(0); setSelectedAssets([]); }}>普通相似</button>
+              <button type="button" className={similarityScanType === "mirror" ? "active" : ""} disabled={busy} onClick={() => { setSimilarityScanType("mirror"); setSimilarityOffset(0); setSelectedAssets([]); }}>镜像相似</button>
+            </div>
+            <div className="mode-switch similarity-option-switch" aria-label="相似检查范围">
+              <button type="button" className={similarityScope === "pending_only" ? "active" : ""} disabled={busy} onClick={() => { setSimilarityScope("pending_only"); setSimilarityOffset(0); setSelectedAssets([]); }}>审核区内</button>
+              <button type="button" className={similarityScope === "pending_to_gallery" ? "active" : ""} disabled={busy} onClick={() => { setSimilarityScope("pending_to_gallery"); setSimilarityOffset(0); setSelectedAssets([]); }}>联查图库</button>
+            </div>
+          </div>}
           {reviewMode === "list" && <><select value={assetStatus} disabled={busy} onChange={(event) => changeAssetStatus(event.target.value)}><option value="pending_review">待审核</option><option value="import_failed">入库失败</option><option value="import_queued">等待入库</option><option value="importing">正在入库</option><option value="imported">已入图库</option><option value="gallery_duplicate">图库已存在</option></select><span>{assetsTotal} 张</span></>}
           {reviewMode === "similarity" && <span>{similarity.total} 组</span>}
           {selectedAssets.length > 0 && <span className="review-selection-count">已选 {selectedAssets.length} 张</span>}
         </div>
         <div className="review-actions">
-          {canEdit && <button type="button" title="重新扫描全部待审核图片" disabled={busy || similarity.task?.status === "pending" || similarity.task?.status === "running"} onClick={() => void startSimilarityScan()}><ScanSearch size={16} /> {similarity.generated_at ? "重新扫描" : "扫描相似"}</button>}
+          {canEdit && <button type="button" title={`扫描${similarityScope === "pending_only" ? "审核区内" : "审核区与图库"}的${similarityScanType === "mirror" ? "镜像" : "普通"}相似图片`} disabled={busy || similarity.task?.status === "pending" || similarity.task?.status === "running"} onClick={() => void startSimilarityScan()}><ScanSearch size={16} /> {similarity.generated_at ? "重新扫描" : "扫描相似"}</button>}
           {reviewMode === "list" && <button type="button" title={areAllReviewAssetsSelected ? "取消选择当前状态下所有图片" : "选中当前状态下所有页面的图片"} disabled={busy || assetsTotal === 0} onClick={() => void selectAllReviewAssets()}><CheckCheck size={16} /> {areAllReviewAssetsSelected ? "取消全选" : `全选 ${assetsTotal}`}</button>}
           {reviewMode === "list" && canAdd && <button type="button" disabled={busy || !selectedAssets.length} onClick={() => void performSelectedAssetAction("import", assetStatus === "import_failed" ? "已创建重试批次" : "已创建入库批次")}><Check size={16} /> {assetStatus === "import_failed" ? "重试" : "导入"} {selectedAssets.length || ""}</button>}
           {canDelete && <button type="button" className="danger-command" disabled={busy || !selectedAssets.length} onClick={() => reviewMode === "similarity" ? void rejectSimilarityAssets(selectedAssets) : void performSelectedAssetAction("reject", "已丢弃临时图片")}><X size={16} /> 丢弃 {selectedAssets.length || ""}</button>}
@@ -1025,7 +1037,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           <progress value={similarity.task.progress} max={1} aria-label="相似扫描进度" />
           <small>{Math.round(similarity.task.progress * 100)}%</small>
         </div>}
-        {similarity.is_stale && <div className="similarity-alert">扫描后又有新的待审核图片进入，当前结果可能不完整，请重新扫描。</div>}
+        {similarity.is_stale && <div className="similarity-alert">{similarity.scope === "pending_to_gallery" ? "扫描后待审核区或图库有新增图片，当前结果可能不完整，请重新扫描。" : "扫描后又有新的待审核图片进入，当前结果可能不完整，请重新扫描。"}</div>}
         {similarity.task?.status === "failed" && <div className="similarity-alert error">{similarity.task.message ?? "扫描失败，上一次结果已保留。"}</div>}
         <div className={similarityLoading ? "similarity-groups loading" : "similarity-groups"} aria-busy={similarityLoading}>
           {similarity.groups.map((group, groupIndex) => {
@@ -1033,7 +1045,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
             const allSelected = groupIds.every((id) => selectedAssets.includes(id));
             return <article className="similarity-group" key={group.id}>
               <header>
-                <div><strong>相似组 {similarity.offset + groupIndex + 1}</strong><small>{group.members.length} 张 · 最高 {Math.round(group.max_score * 100)}%</small></div>
+                <div><strong>相似组 {similarity.offset + groupIndex + 1}</strong><small>{group.members.length + group.gallery_members.length} 张 · 最高 {Math.round(group.max_score * 100)}%</small></div>
                 <button type="button" className="secondary-command" onClick={() => setSelectedAssets((current) => allSelected
                   ? current.filter((id) => !groupIds.includes(id))
                   : [...new Set([...current, ...groupIds])]
@@ -1044,6 +1056,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
                   {asset.preview_url ? <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" /> : <span>文件已清除</span>}
                 </button>
                 <label><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={() => toggleAsset(asset.id)} /><span title={asset.filename}>{asset.filename}</span></label>
+                <small className="similarity-source-label">待审核</small>
+              </div>)}{group.gallery_members.map((member) => <div className="similarity-member gallery-readonly" key={`gallery-${member.photo.id}`}>
+                <a className="similarity-image-button" href={member.photo.original_url} target="_blank" rel="noreferrer" aria-label={`查看图库原图 ${member.photo.filename}`}>
+                  <img src={member.photo.thumbnail_url} alt={member.photo.filename} loading="lazy" decoding="async" />
+                </a>
+                <div className="similarity-gallery-meta"><span title={member.photo.filename}>{member.photo.filename}</span><small>图库 · 相似 {Math.round(member.score * 100)}% · 质量 {member.quality_score.toFixed(1)}</small></div>
               </div>)}</div>
             </article>;
           })}
@@ -1051,7 +1069,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         {!similarityLoading && !similarity.groups.length && <div className="similarity-empty">
           <ScanSearch size={26} />
           <strong>{similarity.generated_at ? "没有发现相似图片" : "尚未扫描待审核图片"}</strong>
-          <span>{similarity.generated_at ? "当前待审核图片之间没有达到阈值的相似关系。" : "点击“扫描相似”开始整理。"}</span>
+          <span>{similarity.generated_at ? (similarityScope === "pending_only" ? "当前待审核图片之间没有达到阈值的相似关系。" : "待审核图片与图库之间没有达到阈值的相似关系。") : "点击“扫描相似”开始整理。"}</span>
         </div>}
         {similarityPagination.totalPages > 1 && <div className="acquisition-pagination" aria-label="相似组分页">
           <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={similarityLoading || similarityOffset === 0} onClick={() => goToSimilarityOffset(similarityOffset - similarityGroupPageSize)}><ChevronLeft size={18} /></button>
