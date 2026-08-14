@@ -14,9 +14,13 @@ import {
   clampAcquisitionOffset,
   createAcquisitionStatusReset,
   findClosestPreviewableIndex,
+  getAcquisitionPageFill,
+  getAcquisitionRejectContinuation,
+  getAcquisitionPreviewUrl,
   getAcquisitionLightboxShortcut,
   getAcquisitionPagination,
   hasSelectedAllAcquisitionAssets,
+  isAcquisitionPageFillValid,
   isAcquisitionImportBatchActive,
   removeAcquisitionSelection,
   toggleAcquisitionSelection
@@ -56,6 +60,14 @@ describe("acquisition review pagination", () => {
 
     expect(page.total).toBe(377);
     expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets?status=pending_review&offset=120&limit=60");
+  });
+
+  it("can request only the metadata row needed to refill a page", async () => {
+    const fetch = installWindow();
+
+    await listAcquisitionAssets("pending_review", 59, 1);
+
+    expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets?status=pending_review&offset=59&limit=1");
   });
 
   it("requests every ID for the current review status without loading every image page", async () => {
@@ -168,6 +180,78 @@ describe("acquisition review selection and rejection", () => {
       { preview_url: null }
     ], 1)).toBe(0);
   });
+
+  it("keeps the next item selected when rejecting inside the current page", () => {
+    expect(getAcquisitionRejectContinuation([true, true, true], 1, 0, 3)).toEqual({
+      kind: "local",
+      index: 1
+    });
+  });
+
+  it("keeps a full logical page while repeatedly rejecting assets", () => {
+    let remaining = Array.from({ length: 125 }, (_, index) => `asset-${index}`);
+    let page = remaining.slice(0, acquisitionAssetPageSize);
+
+    for (let deletion = 0; deletion < 8; deletion += 1) {
+      const rejectedId = page[10];
+      remaining = remaining.filter((id) => id !== rejectedId);
+      page = page.filter((id) => id !== rejectedId);
+      const fill = getAcquisitionPageFill(page.length, 0, remaining.length);
+      expect(fill).toEqual({ offset: 59, limit: 1 });
+      if (fill) page.push(...remaining.slice(fill.offset, fill.offset + fill.limit));
+      expect(page).toEqual(remaining.slice(0, acquisitionAssetPageSize));
+    }
+
+    expect(page[59]).toBe(remaining[59]);
+    expect(remaining.slice(60, 120)[0]).toBe(remaining[60]);
+    expect(remaining.slice(0, 60)[59]).toBe(page[59]);
+  });
+
+  it("does not request a fill beyond the remaining tail", () => {
+    expect(getAcquisitionPageFill(5, 120, 125)).toBeNull();
+  });
+
+  it("rejects inconsistent page fills so the caller can reload the full page", () => {
+    const fill = { offset: 59, limit: 1 };
+    expect(isAcquisitionPageFillValid(["asset-1"], 119, fill, {
+      offset: 59,
+      total: 119,
+      items: [{ id: "asset-60" }]
+    })).toBe(true);
+    expect(isAcquisitionPageFillValid(["asset-1"], 118, fill, {
+      offset: 59,
+      total: 119,
+      items: [{ id: "asset-60" }]
+    })).toBe(false);
+    expect(isAcquisitionPageFillValid(["asset-1"], 119, fill, {
+      offset: 59,
+      total: 119,
+      items: [{ id: "asset-1" }]
+    })).toBe(false);
+  });
+
+  it("reloads the current offset to continue with the old next page after rejecting a page tail", () => {
+    expect(getAcquisitionRejectContinuation(Array.from({ length: 59 }, () => true), 59, 0, 119)).toEqual({
+      kind: "reload",
+      offset: 0,
+      preferredIndex: 59,
+      direction: 1
+    });
+  });
+
+  it("falls back to the global previous item only when no following item remains", () => {
+    expect(getAcquisitionRejectContinuation([true, true], 2, 0, 2)).toEqual({
+      kind: "local",
+      index: 1
+    });
+    expect(getAcquisitionRejectContinuation([], 0, 60, 60)).toEqual({
+      kind: "reload",
+      offset: 0,
+      preferredIndex: 59,
+      direction: -1
+    });
+    expect(getAcquisitionRejectContinuation([], 0, 0, 0)).toEqual({ kind: "close" });
+  });
 });
 
 describe("acquisition import batch state", () => {
@@ -200,5 +284,12 @@ describe("acquisition lightbox keyboard review", () => {
     expect(getConfirmDialogKeyboardDecision("Enter")).toBe(true);
     expect(getConfirmDialogKeyboardDecision("Escape")).toBe(false);
     expect(getConfirmDialogKeyboardDecision("Delete")).toBeNull();
+  });
+});
+
+describe("acquisition preview URLs", () => {
+  it("preserves the content version when sizing a list preview", () => {
+    expect(getAcquisitionPreviewUrl("/api/acquisition/assets/a/preview?v=sha", 480))
+      .toBe("/api/acquisition/assets/a/preview?v=sha&max_edge=480");
   });
 });

@@ -99,6 +99,7 @@ export type AcquisitionAsset = {
   status: string;
   created_at: string;
   preview_url: string | null;
+  original_url: string | null;
 };
 
 export type PaginatedAcquisitionAssets = {

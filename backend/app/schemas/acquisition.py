@@ -149,6 +149,7 @@ class AcquisitionAssetRead(BaseModel):
     status: str
     created_at: datetime
     preview_url: str | None = None
+    original_url: str | None = None
 
 
 class PaginatedAcquisitionAssets(BaseModel):

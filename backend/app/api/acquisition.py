@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from datetime import datetime
+from threading import BoundedSemaphore
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session, aliased
 
@@ -57,9 +58,11 @@ from app.schemas import (
 )
 from app.services.acquisition import AcquisitionService
 from app.services.tasks import create_task, update_task
+from app.services.thumbnails import render_acquisition_preview
 
 
 router = APIRouter(prefix="/api/acquisition", tags=["图片采集"])
+_preview_render_slots = BoundedSemaphore(value=2)
 
 
 def _service(request: Request) -> AcquisitionService:
@@ -98,7 +101,8 @@ def _asset_read(asset: AcquisitionAsset) -> AcquisitionAssetRead:
         quality_warnings=warnings if isinstance(warnings, list) else [],
         status=asset.status,
         created_at=asset.created_at,
-        preview_url=f"/api/acquisition/assets/{asset.id}/original" if asset.object_key else None,
+        preview_url=f"/api/acquisition/assets/{asset.id}/preview?v={asset.sha256}" if asset.object_key else None,
+        original_url=f"/api/acquisition/assets/{asset.id}/original?v={asset.sha256}" if asset.object_key else None,
     )
 
 
@@ -535,7 +539,9 @@ def list_assets(
     if status:
         query = query.where(AcquisitionAsset.status == status)
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    assets = db.scalars(query.order_by(AcquisitionAsset.created_at.desc()).offset(offset).limit(limit)).all()
+    assets = db.scalars(
+        query.order_by(AcquisitionAsset.created_at.desc(), AcquisitionAsset.id.desc()).offset(offset).limit(limit)
+    ).all()
     return PaginatedAcquisitionAssets(items=[_asset_read(asset) for asset in assets], total=total, offset=offset, limit=limit)
 
 
@@ -548,7 +554,7 @@ def list_asset_ids(
     query = select(AcquisitionAsset.id).where(AcquisitionAsset.workspace_id == current.workspace_id)
     if status:
         query = query.where(AcquisitionAsset.status == status)
-    return list(db.scalars(query.order_by(AcquisitionAsset.created_at.desc())).all())
+    return list(db.scalars(query.order_by(AcquisitionAsset.created_at.desc(), AcquisitionAsset.id.desc())).all())
 
 
 @router.get("/assets/summary", response_model=AcquisitionAssetSummary)
@@ -576,6 +582,28 @@ def get_asset_original(
     if asset is None or asset.workspace_id != current.workspace_id or not asset.object_key:
         raise HTTPException(status_code=404, detail="采集临时图片不存在")
     return stream_storage_object(request.app.state.services.storage, request, asset.object_key, asset.filename, asset.content_type)
+
+
+@router.get("/assets/{asset_id}/preview", response_class=Response)
+def get_asset_preview(
+    asset_id: str,
+    request: Request,
+    max_edge: Annotated[int, Query(ge=160, le=2048)] = 480,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> Response:
+    asset = db.get(AcquisitionAsset, asset_id)
+    if asset is None or asset.workspace_id != current.workspace_id or not asset.object_key:
+        raise HTTPException(status_code=404, detail="采集临时图片不存在")
+
+    with _preview_render_slots:
+        payload = request.app.state.services.storage.get_bytes(asset.object_key)
+        preview = render_acquisition_preview(payload, max_edge)
+    return Response(
+        content=preview.payload,
+        media_type=preview.media_type,
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
 
 
 @router.post("/assets/import", response_model=AcquisitionImportBatchRead)

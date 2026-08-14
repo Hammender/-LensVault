@@ -5,12 +5,15 @@ import json
 import mimetypes
 import os
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -41,6 +44,7 @@ from app.models import (
 )
 from app.services.importer import PictureService
 from app.services.acquisition_adapters import (
+    AccessBlockedError,
     LEGACY_SCRIPT_KEYS,
     SCRIPT_REGISTRY,
     RaindropPageAdapter,
@@ -72,6 +76,42 @@ class PendingRemote:
     remote: RemoteItem
     source_item_id: int
     run_item_id: int
+
+
+class _DownloadStartLimiter:
+    def __init__(
+        self,
+        interval_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.interval_seconds = max(0.0, float(interval_seconds))
+        self._clock = clock
+        self._sleeper = sleeper
+        self._lock = threading.Lock()
+        self._next_start = 0.0
+
+    def wait(self, abort_event: threading.Event | None = None) -> None:
+        with self._lock:
+            if abort_event is not None and abort_event.is_set():
+                raise CancelledError()
+            delay = max(0.0, self._next_start - self._clock())
+            if delay:
+                if abort_event is not None:
+                    if abort_event.wait(delay):
+                        raise CancelledError()
+                else:
+                    self._sleeper(delay)
+            if abort_event is not None and abort_event.is_set():
+                raise CancelledError()
+            self._next_start = self._clock() + self.interval_seconds
+
+
+@dataclass
+class _DownloadPolicyContext:
+    limiter: _DownloadStartLimiter
+    abort_event: threading.Event
+    reserved_start: bool = True
 
 
 @dataclass(frozen=True)
@@ -116,6 +156,7 @@ class AcquisitionService:
         self.storage = storage
         self.pictures = pictures
         self.settings = settings or get_settings()
+        self._download_policy = threading.local()
         self.similarity_scanner = similarity_scanner
         self.similarity_extractor = similarity_extractor or (
             similarity_scanner.extractor if similarity_scanner is not None else DinoV2FeatureExtractor(self.settings)
@@ -328,7 +369,12 @@ class AcquisitionService:
             raise ValueError("旧参数“强制扫描全部指定页面”必须是布尔值")
         return value
 
-    def _download(self, url: str, referer: str) -> tuple[bytes, str | None]:
+    def _download(
+        self,
+        url: str,
+        referer: str,
+        abort_on_access_block: bool = False,
+    ) -> tuple[bytes, str | None]:
         request = Request(
             url,
             headers={
@@ -340,6 +386,7 @@ class AcquisitionService:
         last_error: Exception | None = None
         for _ in range(self.settings.acquisition_download_retries):
             try:
+                self._wait_for_download_start()
                 with urlopen(request, timeout=self.settings.acquisition_download_timeout_seconds) as response:
                     content_length = response.headers.get("Content-Length")
                     if content_length and int(content_length) > self.settings.acquisition_max_file_bytes:
@@ -355,6 +402,10 @@ class AcquisitionService:
                             raise ValueError("文件超过下载大小上限")
                         chunks.append(chunk)
                     return b"".join(chunks), response.headers.get_content_type()
+            except HTTPError as exc:
+                if abort_on_access_block and exc.code in {403, 429}:
+                    raise AccessBlockedError(url, exc.code) from exc
+                last_error = exc
             except Exception as exc:  # noqa: PERF203 - 保留最后一次远端错误
                 last_error = exc
                 if is_tls_transport_error(exc):
@@ -366,11 +417,24 @@ class AcquisitionService:
                             self.settings.acquisition_download_timeout_seconds,
                             self.settings.acquisition_max_file_bytes,
                             self.settings.acquisition_download_retries,
+                            abort_on_access_block=abort_on_access_block,
+                            before_attempt=self._wait_for_download_start,
                         )
+                    except AccessBlockedError:
+                        raise
                     except Exception as fallback_exc:
                         last_error = fallback_exc
                         break
         raise RuntimeError(str(last_error or "下载失败"))
+
+    def _wait_for_download_start(self) -> None:
+        policy: _DownloadPolicyContext | None = getattr(self._download_policy, "context", None)
+        if policy is None:
+            return
+        if policy.reserved_start:
+            policy.reserved_start = False
+            return
+        policy.limiter.wait(policy.abort_event)
 
     def _download_remote(self, remote: RemoteItem, referer: str) -> tuple[bytes, str | None, str]:
         candidates = list(remote.candidate_urls or (remote.source_url,))
@@ -380,7 +444,7 @@ class AcquisitionService:
             candidate = candidates[index]
             index += 1
             try:
-                payload, content_type = self._download(candidate, referer)
+                payload, content_type = self._download(candidate, referer, remote.abort_on_access_block)
                 if "/get_cache_url?" in candidate:
                     cache_payload = json.loads(payload.decode("utf-8"))
                     cache_url = str(cache_payload.get("url") or "").strip()
@@ -391,6 +455,10 @@ class AcquisitionService:
                     errors.append(f"{candidate}: 返回类型 {content_type}")
                     continue
                 return payload, content_type, candidate
+            except AccessBlockedError:
+                if remote.abort_on_access_block:
+                    raise
+                errors.append(f"{candidate}: 站点拒绝访问")
             except Exception as exc:
                 errors.append(f"{candidate}: {exc}")
         raise RuntimeError("；".join(errors) or "没有可下载的图片地址")
@@ -404,7 +472,7 @@ class AcquisitionService:
             payload, content_type, resolved_url = result
         width, height, blur, warnings = self._quality(payload)
         features = compute_perceptual_features(payload)
-        if resolved_url == remote.source_url:
+        if resolved_url == remote.source_url or (remote.candidate_urls and resolved_url == remote.candidate_urls[0]):
             candidate = "source"
         elif remote.preview_url and resolved_url == remote.preview_url:
             candidate = "preview"
@@ -508,7 +576,21 @@ class AcquisitionService:
         db.commit()
         try:
             referer = run.category_url_snapshot or category.crawl_url
-            workers = max(1, int(getattr(self.settings, "acquisition_download_workers", 8)))
+            workers = max(1, int(getattr(self.settings, "acquisition_download_workers", 6)))
+            if definition.max_download_workers is not None:
+                workers = min(workers, max(1, definition.max_download_workers))
+            limiter = _DownloadStartLimiter(definition.download_start_interval_seconds)
+            abort_event = threading.Event()
+
+            def download(prepared: PendingRemote) -> DownloadedRemote:
+                limiter.wait(abort_event)
+                item_referer = prepared.remote.referer_url or referer
+                self._download_policy.context = _DownloadPolicyContext(limiter, abort_event)
+                try:
+                    return self._download_and_analyze(prepared.remote, item_referer)
+                finally:
+                    del self._download_policy.context
+
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acquisition-download") as executor:
                 for page in definition.adapter.enumerate_pages(
                     referer,
@@ -523,13 +605,20 @@ class AcquisitionService:
                         if (prepared := self._prepare_remote_item(db, run, source, category, remote)) is not None
                     ]
                     futures = {
-                        executor.submit(self._download_and_analyze, prepared.remote, referer): prepared
+                        executor.submit(download, prepared): prepared
                         for prepared in pending
                     }
                     for future in as_completed(futures):
                         prepared = futures[future]
                         try:
                             self._persist_downloaded_remote(db, run.id, prepared, future.result())
+                        except AccessBlockedError as exc:
+                            self._record_remote_failure(db, run.id, prepared, exc)
+                            abort_event.set()
+                            for pending_future in futures:
+                                if pending_future is not future:
+                                    pending_future.cancel()
+                            raise
                         except Exception as exc:
                             self._record_remote_failure(db, run.id, prepared, exc)
                     run = db.get(AcquisitionRun, run_id)

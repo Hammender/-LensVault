@@ -31,10 +31,13 @@ import {
   acquisitionAssetPageSize,
   clampAcquisitionOffset,
   createAcquisitionStatusReset,
-  findClosestPreviewableIndex,
+  getAcquisitionPageFill,
+  getAcquisitionRejectContinuation,
+  getAcquisitionPreviewUrl,
   getAcquisitionLightboxShortcut,
   getAcquisitionPagination,
   hasSelectedAllAcquisitionAssets,
+  isAcquisitionPageFillValid,
   isAcquisitionImportBatchActive,
   removeAcquisitionSelection,
   toggleAcquisitionSelection
@@ -127,7 +130,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [assetOffset, setAssetOffset] = useState(0);
   const [assetJumpPage, setAssetJumpPage] = useState("");
   const [assetLoading, setAssetLoading] = useState(false);
-  const [lightboxAssetId, setLightboxAssetId] = useState<string | null>(null);
+  const [lightboxSelection, setLightboxSelection] = useState<{ asset: AcquisitionAsset; globalIndex: number } | null>(null);
   const [assetSummary, setAssetSummary] = useState<AcquisitionAssetSummary>({ total: 0, status_counts: {} });
   const [importBatches, setImportBatches] = useState<AcquisitionImportBatch[]>([]);
   const [importBatchesTotal, setImportBatchesTotal] = useState(0);
@@ -173,6 +176,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const assetRequestIdRef = useRef(0);
+  const lightboxRejectPendingRef = useRef(false);
+  const reviewReconcileNeededRef = useRef(false);
   const runLauncherRef = useRef<HTMLDivElement>(null);
 
   const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
@@ -186,8 +191,11 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const selectedRunScript = scriptByKey.get(runScriptKey);
   const assetPagination = getAcquisitionPagination(assetsTotal, assetOffset, assets.length, acquisitionAssetPageSize);
   const areAllReviewAssetsSelected = hasSelectedAllAcquisitionAssets(selectedAssets, assetsTotal);
-  const lightboxAssetIndex = lightboxAssetId ? assets.findIndex((asset) => asset.id === lightboxAssetId) : -1;
-  const lightboxAsset = lightboxAssetIndex >= 0 ? assets[lightboxAssetIndex] : null;
+  const lightboxAsset = lightboxSelection?.asset ?? null;
+  const lightboxAssetIndex = lightboxAsset ? assets.findIndex((asset) => asset.id === lightboxAsset.id) : -1;
+  const lightboxGlobalIndex = lightboxAssetIndex >= 0
+    ? assetOffset + lightboxAssetIndex
+    : lightboxSelection?.globalIndex ?? -1;
   const previousPreviewIndex = lightboxAssetIndex >= 0
     ? findPreviewableIndexInDirection(assets, lightboxAssetIndex - 1, -1)
     : -1;
@@ -399,7 +407,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     await perform(async () => {
       await changeAcquisitionAssets(action, assetIds);
       setSelectedAssets((current) => removeAcquisitionSelection(current, assetIds));
-      if (lightboxAssetId && assetIds.includes(lightboxAssetId)) setLightboxAssetId(null);
+      if (lightboxAsset && assetIds.includes(lightboxAsset.id)) setLightboxSelection(null);
     }, message);
   }
 
@@ -555,10 +563,14 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setSelectedAssets((items) => toggleAcquisitionSelection(items, id));
   }
 
+  function showLightboxAsset(asset: AcquisitionAsset, index: number, offset = assetOffset) {
+    setLightboxSelection({ asset, globalIndex: offset + index });
+  }
+
   function changeReviewMode(nextMode: "list" | "similarity") {
     setReviewMode(nextMode);
     setSelectedAssets([]);
-    setLightboxAssetId(null);
+    setLightboxSelection(null);
     setSimilarityLightbox(null);
   }
 
@@ -588,7 +600,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setAssetsTotal(0);
     setAssetLoading(true);
     setSelectedAssets(reset.selectedIds);
-    setLightboxAssetId(reset.lightboxAssetId);
+    setLightboxSelection(null);
     setAssetOffset(reset.offset);
     setAssetJumpPage(reset.jumpPage);
     setAssetStatus(reset.status);
@@ -618,7 +630,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     if (lightboxAssetIndex < 0) return;
     const localIndex = direction < 0 ? previousPreviewIndex : nextPreviewIndex;
     if (localIndex >= 0) {
-      setLightboxAssetId(assets[localIndex].id);
+      showLightboxAsset(assets[localIndex], localIndex);
       return;
     }
 
@@ -629,74 +641,210 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       const startIndex = direction < 0 ? page.items.length - 1 : 0;
       const index = findPreviewableIndexInDirection(page.items, startIndex, direction);
       if (index >= 0) {
-        setLightboxAssetId(page.items[index].id);
+        showLightboxAsset(page.items[index], index, page.offset);
         return;
       }
       nextOffset += direction * acquisitionAssetPageSize;
     }
-    setLightboxAssetId(null);
+    setLightboxSelection(null);
   }
 
-  async function focusNearestPreview(page: PaginatedAcquisitionAssets, preferredIndex: number) {
-    const localIndex = findClosestPreviewableIndex(page.items, preferredIndex);
-    if (localIndex >= 0) {
-      setLightboxAssetId(page.items[localIndex].id);
-      return;
+  async function focusPreviewAfterRemoval(
+    page: PaginatedAcquisitionAssets,
+    preferredIndex: number,
+    direction: -1 | 1
+  ) {
+    let loadedForwardPage = false;
+    if (direction > 0) {
+      const localNextIndex = findPreviewableIndexInDirection(page.items, Math.max(0, preferredIndex), 1);
+      if (localNextIndex >= 0) {
+        showLightboxAsset(page.items[localNextIndex], localNextIndex, page.offset);
+        return;
+      }
+      for (let nextOffset = page.offset + acquisitionAssetPageSize; nextOffset < page.total; nextOffset += acquisitionAssetPageSize) {
+        const nextPage = await loadAssetPage(assetStatus, nextOffset);
+        if (!nextPage) return;
+        loadedForwardPage = true;
+        const nextIndex = findPreviewableIndexInDirection(nextPage.items, 0, 1);
+        if (nextIndex >= 0) {
+          showLightboxAsset(nextPage.items[nextIndex], nextIndex, nextPage.offset);
+          return;
+        }
+      }
     }
 
-    for (let nextOffset = page.offset + acquisitionAssetPageSize; nextOffset < page.total; nextOffset += acquisitionAssetPageSize) {
-      const nextPage = await loadAssetPage(assetStatus, nextOffset);
-      if (!nextPage) return;
-      const nextIndex = findPreviewableIndexInDirection(nextPage.items, 0, 1);
-      if (nextIndex >= 0) {
-        setLightboxAssetId(nextPage.items[nextIndex].id);
-        return;
-      }
+    let previousPage = page;
+    let previousPreferredIndex = preferredIndex;
+    if (loadedForwardPage) {
+      const restoredPage = await loadAssetPage(assetStatus, page.offset);
+      if (!restoredPage) return;
+      previousPage = restoredPage;
+      previousPreferredIndex = page.offset + preferredIndex - restoredPage.offset;
     }
-    for (let previousOffset = page.offset - acquisitionAssetPageSize; previousOffset >= 0; previousOffset -= acquisitionAssetPageSize) {
-      const previousPage = await loadAssetPage(assetStatus, previousOffset);
-      if (!previousPage) return;
-      const previousIndex = findPreviewableIndexInDirection(previousPage.items, previousPage.items.length - 1, -1);
+    const localPreviousStart = direction > 0 ? previousPreferredIndex - 1 : previousPreferredIndex;
+    const localPreviousIndex = findPreviewableIndexInDirection(
+      previousPage.items,
+      Math.min(localPreviousStart, previousPage.items.length - 1),
+      -1
+    );
+    if (localPreviousIndex >= 0) {
+      showLightboxAsset(previousPage.items[localPreviousIndex], localPreviousIndex, previousPage.offset);
+      return;
+    }
+    for (let previousOffset = previousPage.offset - acquisitionAssetPageSize; previousOffset >= 0; previousOffset -= acquisitionAssetPageSize) {
+      const earlierPage = await loadAssetPage(assetStatus, previousOffset);
+      if (!earlierPage) return;
+      const previousIndex = findPreviewableIndexInDirection(earlierPage.items, earlierPage.items.length - 1, -1);
       if (previousIndex >= 0) {
-        setLightboxAssetId(previousPage.items[previousIndex].id);
+        showLightboxAsset(earlierPage.items[previousIndex], previousIndex, earlierPage.offset);
         return;
       }
     }
-    setLightboxAssetId(null);
+    setLightboxSelection(null);
+  }
+
+  async function reconcileAssetPageAfterRemoval(
+    remainingAssets: AcquisitionAsset[],
+    remainingTotal: number
+  ): Promise<PaginatedAcquisitionAssets> {
+    const localPage: PaginatedAcquisitionAssets = {
+      items: remainingAssets,
+      total: remainingTotal,
+      offset: assetOffset,
+      limit: acquisitionAssetPageSize
+    };
+    const fill = getAcquisitionPageFill(
+      remainingAssets.length,
+      assetOffset,
+      remainingTotal
+    );
+    if (!fill) return localPage;
+
+    try {
+      const fillPage = await listAcquisitionAssets(assetStatus, fill.offset, fill.limit);
+      if (!isAcquisitionPageFillValid(
+        remainingAssets.map((asset) => asset.id),
+        remainingTotal,
+        fill,
+        fillPage
+      )) throw new Error("审核图片列表已发生变化");
+
+      const page = { ...localPage, items: [...remainingAssets, ...fillPage.items] };
+      setAssets(page.items);
+      setAssetsTotal(page.total);
+      return page;
+    } catch {
+      const page = await loadAssetPage(assetStatus, assetOffset);
+      if (!page) throw new Error("审核图片列表刷新失败");
+      return page;
+    }
   }
 
   async function rejectLightboxAsset() {
-    if (!lightboxAsset || !canDelete) return;
-    const confirmed = await confirm({
-      title: "丢弃这张采集图片？",
-      message: `将立即删除临时文件“${lightboxAsset.filename}”，同时保留拒绝状态和来源记录。`,
-      confirmLabel: "确认丢弃",
-      tone: "danger"
-    });
-    if (!confirmed) return;
-
-    const rejectedId = lightboxAsset.id;
-    const preferredIndex = lightboxAssetIndex;
-    const rejectedOffset = assetOffset;
-    setBusy(true);
-    setNotice(null);
+    if (!lightboxAsset || !canDelete || lightboxRejectPendingRef.current) return;
+    lightboxRejectPendingRef.current = true;
     try {
+      const confirmed = await confirm({
+        title: "丢弃这张采集图片？",
+        message: `将立即删除临时文件“${lightboxAsset.filename}”，同时保留拒绝状态和来源记录。`,
+        confirmLabel: "确认丢弃",
+        tone: "danger",
+        backdrop: "transparent"
+      });
+      if (!confirmed) return;
+
+      const rejectedId = lightboxAsset.id;
+      const preferredIndex = lightboxAssetIndex;
+      const removedGlobalIndex = assetOffset + preferredIndex;
+      const remainingAssets = assets.filter((asset) => asset.id !== rejectedId);
+      const remainingTotal = Math.max(0, assetsTotal - 1);
+      setBusy(true);
+      setNotice(null);
       await changeAcquisitionAssets("reject", [rejectedId]);
       setSelectedAssets((current) => removeAcquisitionSelection(current, [rejectedId]));
-      const page = await loadAssetPage(assetStatus, assetOffset);
-      if (!page || page.total === 0) {
-        setLightboxAssetId(null);
-      } else {
-        const nextPreferredIndex = page.offset < rejectedOffset ? page.items.length : preferredIndex;
-        await focusNearestPreview(page, nextPreferredIndex);
+      setAssets(remainingAssets);
+      setAssetsTotal(remainingTotal);
+      setAssetSummary((current) => {
+        const statusCounts = { ...current.status_counts };
+        statusCounts[assetStatus] = Math.max(0, (statusCounts[assetStatus] ?? 0) - 1);
+        statusCounts.rejected = (statusCounts.rejected ?? 0) + 1;
+        return { ...current, status_counts: statusCounts };
+      });
+      reviewReconcileNeededRef.current = true;
+
+      const immediateContinuation = getAcquisitionRejectContinuation(
+        remainingAssets.map((asset) => Boolean(asset.preview_url)),
+        preferredIndex,
+        assetOffset,
+        remainingTotal
+      );
+      if (immediateContinuation.kind === "local") {
+        showLightboxAsset(remainingAssets[immediateContinuation.index], immediateContinuation.index);
       }
-      await refreshReferenceData();
+
+      let page: PaginatedAcquisitionAssets;
+      try {
+        page = await reconcileAssetPageAfterRemoval(remainingAssets, remainingTotal);
+      } catch (error) {
+        setLightboxSelection(null);
+        setNotice(error instanceof Error ? `图片已丢弃，但列表刷新失败：${error.message}` : "图片已丢弃，但列表刷新失败");
+        return;
+      }
+
+      const reconciledPreferredIndex = removedGlobalIndex - page.offset;
+      const continuation = getAcquisitionRejectContinuation(
+        page.items.map((asset) => Boolean(asset.preview_url)),
+        reconciledPreferredIndex,
+        page.offset,
+        page.total
+      );
+      if (continuation.kind === "local") {
+        showLightboxAsset(page.items[continuation.index], continuation.index, page.offset);
+      } else if (continuation.kind === "reload") {
+        setLightboxSelection((current) => current
+          ? { ...current, globalIndex: continuation.offset + continuation.preferredIndex }
+          : current);
+        try {
+          const page = await loadAssetPage(assetStatus, continuation.offset);
+          if (page) {
+            const targetGlobalIndex = continuation.offset + continuation.preferredIndex;
+            await focusPreviewAfterRemoval(
+              page,
+              targetGlobalIndex - page.offset,
+              continuation.direction
+            );
+          }
+        } catch (error) {
+          setLightboxSelection(null);
+          setNotice(error instanceof Error ? `图片已丢弃，但下一页加载失败：${error.message}` : "图片已丢弃，但下一页加载失败");
+          return;
+        }
+      } else {
+        setLightboxSelection(null);
+      }
       setNotice("图片已丢弃，临时文件已清除");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "图片丢弃失败");
     } finally {
       setBusy(false);
+      lightboxRejectPendingRef.current = false;
     }
+  }
+
+  function closeReviewLightbox() {
+    if (lightboxRejectPendingRef.current) return;
+    setLightboxSelection(null);
+    if (!reviewReconcileNeededRef.current) return;
+    reviewReconcileNeededRef.current = false;
+    void Promise.all([
+      loadAssetPage(assetStatus, assetOffset),
+      getAcquisitionAssetSummary()
+    ]).then(([, summary]) => {
+      setAssetSummary(summary);
+    }).catch((error: Error) => {
+      reviewReconcileNeededRef.current = true;
+      setNotice(error.message);
+    });
   }
 
   function compatibleScripts(source: AcquisitionSource): AcquisitionScript[] {
@@ -854,9 +1002,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         </div>
       </div>
       {reviewMode === "list" && <><div className={assetLoading ? "review-grid loading" : "review-grid"} aria-busy={assetLoading}>
-        {assets.map((asset) => <article className={selectedAssets.includes(asset.id) ? "review-tile selected" : "review-tile"} key={asset.id}>
+        {assets.map((asset, index) => <article className={selectedAssets.includes(asset.id) ? "review-tile selected" : "review-tile"} key={asset.id}>
           <label className="tile-select"><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={() => toggleAsset(asset.id)} /><span>选择</span></label>
-          {asset.preview_url ? <button className="review-image-button" type="button" onClick={() => setLightboxAssetId(asset.id)} aria-label={`查看大图 ${asset.filename}`}><img src={asset.preview_url} alt={asset.filename} loading="lazy" /></button> : <div className="tile-missing">临时文件已清除</div>}
+          {asset.preview_url ? <button className="review-image-button" type="button" onClick={() => showLightboxAsset(asset, index)} aria-label={`查看大图 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
           <div className="tile-meta"><strong title={asset.filename}>{asset.filename}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "尺寸未知"} · {formatBytes(asset.size_bytes)}</small>{asset.quality_warnings.length > 0 && <p>{asset.quality_warnings.join(" / ")}</p>}</div>
         </article>)}
       </div>
@@ -893,7 +1041,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
               </header>
               <div className="similarity-members">{group.members.map((asset) => <div className={selectedAssets.includes(asset.id) ? "similarity-member selected" : "similarity-member"} key={asset.id}>
                 <button type="button" className="similarity-image-button" onClick={() => setSimilarityLightbox({ groupId: group.id, assetId: asset.id })} aria-label={`查看大图 ${asset.filename}`}>
-                  {asset.preview_url ? <img src={asset.preview_url} alt={asset.filename} loading="lazy" /> : <span>文件已清除</span>}
+                  {asset.preview_url ? <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" /> : <span>文件已清除</span>}
                 </button>
                 <label><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={() => toggleAsset(asset.id)} /><span title={asset.filename}>{asset.filename}</span></label>
               </div>)}</div>
@@ -1040,14 +1188,15 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
 
   </main>
 
-    {lightboxAsset?.preview_url && <PhotoLightbox
+    {lightboxAsset?.original_url && <PhotoLightbox
+      backdropClassName="acquisition-review-lightbox-backdrop"
       shellClassName="acquisition-review-lightbox"
       busy={busy || assetLoading}
       canGoPrevious={canGoToPreviousAsset}
       canGoNext={canGoToNextAsset}
       previousLabel={previousPreviewIndex < 0 && assetOffset > 0 ? "上一页" : undefined}
       nextLabel={nextPreviewIndex < 0 && assetOffset + assets.length < assetsTotal ? "下一页" : undefined}
-      onClose={() => setLightboxAssetId(null)}
+      onClose={closeReviewLightbox}
       onPrevious={() => navigateLightbox(-1)}
       onNext={() => navigateLightbox(1)}
       onKeyDown={(event) => {
@@ -1063,7 +1212,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       meta={<>
         <div className="acquisition-lightbox-heading">
           <div><p className="acquisition-eyebrow">采集审核</p><h2>{statusLabel(assetStatus)}</h2></div>
-          <strong>{assetOffset + lightboxAssetIndex + 1} / {assetsTotal}</strong>
+          <strong>{lightboxGlobalIndex + 1} / {assetsTotal}</strong>
         </div>
         <dl className="acquisition-lightbox-facts">
           <div><dt>文件名</dt><dd title={lightboxAsset.filename}>{lightboxAsset.filename}</dd></div>
@@ -1084,10 +1233,11 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         </div>
       </>}
     >
-      <img className="lightbox-image" src={lightboxAsset.preview_url} alt={lightboxAsset.filename} />
+      <img className="lightbox-image" src={lightboxAsset.original_url} alt={lightboxAsset.filename} />
     </PhotoLightbox>}
 
-    {similarityLightboxAsset?.preview_url && similarityLightboxGroup && <PhotoLightbox
+    {similarityLightboxAsset?.original_url && similarityLightboxGroup && <PhotoLightbox
+      backdropClassName="acquisition-review-lightbox-backdrop"
       shellClassName="acquisition-review-lightbox similarity-lightbox"
       busy={busy || similarityLoading}
       canGoPrevious={similarityLightboxIndex > 0}
@@ -1122,7 +1272,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           key={asset.id}
           onClick={() => setSimilarityLightbox({ groupId: similarityLightboxGroup.id, assetId: asset.id })}
           title={asset.filename}
-        >{asset.preview_url ? <img src={asset.preview_url} alt="" /> : <span>缺失</span>}</button>)}</div>
+        >{asset.preview_url ? <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt="" loading="lazy" decoding="async" /> : <span>缺失</span>}</button>)}</div>
         <dl className="acquisition-lightbox-facts">
           <div><dt>文件名</dt><dd title={similarityLightboxAsset.filename}>{similarityLightboxAsset.filename}</dd></div>
           <div><dt>尺寸</dt><dd>{similarityLightboxAsset.width && similarityLightboxAsset.height ? `${similarityLightboxAsset.width} × ${similarityLightboxAsset.height}` : "未知"}</dd></div>
@@ -1138,7 +1288,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         </div>
       </>}
     >
-      <img className="lightbox-image" src={similarityLightboxAsset.preview_url} alt={similarityLightboxAsset.filename} />
+      <img className="lightbox-image" src={similarityLightboxAsset.original_url} alt={similarityLightboxAsset.filename} />
     </PhotoLightbox>}
   </>;
 }

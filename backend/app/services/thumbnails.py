@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 
-from PIL import Image, ImageSequence
+from PIL import Image, ImageOps, ImageSequence
 
 
 ANIMATED_THUMBNAIL_MAX_EDGE = 720
@@ -14,6 +14,12 @@ class RenderedGalleryThumbnail:
     payload: bytes
     media_type: str
     is_animated: bool
+
+
+@dataclass(frozen=True)
+class RenderedAcquisitionPreview:
+    payload: bytes
+    media_type: str
 
 
 def animated_thumbnail_cache_key(
@@ -58,3 +64,21 @@ def render_gallery_thumbnail(payload: bytes) -> RenderedGalleryThumbnail:
             method=4,
         )
         return RenderedGalleryThumbnail(output.getvalue(), "image/webp", True)
+
+
+def render_acquisition_preview(
+    payload: bytes,
+    max_edge: int,
+) -> RenderedAcquisitionPreview:
+    """按需生成采集列表缩略图；动图仅渲染首帧。"""
+    with Image.open(BytesIO(payload)) as source:
+        frame_count = getattr(source, "n_frames", 1)
+        is_animated = bool(getattr(source, "is_animated", False) and frame_count > 1)
+        if not is_animated:
+            source.draft("RGB", (max_edge, max_edge))
+        source.seek(0)
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=90, optimize=True)
+        return RenderedAcquisitionPreview(output.getvalue(), "image/jpeg")

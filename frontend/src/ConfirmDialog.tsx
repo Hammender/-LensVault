@@ -2,16 +2,18 @@ import { AlertTriangle, CircleHelp } from "lucide-react";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 export type ConfirmDialogTone = "danger" | "primary";
+export type ConfirmDialogBackdrop = "dimmed" | "transparent";
 
 export type ConfirmDialogOptions = {
   title: string;
   message: string;
   confirmLabel?: string;
   tone?: ConfirmDialogTone;
+  backdrop?: ConfirmDialogBackdrop;
 };
 
 type PendingConfirmation = {
-  options: Required<Pick<ConfirmDialogOptions, "confirmLabel" | "tone">> & ConfirmDialogOptions;
+  options: Required<Pick<ConfirmDialogOptions, "confirmLabel" | "tone" | "backdrop">> & ConfirmDialogOptions;
   resolve: (confirmed: boolean) => void;
 };
 
@@ -47,7 +49,8 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
         options: {
           ...options,
           confirmLabel: options.confirmLabel ?? "确认",
-          tone: options.tone ?? "primary"
+          tone: options.tone ?? "primary",
+          backdrop: options.backdrop ?? "dimmed"
         },
         resolve
       };
@@ -82,7 +85,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
       {children}
       {pending && (
         <div
-          className="confirm-dialog-backdrop"
+          className={`confirm-dialog-backdrop${pending.options.backdrop === "transparent" ? " confirm-dialog-backdrop--transparent" : ""}`}
           onClick={(event) => {
             if (event.target === event.currentTarget) settle(false);
           }}

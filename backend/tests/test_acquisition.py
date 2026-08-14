@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,7 +19,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.api.acquisition import list_asset_ids, list_history, list_import_batch_items, list_import_batches, list_sources
+from app.api.acquisition import list_asset_ids, list_assets, list_history, list_import_batch_items, list_import_batches, list_sources
 from app.lifecycle import ensure_acquisition_schema
 from app.models import (
     AcquisitionAsset,
@@ -52,9 +53,9 @@ class AcquisitionAdapterTests(unittest.TestCase):
         catalog = script_catalog()
         self.assertEqual(
             {item["name"] for item in catalog},
-            {"raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page"},
+            {"idolxxx-gallery", "raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page"},
         )
-        self.assertEqual({item["version"] for item in catalog}, {"1.0.2", "1.2.0"})
+        self.assertEqual({item["version"] for item in catalog}, {"1.0.0", "1.0.2", "1.2.0"})
 
     def test_raindrop_page_normalizes_relative_image_urls(self) -> None:
         payload = (
@@ -796,6 +797,38 @@ class AcquisitionSimilarityTests(unittest.TestCase):
         self.assertAlmostEqual(candidate.score, 1.0)
         self.assertTrue(progress_updates)
         self.assertTrue(all("deferred.jpg" not in message for _, message in progress_updates))
+        db.close()
+        engine.dispose()
+
+    def test_asset_lists_use_id_as_stable_tiebreaker(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        created_at = datetime(2026, 8, 14, 10, 0, 0)
+        db.add_all([
+            AcquisitionAsset(
+                id=asset_id,
+                sha256=character * 64,
+                filename=f"{asset_id}.jpg",
+                status="pending_review",
+                created_at=created_at,
+            )
+            for asset_id, character in (("asset-a", "a"), ("asset-c", "c"), ("asset-b", "b"))
+        ])
+        db.commit()
+
+        context = SimpleNamespace(workspace_id=None)
+        page = list_assets(
+            status="pending_review",
+            offset=0,
+            limit=2,
+            db=db,
+            current=context,
+        )
+        ids = list_asset_ids(status="pending_review", db=db, current=context)
+
+        self.assertEqual([asset.id for asset in page.items], ["asset-c", "asset-b"])
+        self.assertEqual(ids, ["asset-c", "asset-b", "asset-a"])
         db.close()
         engine.dispose()
 

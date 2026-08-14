@@ -102,6 +102,12 @@
     ]
   },
   {
+    "path": "/api/acquisition/assets/{asset_id}/preview",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/acquisition/assets/import",
     "methods": [
       "POST"

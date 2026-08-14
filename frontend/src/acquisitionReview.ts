@@ -1,5 +1,78 @@
 export const acquisitionAssetPageSize = 60;
 
+export function getAcquisitionPreviewUrl(
+  previewUrl: string,
+  maxEdge: number
+): string {
+  const url = new URL(previewUrl, "http://localhost");
+  url.searchParams.set("max_edge", String(maxEdge));
+  return `${url.pathname}${url.search}`;
+}
+
+export type AcquisitionRejectContinuation =
+  | { kind: "local"; index: number }
+  | { kind: "reload"; offset: number; preferredIndex: number; direction: -1 | 1 }
+  | { kind: "close" };
+
+export type AcquisitionPageFill = { offset: number; limit: number };
+
+export function getAcquisitionPageFill(
+  loadedCount: number,
+  currentOffset: number,
+  remainingTotal: number,
+  pageSize = acquisitionAssetPageSize
+): AcquisitionPageFill | null {
+  const expectedCount = Math.min(pageSize, Math.max(0, remainingTotal - currentOffset));
+  const missingCount = Math.max(0, expectedCount - loadedCount);
+  return missingCount > 0
+    ? { offset: currentOffset + loadedCount, limit: missingCount }
+    : null;
+}
+
+export function isAcquisitionPageFillValid(
+  existingIds: readonly string[],
+  remainingTotal: number,
+  fill: AcquisitionPageFill,
+  fillPage: { offset: number; total: number; items: readonly { id: string }[] }
+): boolean {
+  const knownIds = new Set(existingIds);
+  const fillIds = new Set(fillPage.items.map((asset) => asset.id));
+  return fillPage.offset === fill.offset
+    && fillPage.total === remainingTotal
+    && fillPage.items.length === fill.limit
+    && fillIds.size === fillPage.items.length
+    && fillPage.items.every((asset) => !knownIds.has(asset.id));
+}
+
+export function getAcquisitionRejectContinuation(
+  previewableAssets: boolean[],
+  removedIndex: number,
+  currentOffset: number,
+  remainingTotal: number,
+  pageSize = acquisitionAssetPageSize
+): AcquisitionRejectContinuation {
+  for (let index = Math.max(0, removedIndex); index < previewableAssets.length; index += 1) {
+    if (previewableAssets[index]) return { kind: "local", index };
+  }
+  if (remainingTotal <= 0) return { kind: "close" };
+
+  const removedGlobalIndex = currentOffset + removedIndex;
+  const hasFollowingAsset = removedGlobalIndex < remainingTotal;
+  if (!hasFollowingAsset) {
+    for (let index = Math.min(removedIndex - 1, previewableAssets.length - 1); index >= 0; index -= 1) {
+      if (previewableAssets[index]) return { kind: "local", index };
+    }
+  }
+  const targetGlobalIndex = hasFollowingAsset ? removedGlobalIndex : remainingTotal - 1;
+  const offset = Math.floor(targetGlobalIndex / pageSize) * pageSize;
+  return {
+    kind: "reload",
+    offset,
+    preferredIndex: targetGlobalIndex - offset,
+    direction: hasFollowingAsset ? 1 : -1
+  };
+}
+
 export type AcquisitionLightboxShortcut = "toggle_selection" | "reject";
 
 export function getAcquisitionLightboxShortcut(key: string): AcquisitionLightboxShortcut | null {

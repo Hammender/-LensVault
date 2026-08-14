@@ -5,6 +5,7 @@ import { isTextEditingTarget } from "./utils";
 type PhotoLightboxProps = {
   children: ReactNode;
   meta?: ReactNode;
+  backdropClassName?: string;
   shellClassName?: string;
   busy?: boolean;
   keyboardEnabled?: boolean;
@@ -21,6 +22,7 @@ type PhotoLightboxProps = {
 export default function PhotoLightbox({
   children,
   meta,
+  backdropClassName = "",
   shellClassName = "",
   busy = false,
   keyboardEnabled = true,
@@ -52,7 +54,7 @@ export default function PhotoLightbox({
   }, [busy, canGoNext, canGoPrevious, keyboardEnabled, onClose, onCustomKeyDown, onNext, onPrevious]);
 
   return (
-    <div className="lightbox-backdrop" onClick={onClose} role="presentation">
+    <div className={`lightbox-backdrop ${backdropClassName}`.trim()} onClick={onClose} role="presentation">
       <div
         className={`lightbox-shell ${shellClassName}`.trim()}
         onClick={(event) => event.stopPropagation()}

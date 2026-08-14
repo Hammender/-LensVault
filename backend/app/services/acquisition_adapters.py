@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Callable, Iterable, Literal
+from urllib.error import HTTPError
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
@@ -22,6 +25,16 @@ PAGE_RE = re.compile(r"(?:^|&)page=(-?\d+)(?:&|$)")
 PERPAGE_RE = re.compile(r"(?:^|&)perpage=(\d+)(?:&|$)")
 BOOKMARKS_RE = re.compile(r"([\d,]+)\s+bookmarks?", re.IGNORECASE)
 VIDEO_EXTENSIONS = {".3gp", ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".ts", ".webm", ".wmv"}
+IDOLXXX_COLLECTION_RE = re.compile(r"^/idols/([^/]+)(?:/page/(\d+))?/?$", re.IGNORECASE)
+IDOLXXX_POST_RE = re.compile(r"^/post/\d+/?$", re.IGNORECASE)
+VOID_HTML_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+
+class AccessBlockedError(RuntimeError):
+    def __init__(self, url: str, status_code: int) -> None:
+        host = urlparse(url).hostname or "远端站点"
+        self.status_code = status_code
+        super().__init__(f"站点 {host} 返回 HTTP {status_code}，已停止本次采集以避免继续触发访问限制")
 
 
 @dataclass(frozen=True)
@@ -58,6 +71,8 @@ class RemoteItem:
     title: str | None = None
     candidate_urls: tuple[str, ...] = ()
     ignored_reason: str | None = None
+    referer_url: str | None = None
+    abort_on_access_block: bool = False
 
 
 @dataclass(frozen=True)
@@ -81,6 +96,8 @@ class ScriptDefinition:
     adapter: "SourceAdapter"
     parameters: tuple[ScriptParameter, ...] = field(default_factory=tuple)
     legacy_parameters: tuple[ScriptParameter, ...] = field(default_factory=tuple)
+    max_download_workers: int | None = None
+    download_start_interval_seconds: float = 0.0
 
     def metadata(self) -> dict[str, object]:
         return {
@@ -134,6 +151,7 @@ class ScriptDefinition:
                 if any(key in raw for key in ("start_page", "end_page")):
                     raise ValueError("旧参数 max_pages 不能与起止页同时使用")
                 result = {"start_page": 1, "end_page": int(result["max_pages"])}
+        if any(parameter.key == "start_page" for parameter in self.parameters):
             start_page = int(result.get("start_page", 1))
             end_page = result.get("end_page")
             if end_page is not None and int(end_page) < start_page:
@@ -198,6 +216,8 @@ def curl_request_bytes(
     timeout: float = 45,
     max_bytes: int | None = None,
     retries: int = 3,
+    abort_on_access_block: bool = False,
+    before_attempt: Callable[[], None] | None = None,
 ) -> tuple[bytes, str]:
     curl = shutil.which("curl.exe") or shutil.which("curl")
     if not curl:
@@ -219,7 +239,7 @@ def curl_request_bytes(
         "--silent",
         "--show-error",
         "--retry",
-        str(attempts - 1),
+        str(0 if abort_on_access_block else attempts - 1),
         "--retry-delay",
         str(retry_delay),
         "--retry-all-errors",
@@ -236,42 +256,91 @@ def curl_request_bytes(
         "--output",
         str(temporary_path),
         "--write-out",
-        "%{content_type}",
+        "%{http_code}\n%{content_type}" if abort_on_access_block else "%{content_type}",
     ]
     try:
         command.append(url)
-        process_timeout = attempts * request_timeout + (attempts - 1) * retry_delay + 10
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=process_timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(
-                f"请求 {parsed.hostname} 超时：最多尝试 {attempts} 次，每次 {request_timeout} 秒"
-            ) from exc
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or f"curl 下载失败（退出码 {result.returncode}）")
-        size = temporary_path.stat().st_size
-        if max_bytes is not None and size > max_bytes:
-            raise ValueError("文件超过下载大小上限")
-        return temporary_path.read_bytes(), result.stdout.strip()
+        process_timeout = (
+            request_timeout + 10
+            if abort_on_access_block
+            else attempts * request_timeout + (attempts - 1) * retry_delay + 10
+        )
+        last_error: RuntimeError | None = None
+        process_attempts = attempts if abort_on_access_block else 1
+        for attempt in range(process_attempts):
+            if before_attempt is not None:
+                before_attempt()
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=process_timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                last_error = RuntimeError(
+                    f"请求 {parsed.hostname} 超时：最多尝试 {attempts} 次，每次 {request_timeout} 秒"
+                )
+                if attempt + 1 >= process_attempts:
+                    raise last_error from exc
+                if before_attempt is None:
+                    time.sleep(retry_delay)
+                continue
+            output = result.stdout.strip()
+            status_text, _, content_type = output.partition("\n") if abort_on_access_block else ("", "", output)
+            status_code = int(status_text) if status_text.isdigit() else 0
+            if status_code in {403, 429}:
+                raise AccessBlockedError(url, status_code)
+            if result.returncode != 0:
+                last_error = RuntimeError(result.stderr.strip() or f"curl 下载失败（退出码 {result.returncode}）")
+                if attempt + 1 < process_attempts:
+                    if before_attempt is None:
+                        time.sleep(retry_delay)
+                    continue
+                raise last_error
+            size = temporary_path.stat().st_size
+            if max_bytes is not None and size > max_bytes:
+                raise ValueError("文件超过下载大小上限")
+            return temporary_path.read_bytes(), content_type
+        raise last_error or RuntimeError("curl 下载失败")
     finally:
         temporary_path.unlink(missing_ok=True)
 
 
-def _request_bytes(url: str, accept: str, referer: str, timeout: float = 45) -> tuple[bytes, str]:
+def _request_bytes(
+    url: str,
+    accept: str,
+    referer: str,
+    timeout: float = 45,
+    abort_on_access_block: bool = False,
+    retries: int = 1,
+) -> tuple[bytes, str]:
     request = Request(url, headers={"Accept": accept, "Referer": referer, "User-Agent": USER_AGENT})
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            return response.read(), response.headers.get("Content-Type", "")
-    except Exception as exc:
-        if not is_tls_transport_error(exc):
-            raise
-        return curl_request_bytes(url, accept, referer, timeout)
+    attempts = max(1, int(retries))
+    for attempt in range(attempts):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return response.read(), response.headers.get("Content-Type", "")
+        except HTTPError as exc:
+            if abort_on_access_block and exc.code in {403, 429}:
+                raise AccessBlockedError(url, exc.code) from exc
+            if attempt + 1 >= attempts:
+                raise
+        except Exception as exc:
+            if is_tls_transport_error(exc):
+                return curl_request_bytes(
+                    url,
+                    accept,
+                    referer,
+                    timeout,
+                    retries=attempts,
+                    abort_on_access_block=abort_on_access_block,
+                )
+            if attempt + 1 >= attempts:
+                raise
+        time.sleep(1)
+    raise RuntimeError("请求失败")
 
 
 class RaindropWorkersAdapter(SourceAdapter):
@@ -491,6 +560,259 @@ class RaindropPageAdapter(SourceAdapter):
                 break
 
 
+def _class_tokens(attributes: dict[str, str | None]) -> set[str]:
+    return set((attributes.get("class") or "").split())
+
+
+@dataclass(frozen=True)
+class IdolxxxListingData:
+    cards: tuple[tuple[str, str | None], ...]
+    page_numbers: tuple[int, ...]
+
+
+class IdolxxxListingParser(HTMLParser):
+    def __init__(self, page_url: str, collection_slug: str) -> None:
+        super().__init__(convert_charrefs=True)
+        parsed = urlparse(page_url)
+        self.page_url = page_url
+        self.site_netloc = parsed.netloc.lower()
+        self.collection_slug = collection_slug.lower()
+        self.article_depth = 0
+        self.current_premium = False
+        self.current_detail_url: str | None = None
+        self.current_title: str | None = None
+        self.cards: list[tuple[str, str | None]] = []
+        self.page_numbers: set[int] = {1}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "article":
+            if self.article_depth == 0:
+                self.current_premium = "post-premium" in _class_tokens(attributes)
+                self.current_detail_url = None
+                self.current_title = None
+            self.article_depth += 1
+            return
+        if tag == "a":
+            href = (attributes.get("href") or "").strip()
+            absolute = urljoin(self.page_url, href)
+            parsed = urlparse(absolute)
+            collection_match = IDOLXXX_COLLECTION_RE.fullmatch(parsed.path)
+            if parsed.netloc.lower() == self.site_netloc and collection_match:
+                slug, page = collection_match.groups()
+                if slug.lower() == self.collection_slug:
+                    self.page_numbers.add(int(page or 1))
+            if (
+                self.article_depth
+                and parsed.netloc.lower() == self.site_netloc
+                and IDOLXXX_POST_RE.fullmatch(parsed.path)
+            ):
+                self.current_detail_url = urlunparse(
+                    (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, "", "", "")
+                )
+                title = (attributes.get("title") or "").strip()
+                if title:
+                    self.current_title = title
+        elif tag == "img" and self.article_depth:
+            title = (attributes.get("alt") or "").strip()
+            if title:
+                self.current_title = title
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "article" or not self.article_depth:
+            return
+        self.article_depth -= 1
+        if self.article_depth == 0:
+            if not self.current_premium and self.current_detail_url:
+                self.cards.append((self.current_detail_url, self.current_title))
+            self.current_detail_url = None
+            self.current_title = None
+
+    def result(self) -> IdolxxxListingData:
+        return IdolxxxListingData(tuple(self.cards), tuple(sorted(self.page_numbers)))
+
+
+class IdolxxxDetailParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.media_depth: int | None = None
+        self.item_depth: int | None = None
+        self.item_tag: str | None = None
+        self.item_has_image = False
+        self.item_has_video = False
+        self.item_candidates: dict[str, list[str]] = {"data-src": [], "href": [], "src": []}
+        self.image_candidates: list[tuple[str, ...]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        current_depth = self.depth + (0 if tag in VOID_HTML_TAGS else 1)
+        classes = _class_tokens(attributes)
+        if self.media_depth is None and "post-media" in classes:
+            self.media_depth = current_depth
+        if self.media_depth is not None and self.item_depth is None and "post-media-item" in classes:
+            self.item_depth = current_depth
+            self.item_tag = tag
+            self.item_has_image = False
+            self.item_has_video = False
+            self.item_candidates = {"data-src": [], "href": [], "src": []}
+        if self.item_depth is not None:
+            if tag == "img":
+                self.item_has_image = True
+            if tag == "video" or (tag == "source" and (attributes.get("type") or "").lower().startswith("video/")):
+                self.item_has_video = True
+            for attribute in ("data-src", "href", "src"):
+                value = (attributes.get(attribute) or "").strip()
+                if value and value not in self.item_candidates[attribute]:
+                    self.item_candidates[attribute].append(value)
+        if tag not in VOID_HTML_TAGS:
+            self.depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.item_depth == self.depth and tag == self.item_tag:
+            if self.item_has_image and not self.item_has_video:
+                candidates = tuple(
+                    value
+                    for attribute in ("data-src", "href", "src")
+                    for value in self.item_candidates[attribute]
+                )
+                self.image_candidates.append(candidates)
+            self.item_depth = None
+            self.item_tag = None
+        if self.media_depth == self.depth and self.item_depth is None:
+            self.media_depth = None
+        if self.depth:
+            self.depth -= 1
+
+
+class IdolxxxGalleryAdapter(SourceAdapter):
+    @staticmethod
+    def _normalize_collection(raw_url: str) -> tuple[str, str, str]:
+        parsed = urlparse(raw_url.strip())
+        match = IDOLXXX_COLLECTION_RE.fullmatch(parsed.path)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or not match:
+            raise ValueError("该脚本只支持 /idols/{slug}/ 或 /idols/{slug}/page/{n}/ 分类网页")
+        slug = match.group(1)
+        site_url = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+        return site_url, slug, f"{site_url}/idols/{slug}/"
+
+    @staticmethod
+    def _page_url(collection_url: str, page_number: int) -> str:
+        if page_number == 1:
+            return collection_url
+        return urljoin(collection_url, f"page/{page_number}/")
+
+    @staticmethod
+    def _normalize_original(candidate: str, detail_url: str, site_host: str) -> str | None:
+        parsed = urlparse(urljoin(detail_url, candidate))
+        hostname = (parsed.hostname or "").lower()
+        site_domain = site_host.removeprefix("www.")
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not hostname
+            or (hostname != site_domain and not hostname.endswith(f".{site_domain}"))
+            or "/files/src/" not in parsed.path.lower()
+        ):
+            return None
+        return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, "", parsed.query, ""))
+
+    @staticmethod
+    def _parse_listing(raw: bytes, page_url: str, slug: str) -> IdolxxxListingData:
+        parser = IdolxxxListingParser(page_url, slug)
+        parser.feed(raw.decode("utf-8", errors="replace"))
+        return parser.result()
+
+    @staticmethod
+    def _parse_detail(raw: bytes) -> tuple[tuple[str, ...], ...]:
+        parser = IdolxxxDetailParser()
+        parser.feed(raw.decode("utf-8", errors="replace"))
+        return tuple(parser.image_candidates)
+
+    def enumerate_pages(
+        self,
+        crawl_url: str,
+        parameters: dict[str, object],
+        known_external_keys: set[str],
+        incremental: bool,
+    ) -> Iterable[RemotePage]:
+        site_url, slug, collection_url = self._normalize_collection(crawl_url)
+        site_host = (urlparse(site_url).hostname or "").lower()
+        start_page = int(parameters.get("start_page") or 1)
+        end_page = int(parameters["end_page"]) if parameters.get("end_page") not in (None, "") else None
+        has_requested = False
+
+        def fetch(url: str, referer: str) -> bytes:
+            nonlocal has_requested
+            if has_requested:
+                time.sleep(random.uniform(2.0, 4.0))
+            has_requested = True
+            raw, content_type = _request_bytes(
+                url,
+                "text/html,*/*;q=0.8",
+                referer,
+                abort_on_access_block=True,
+                retries=3,
+            )
+            if "text/html" not in content_type.lower():
+                raise ValueError(f"目标站点未返回 HTML 页面：{content_type or '未知类型'}")
+            return raw
+
+        first_raw = fetch(collection_url, collection_url)
+        first_page = self._parse_listing(first_raw, collection_url, slug)
+        last_page = max(first_page.page_numbers, default=1)
+        if start_page > last_page:
+            raise ValueError(f"起始页 {start_page} 超过网站最后一页 {last_page}")
+        requested_last_page = min(last_page, end_page) if end_page is not None else last_page
+        seen_originals: set[str] = set()
+        for page_number in range(start_page, requested_last_page + 1):
+            page_url = self._page_url(collection_url, page_number)
+            listing = first_page if page_number == 1 else self._parse_listing(fetch(page_url, collection_url), page_url, slug)
+            page_keys: list[str] = []
+            page_items: list[RemoteItem] = []
+            for detail_url, card_title in listing.cards:
+                detail_raw = fetch(detail_url, page_url)
+                parsed_media = self._parse_detail(detail_raw)
+                originals: list[str] = []
+                for candidates in parsed_media:
+                    original = next(
+                        (
+                            normalized
+                            for candidate in candidates
+                            if (normalized := self._normalize_original(candidate, detail_url, site_host)) is not None
+                        ),
+                        None,
+                    )
+                    if original and original not in seen_originals:
+                        seen_originals.add(original)
+                        originals.append(original)
+                for index, original in enumerate(originals, start=1):
+                    external_key = stable_key(original)
+                    page_keys.append(external_key)
+                    title = card_title
+                    if title and len(originals) > 1:
+                        title = f"{title} ({index}/{len(originals)})"
+                    page_items.append(
+                        RemoteItem(
+                            external_key=external_key,
+                            source_url=detail_url,
+                            title=title,
+                            candidate_urls=(original,),
+                            referer_url=detail_url,
+                            abort_on_access_block=True,
+                        )
+                    )
+            natural_end = page_number >= last_page
+            requested_end = page_number >= requested_last_page
+            known_end = incremental and page_keys and all(key in known_external_keys for key in page_keys)
+            stop_reason = "collection_end" if natural_end else "known_page" if known_end else "requested_end" if requested_end else None
+            yield RemotePage(page_number=page_number, items=tuple(page_items), stop_reason=stop_reason)
+            if stop_reason is not None:
+                break
+
+
 MAX_PAGES = ScriptParameter(
     key="max_pages",
     label="最大扫描页数（留空为全部）",
@@ -522,6 +844,17 @@ END_PAGE = ScriptParameter(
 )
 
 SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
+    "idolxxx-gallery": ScriptDefinition(
+        key="idolxxx-gallery",
+        name="idolxxx-gallery",
+        version="1.0.0",
+        page_format_key="idolxxx-gallery-v1",
+        description="解析目标站点偶像分类页及卡片详情页，仅采集 /files/src/ 原图。",
+        adapter=IdolxxxGalleryAdapter(),
+        parameters=(START_PAGE, END_PAGE),
+        max_download_workers=3,
+        download_start_interval_seconds=1.0,
+    ),
     "raindrop-ftxsri-workers-dev": ScriptDefinition(
         key="raindrop-ftxsri-workers-dev",
         name="raindrop-ftxsri-workers-dev",
