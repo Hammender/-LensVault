@@ -197,6 +197,10 @@ class AcquisitionAssetAction(BaseModel):
     asset_ids: list[str] = Field(min_length=1)
 
 
+class AcquisitionImportAction(AcquisitionAssetAction):
+    is_rich_text: bool = False
+
+
 class AcquisitionAssetSummary(BaseModel):
     total: int
     status_counts: dict[str, int] = Field(default_factory=dict)
@@ -217,6 +221,7 @@ class AcquisitionImportBatchItemRead(BaseModel):
 class AcquisitionImportBatchRead(BaseModel):
     id: str
     status: str
+    is_rich_text: bool
     total_count: int
     processed_count: int
     imported_count: int

@@ -176,6 +176,7 @@ CREATE INDEX ix_acquisition_export_jobs_workspace_id ON acquisition_export_jobs 
 --   id：主键标识
 --   workspace_id：所属工作区标识；为空表示历史全局数据
 --   status：导入批次状态：queued、running、completed、completed_with_errors 或 failed
+--   is_rich_text：目标图片类型；0 表示普通图片，1 表示图文图片
 --   total_count：本次处理项目总数
 --   processed_count：已处理数量
 --   imported_count：成功入库数量
@@ -190,6 +191,7 @@ CREATE TABLE acquisition_import_batches (
 	id VARCHAR(64) NOT NULL, 
 	workspace_id INTEGER, 
 	status VARCHAR(32) NOT NULL, 
+	is_rich_text BOOLEAN NOT NULL, 
 	total_count INTEGER NOT NULL, 
 	processed_count INTEGER NOT NULL, 
 	imported_count INTEGER NOT NULL, 

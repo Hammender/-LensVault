@@ -127,6 +127,7 @@ export type AcquisitionImportBatchItem = {
 export type AcquisitionImportBatch = {
   id: string;
   status: string;
+  is_rich_text: boolean;
   total_count: number;
   processed_count: number;
   imported_count: number;

@@ -284,6 +284,9 @@ def ensure_acquisition_schema(engine: Engine) -> None:
             "perceptual_dhash": "ALTER TABLE acquisition_assets ADD COLUMN perceptual_dhash VARCHAR(32)",
             "quality_score": "ALTER TABLE acquisition_assets ADD COLUMN quality_score FLOAT",
         },
+        "acquisition_import_batches": {
+            "is_rich_text": "ALTER TABLE acquisition_import_batches ADD COLUMN is_rich_text BOOLEAN NOT NULL DEFAULT 0",
+        },
         "acquisition_source_items": {
             "script_key": "ALTER TABLE acquisition_source_items ADD COLUMN script_key VARCHAR(128)",
             "remote_external_key": "ALTER TABLE acquisition_source_items ADD COLUMN remote_external_key VARCHAR(256)",

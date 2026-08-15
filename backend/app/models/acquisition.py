@@ -190,6 +190,7 @@ class AcquisitionImportBatch(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False, index=True)
+    is_rich_text: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     total_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     processed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     imported_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

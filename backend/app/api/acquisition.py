@@ -40,6 +40,7 @@ from app.schemas import (
     AcquisitionCategoryUpdate,
     AcquisitionExportCreate,
     AcquisitionExportRead,
+    AcquisitionImportAction,
     AcquisitionImportBatchItemRead,
     AcquisitionImportBatchItemDetailRead,
     AcquisitionImportBatchRead,
@@ -224,6 +225,7 @@ def _batch_read(db: Session, batch: AcquisitionImportBatch, include_items: bool 
     return AcquisitionImportBatchRead(
         id=batch.id,
         status=batch.status,
+        is_rich_text=batch.is_rich_text,
         total_count=batch.total_count,
         processed_count=batch.processed_count,
         imported_count=batch.imported_count,
@@ -389,8 +391,6 @@ def _list_gallery_similarity(
             AcquisitionSimilarityCandidate.scan_scope == scope,
             AcquisitionSimilarityCandidate.other_asset_id.is_(None),
             AcquisitionSimilarityCandidate.gallery_photo_id.is_not(None),
-            AcquisitionAsset.status == "pending_review",
-            AcquisitionAsset.object_key.is_not(None),
             GalleryPhoto.workspace_id == workspace_id,
         )
         .order_by(AcquisitionSimilarityCandidate.score.desc())
@@ -416,7 +416,8 @@ def _list_gallery_similarity(
     for candidate, asset, photo, feature in rows:
         pending_node = f"pending:{asset.id}"
         gallery_node = f"gallery:{photo.id}"
-        pending_assets[asset.id] = asset
+        if asset.status == "pending_review" and asset.object_key:
+            pending_assets[asset.id] = asset
         gallery_photos[photo.id] = photo
         gallery_quality[photo.id] = float(feature.quality_score) if feature is not None else 0.0
         union(pending_node, gallery_node)
@@ -430,9 +431,15 @@ def _list_gallery_similarity(
         grouped_nodes.setdefault(find(node_id), []).append(node_id)
     groups: list[dict[str, object]] = []
     for nodes in grouped_nodes.values():
-        pending_ids = sorted(node.removeprefix("pending:") for node in nodes if node.startswith("pending:"))
+        pending_ids = []
+        for node in nodes:
+            if node.startswith("pending:"):
+                asset_id = node.removeprefix("pending:")
+                if asset_id in pending_assets:
+                    pending_ids.append(asset_id)
+        pending_ids.sort()
         gallery_ids = sorted(int(node.removeprefix("gallery:")) for node in nodes if node.startswith("gallery:"))
-        if not pending_ids or not gallery_ids:
+        if not pending_ids or len(pending_ids) + len(gallery_ids) < 2:
             continue
         scores = [
             score
@@ -753,7 +760,7 @@ def get_asset_preview(
 
 @router.post("/assets/import", response_model=AcquisitionImportBatchRead)
 def import_assets(
-    payload: AcquisitionAssetAction,
+    payload: AcquisitionImportAction,
     background_tasks: BackgroundTasks,
     request: Request,
     db: Session = Depends(get_db),
@@ -761,7 +768,12 @@ def import_assets(
 ) -> AcquisitionImportBatchRead:
     service = _service(request)
     try:
-        batch = service.create_import_batch(db, current.workspace_id, payload.asset_ids)
+        batch = service.create_import_batch(
+            db,
+            current.workspace_id,
+            payload.asset_ids,
+            is_rich_text=payload.is_rich_text,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     background_tasks.add_task(_process_import, request.app.state.session_factory, service, batch.id)
@@ -970,10 +982,6 @@ def list_similarity(
             AcquisitionSimilarityCandidate.workspace_id == current.workspace_id,
             AcquisitionSimilarityCandidate.scan_type == scan_type,
             AcquisitionSimilarityCandidate.scan_scope == scope,
-            AcquisitionAsset.status == "pending_review",
-            other_asset.status == "pending_review",
-            AcquisitionAsset.object_key.is_not(None),
-            other_asset.object_key.is_not(None),
         )
         .order_by(AcquisitionSimilarityCandidate.score.desc())
     ).all()
@@ -994,23 +1002,28 @@ def list_similarity(
             parent[right_root] = left_root
 
     for candidate, asset, other in rows:
-        assets[asset.id] = asset
-        assets[other.id] = other
+        if asset.status == "pending_review" and asset.object_key:
+            assets[asset.id] = asset
+        if other.status == "pending_review" and other.object_key:
+            assets[other.id] = other
         union(asset.id, other.id)
         edge_scores[tuple(sorted((asset.id, other.id)))] = candidate.score
 
     grouped_ids: dict[str, list[str]] = {}
-    for asset_id in assets:
+    for asset_id in parent:
         grouped_ids.setdefault(find(asset_id), []).append(asset_id)
     groups: list[dict[str, object]] = []
-    for member_ids in grouped_ids.values():
+    for original_member_ids in grouped_ids.values():
+        member_ids = [asset_id for asset_id in original_member_ids if asset_id in assets]
+        if len(member_ids) < 2:
+            continue
         member_ids.sort(key=lambda asset_id: (assets[asset_id].created_at, asset_id))
         scores = [
             score for (left, right), score in edge_scores.items()
-            if left in member_ids and right in member_ids
+            if left in original_member_ids and right in original_member_ids
         ]
         groups.append({
-            "id": "-".join(member_ids),
+            "id": "-".join(sorted(original_member_ids)),
             "max_score": max(scores, default=0.0),
             "average_score": sum(scores) / len(scores) if scores else 0.0,
             "members": [_asset_read(assets[asset_id]).model_dump() for asset_id in member_ids],

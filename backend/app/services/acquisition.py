@@ -1006,6 +1006,8 @@ class AcquisitionService:
         db: Session,
         workspace_id: int | None,
         asset_ids: list[str],
+        *,
+        is_rich_text: bool = False,
     ) -> AcquisitionImportBatch:
         ordered_ids = list(dict.fromkeys(asset_ids))
         if len(ordered_ids) != len(asset_ids):
@@ -1030,6 +1032,7 @@ class AcquisitionService:
             id=uuid4().hex,
             workspace_id=workspace_id,
             status="queued",
+            is_rich_text=is_rich_text,
             total_count=len(ordered_ids),
         )
         db.add(batch)
@@ -1068,7 +1071,12 @@ class AcquisitionService:
                 item.error_message = None
                 asset.status = "importing"
                 asset.error_message = None
-                gallery_photo = self._gallery_photo_by_sha(db, batch.workspace_id, asset.sha256)
+                gallery_photo = self._gallery_photo_by_sha(
+                    db,
+                    batch.workspace_id,
+                    asset.sha256,
+                    is_rich_text=batch.is_rich_text,
+                )
                 if gallery_photo is not None:
                     item.promotion_intent = "gallery_duplicate"
                     self._finish_gallery_duplicate(db, item, asset, gallery_photo)
@@ -1087,6 +1095,7 @@ class AcquisitionService:
                     workspace_id=batch.workspace_id,
                     source_object_key=asset.object_key,
                     ingest_source="acquisition",
+                    is_rich_text=batch.is_rich_text,
                 )
                 if summary.duplicated:
                     self._finish_gallery_duplicate(db, item, asset, photo)
@@ -1100,7 +1109,12 @@ class AcquisitionService:
                 item = db.get(AcquisitionImportBatchItem, item_id)
                 asset = db.get(AcquisitionAsset, item.asset_id) if item is not None else None
                 batch = db.get(AcquisitionImportBatch, batch_id)
-                gallery_photo = self._gallery_photo_by_sha(db, batch.workspace_id, asset.sha256) if batch and asset else None
+                gallery_photo = self._gallery_photo_by_sha(
+                    db,
+                    batch.workspace_id,
+                    asset.sha256,
+                    is_rich_text=batch.is_rich_text,
+                ) if batch and asset else None
                 if item is not None and asset is not None and item.promotion_intent == "new" and gallery_photo is not None:
                     self._finish_imported(db, item, asset, gallery_photo)
                 elif item is not None:
@@ -1119,20 +1133,33 @@ class AcquisitionService:
             self._refresh_import_batch(db, batch_id, finish=True)
             db.commit()
 
-    def import_assets(self, db: Session, workspace_id: int | None, asset_ids: list[str]) -> dict[str, int]:
+    def import_assets(
+        self,
+        db: Session,
+        workspace_id: int | None,
+        asset_ids: list[str],
+        *,
+        is_rich_text: bool = False,
+    ) -> dict[str, int]:
         """兼容内部调用；新的 API 会先持久化批次再交给后台处理。"""
-        batch = self.create_import_batch(db, workspace_id, asset_ids)
+        batch = self.create_import_batch(db, workspace_id, asset_ids, is_rich_text=is_rich_text)
         self.process_import_batch(db, batch.id)
         db.refresh(batch)
         return {"imported": batch.imported_count, "duplicates": batch.duplicate_count}
 
     @staticmethod
-    def _gallery_photo_by_sha(db: Session, workspace_id: int | None, sha256: str) -> GalleryPhoto | None:
+    def _gallery_photo_by_sha(
+        db: Session,
+        workspace_id: int | None,
+        sha256: str,
+        *,
+        is_rich_text: bool = False,
+    ) -> GalleryPhoto | None:
         return db.scalar(
             select(GalleryPhoto).where(
                 GalleryPhoto.workspace_id == workspace_id,
                 GalleryPhoto.sha256 == sha256,
-                GalleryPhoto.is_rich_text.is_(False),
+                GalleryPhoto.is_rich_text.is_(is_rich_text),
             )
         )
 
@@ -1619,7 +1646,12 @@ class AcquisitionService:
             ).all()
             for item in items:
                 asset = db.get(AcquisitionAsset, item.asset_id)
-                photo = self._gallery_photo_by_sha(db, batch.workspace_id, asset.sha256) if asset else None
+                photo = self._gallery_photo_by_sha(
+                    db,
+                    batch.workspace_id,
+                    asset.sha256,
+                    is_rich_text=batch.is_rich_text,
+                ) if asset else None
                 if asset is not None and photo is not None and item.promotion_intent == "new":
                     self._finish_imported(db, item, asset, photo)
                     recovered += 1

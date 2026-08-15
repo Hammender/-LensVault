@@ -458,6 +458,28 @@
         "title": "AcquisitionExportRead",
         "type": "object"
       },
+      "AcquisitionImportAction": {
+        "properties": {
+          "asset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Asset Ids",
+            "type": "array"
+          },
+          "is_rich_text": {
+            "default": false,
+            "title": "Is Rich Text",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "asset_ids"
+        ],
+        "title": "AcquisitionImportAction",
+        "type": "object"
+      },
       "AcquisitionImportBatchItemDetailRead": {
         "properties": {
           "asset_id": {
@@ -672,6 +694,10 @@
             "title": "Imported Count",
             "type": "integer"
           },
+          "is_rich_text": {
+            "title": "Is Rich Text",
+            "type": "boolean"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/AcquisitionImportBatchItemRead"
@@ -712,6 +738,7 @@
         "required": [
           "id",
           "status",
+          "is_rich_text",
           "total_count",
           "processed_count",
           "imported_count",
@@ -5809,7 +5836,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AcquisitionAssetAction"
+                "$ref": "#/components/schemas/AcquisitionImportAction"
               }
             }
           },

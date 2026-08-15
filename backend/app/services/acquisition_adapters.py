@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import random
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -194,6 +195,27 @@ def stable_key(value: str) -> str:
     return hashlib.sha256(value.strip().encode("utf-8")).hexdigest()
 
 
+class _RequestStartLimiter:
+    def __init__(
+        self,
+        interval_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.interval_seconds = max(0.0, float(interval_seconds))
+        self._clock = clock
+        self._sleeper = sleeper
+        self._lock = threading.Lock()
+        self._next_start = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            delay = max(0.0, self._next_start - self._clock())
+            if delay:
+                self._sleeper(delay)
+            self._next_start = self._clock() + self.interval_seconds
+
+
 def is_tls_transport_error(exc: Exception) -> bool:
     message = str(exc).upper()
     markers = (
@@ -315,10 +337,13 @@ def _request_bytes(
     timeout: float = 45,
     abort_on_access_block: bool = False,
     retries: int = 1,
+    before_attempt: Callable[[], None] | None = None,
 ) -> tuple[bytes, str]:
     request = Request(url, headers={"Accept": accept, "Referer": referer, "User-Agent": USER_AGENT})
     attempts = max(1, int(retries))
     for attempt in range(attempts):
+        if before_attempt is not None:
+            before_attempt()
         try:
             with urlopen(request, timeout=timeout) as response:
                 return response.read(), response.headers.get("Content-Type", "")
@@ -336,10 +361,12 @@ def _request_bytes(
                     timeout,
                     retries=attempts,
                     abort_on_access_block=abort_on_access_block,
+                    before_attempt=before_attempt,
                 )
             if attempt + 1 >= attempts:
                 raise
-        time.sleep(1)
+        if before_attempt is None:
+            time.sleep(1)
     raise RuntimeError("请求失败")
 
 
@@ -689,6 +716,10 @@ class IdolxxxDetailParser(HTMLParser):
 
 
 class IdolxxxGalleryAdapter(SourceAdapter):
+    DETAIL_BATCH_SIZE = 4
+    DETAIL_WORKERS = 2
+    HTML_START_INTERVAL_SECONDS = 1.0
+
     @staticmethod
     def _normalize_collection(raw_url: str) -> tuple[str, str, str]:
         parsed = urlparse(raw_url.strip())
@@ -742,19 +773,16 @@ class IdolxxxGalleryAdapter(SourceAdapter):
         site_host = (urlparse(site_url).hostname or "").lower()
         start_page = int(parameters.get("start_page") or 1)
         end_page = int(parameters["end_page"]) if parameters.get("end_page") not in (None, "") else None
-        has_requested = False
+        request_limiter = _RequestStartLimiter(self.HTML_START_INTERVAL_SECONDS)
 
         def fetch(url: str, referer: str) -> bytes:
-            nonlocal has_requested
-            if has_requested:
-                time.sleep(random.uniform(2.0, 4.0))
-            has_requested = True
             raw, content_type = _request_bytes(
                 url,
                 "text/html,*/*;q=0.8",
                 referer,
                 abort_on_access_block=True,
                 retries=3,
+                before_attempt=request_limiter.wait,
             )
             if "text/html" not in content_type.lower():
                 raise ValueError(f"目标站点未返回 HTML 页面：{content_type or '未知类型'}")
@@ -767,50 +795,84 @@ class IdolxxxGalleryAdapter(SourceAdapter):
             raise ValueError(f"起始页 {start_page} 超过网站最后一页 {last_page}")
         requested_last_page = min(last_page, end_page) if end_page is not None else last_page
         seen_originals: set[str] = set()
-        for page_number in range(start_page, requested_last_page + 1):
-            page_url = self._page_url(collection_url, page_number)
-            listing = first_page if page_number == 1 else self._parse_listing(fetch(page_url, collection_url), page_url, slug)
-            page_keys: list[str] = []
-            page_items: list[RemoteItem] = []
-            for detail_url, card_title in listing.cards:
-                detail_raw = fetch(detail_url, page_url)
-                parsed_media = self._parse_detail(detail_raw)
-                originals: list[str] = []
-                for candidates in parsed_media:
-                    original = next(
-                        (
-                            normalized
-                            for candidate in candidates
-                            if (normalized := self._normalize_original(candidate, detail_url, site_host)) is not None
-                        ),
-                        None,
-                    )
-                    if original and original not in seen_originals:
-                        seen_originals.add(original)
-                        originals.append(original)
-                for index, original in enumerate(originals, start=1):
-                    external_key = stable_key(original)
-                    page_keys.append(external_key)
-                    title = card_title
-                    if title and len(originals) > 1:
-                        title = f"{title} ({index}/{len(originals)})"
-                    page_items.append(
-                        RemoteItem(
-                            external_key=external_key,
-                            source_url=detail_url,
-                            title=title,
-                            candidate_urls=(original,),
-                            referer_url=detail_url,
-                            abort_on_access_block=True,
+        with ThreadPoolExecutor(max_workers=self.DETAIL_WORKERS, thread_name_prefix="idolxxx-detail") as executor:
+            for page_number in range(start_page, requested_last_page + 1):
+                page_url = self._page_url(collection_url, page_number)
+                listing = first_page if page_number == 1 else self._parse_listing(fetch(page_url, collection_url), page_url, slug)
+                page_keys: list[str] = []
+                card_batches = [
+                    listing.cards[index : index + self.DETAIL_BATCH_SIZE]
+                    for index in range(0, len(listing.cards), self.DETAIL_BATCH_SIZE)
+                ] or [()]
+                for batch_index, cards in enumerate(card_batches):
+                    detail_payloads: list[bytes | None] = [None] * len(cards)
+                    for group_start in range(0, len(cards), self.DETAIL_WORKERS):
+                        request_group = cards[group_start : group_start + self.DETAIL_WORKERS]
+                        futures = {
+                            executor.submit(fetch, detail_url, page_url): group_start + index
+                            for index, (detail_url, _card_title) in enumerate(request_group)
+                        }
+                        try:
+                            for future in as_completed(futures):
+                                detail_payloads[futures[future]] = future.result()
+                        except Exception:
+                            for future in futures:
+                                future.cancel()
+                            raise
+
+                    batch_items: list[RemoteItem] = []
+                    for (detail_url, card_title), detail_raw in zip(cards, detail_payloads, strict=True):
+                        if detail_raw is None:
+                            continue
+                        parsed_media = self._parse_detail(detail_raw)
+                        originals: list[str] = []
+                        for candidates in parsed_media:
+                            original = next(
+                                (
+                                    normalized
+                                    for candidate in candidates
+                                    if (normalized := self._normalize_original(candidate, detail_url, site_host)) is not None
+                                ),
+                                None,
+                            )
+                            if original and original not in seen_originals:
+                                seen_originals.add(original)
+                                originals.append(original)
+                        for index, original in enumerate(originals, start=1):
+                            external_key = stable_key(original)
+                            page_keys.append(external_key)
+                            title = card_title
+                            if title and len(originals) > 1:
+                                title = f"{title} ({index}/{len(originals)})"
+                            batch_items.append(
+                                RemoteItem(
+                                    external_key=external_key,
+                                    source_url=detail_url,
+                                    title=title,
+                                    candidate_urls=(original,),
+                                    referer_url=detail_url,
+                                    abort_on_access_block=True,
+                                )
+                            )
+
+                    is_last_batch = batch_index + 1 >= len(card_batches)
+                    stop_reason = None
+                    if is_last_batch:
+                        natural_end = page_number >= last_page
+                        requested_end = page_number >= requested_last_page
+                        known_end = incremental and page_keys and all(key in known_external_keys for key in page_keys)
+                        stop_reason = (
+                            "collection_end"
+                            if natural_end
+                            else "known_page"
+                            if known_end
+                            else "requested_end"
+                            if requested_end
+                            else None
                         )
-                    )
-            natural_end = page_number >= last_page
-            requested_end = page_number >= requested_last_page
-            known_end = incremental and page_keys and all(key in known_external_keys for key in page_keys)
-            stop_reason = "collection_end" if natural_end else "known_page" if known_end else "requested_end" if requested_end else None
-            yield RemotePage(page_number=page_number, items=tuple(page_items), stop_reason=stop_reason)
-            if stop_reason is not None:
-                break
+                    yield RemotePage(page_number=page_number, items=tuple(batch_items), stop_reason=stop_reason)
+                    if stop_reason is not None:
+                        return
 
 
 MAX_PAGES = ScriptParameter(
@@ -847,7 +909,7 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "idolxxx-gallery": ScriptDefinition(
         key="idolxxx-gallery",
         name="idolxxx-gallery",
-        version="1.0.0",
+        version="1.0.1",
         page_format_key="idolxxx-gallery-v1",
         description="解析目标站点偶像分类页及卡片详情页，仅采集 /files/src/ 原图。",
         adapter=IdolxxxGalleryAdapter(),

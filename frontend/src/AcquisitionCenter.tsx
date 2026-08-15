@@ -169,6 +169,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [runParameters, setRunParameters] = useState<Record<string, string | boolean>>({});
   const [runMode, setRunMode] = useState<"incremental" | "full" | "verify">("incremental");
   const [assetStatus, setAssetStatus] = useState("pending_review");
+  const [importAsRichText, setImportAsRichText] = useState(false);
   const [exportScope, setExportScope] = useState<"all" | "source" | "category" | "run">("all");
   const [exportScopeId, setExportScopeId] = useState("");
   const [batchDateFrom, setBatchDateFrom] = useState("");
@@ -312,9 +313,14 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       }
       setSimilarity(result);
       setSimilarityOffset(result.offset);
-      setSimilarityLightbox((current) => current && result.groups.some((group) =>
-        group.id === current.groupId && group.members.some((asset) => asset.id === current.assetId)
-      ) ? current : null);
+      setSimilarityLightbox((current) => {
+        if (!current) return null;
+        const group = result.groups.find((item) => item.id === current.groupId);
+        if (!group) return null;
+        if (group.members.some((asset) => asset.id === current.assetId)) return current;
+        const nextAsset = group.members[0];
+        return nextAsset ? { groupId: group.id, assetId: nextAsset.id } : null;
+      });
       return result;
     } finally {
       setSimilarityLoading(false);
@@ -407,7 +413,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     const assetIds = [...selectedAssets];
     if (!assetIds.length) return;
     await perform(async () => {
-      await changeAcquisitionAssets(action, assetIds);
+      await changeAcquisitionAssets(action, assetIds, action === "import" && importAsRichText);
       setSelectedAssets((current) => removeAcquisitionSelection(current, assetIds));
       if (lightboxAsset && assetIds.includes(lightboxAsset.id)) setLightboxSelection(null);
     }, message);
@@ -444,7 +450,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     try {
       await changeAcquisitionAssets("reject", uniqueIds);
       setSelectedAssets((current) => removeAcquisitionSelection(current, uniqueIds));
-      setSimilarityLightbox(null);
       await Promise.all([
         loadSimilarityPage(similarityOffset),
         loadAssetPage(assetStatus, assetOffset),
@@ -1009,7 +1014,11 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         <div className="review-actions">
           {canEdit && <button type="button" title={`扫描${similarityScope === "pending_only" ? "审核区内" : "审核区与图库"}的${similarityScanType === "mirror" ? "镜像" : "普通"}相似图片`} disabled={busy || similarity.task?.status === "pending" || similarity.task?.status === "running"} onClick={() => void startSimilarityScan()}><ScanSearch size={16} /> {similarity.generated_at ? "重新扫描" : "扫描相似"}</button>}
           {reviewMode === "list" && <button type="button" title={areAllReviewAssetsSelected ? "取消选择当前状态下所有图片" : "选中当前状态下所有页面的图片"} disabled={busy || assetsTotal === 0} onClick={() => void selectAllReviewAssets()}><CheckCheck size={16} /> {areAllReviewAssetsSelected ? "取消全选" : `全选 ${assetsTotal}`}</button>}
-          {reviewMode === "list" && canAdd && <button type="button" disabled={busy || !selectedAssets.length} onClick={() => void performSelectedAssetAction("import", assetStatus === "import_failed" ? "已创建重试批次" : "已创建入库批次")}><Check size={16} /> {assetStatus === "import_failed" ? "重试" : "导入"} {selectedAssets.length || ""}</button>}
+          {reviewMode === "list" && canAdd && <div className="mode-switch import-type-switch" aria-label="导入图片类型">
+            <button type="button" className={!importAsRichText ? "active" : ""} disabled={busy} onClick={() => setImportAsRichText(false)}>普通图片</button>
+            <button type="button" className={importAsRichText ? "active" : ""} disabled={busy} onClick={() => setImportAsRichText(true)}>图文图片</button>
+          </div>}
+          {reviewMode === "list" && canAdd && <button type="button" disabled={busy || !selectedAssets.length} onClick={() => void performSelectedAssetAction("import", assetStatus === "import_failed" ? `已创建${importAsRichText ? "图文图片" : "普通图片"}重试批次` : `已创建${importAsRichText ? "图文图片" : "普通图片"}入库批次`)}><Check size={16} /> {assetStatus === "import_failed" ? `重试为${importAsRichText ? "图文图" : "普通图"}` : `导入为${importAsRichText ? "图文图" : "普通图"}`} {selectedAssets.length || ""}</button>}
           {canDelete && <button type="button" className="danger-command" disabled={busy || !selectedAssets.length} onClick={() => reviewMode === "similarity" ? void rejectSimilarityAssets(selectedAssets) : void performSelectedAssetAction("reject", "已丢弃临时图片")}><X size={16} /> 丢弃 {selectedAssets.length || ""}</button>}
         </div>
       </div>
@@ -1021,10 +1030,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         </article>)}
       </div>
       {!assets.length && <p className="acquisition-empty review-empty">此状态下没有图片。</p>}
-      {assetPagination.totalPages > 0 && <div className="acquisition-pagination" aria-label="审核图片分页">
-        <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={assetLoading || assetOffset === 0} onClick={() => void goToAssetOffset(assetOffset - acquisitionAssetPageSize)}><ChevronLeft size={18} /></button>
+      {assetPagination.totalPages > 0 && <div className="acquisition-pagination review-pagination" aria-label="审核图片分页">
+        <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={assetLoading || assetOffset === 0} onClick={() => void goToAssetOffset(assetOffset - acquisitionAssetPageSize)}><ChevronLeft size={22} /></button>
         <span className="pagination-summary">第 {assetPagination.currentPage} / {assetPagination.totalPages} 页 · {assetPagination.rangeStart}-{assetPagination.rangeEnd} / {assetsTotal}</span>
-        <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={assetLoading || assetOffset + acquisitionAssetPageSize >= assetsTotal} onClick={() => void goToAssetOffset(assetOffset + acquisitionAssetPageSize)}><ChevronRight size={18} /></button>
+        <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={assetLoading || assetOffset + acquisitionAssetPageSize >= assetsTotal} onClick={() => void goToAssetOffset(assetOffset + acquisitionAssetPageSize)}><ChevronRight size={22} /></button>
         <form className="pagination-jump" onSubmit={submitAssetPageJump}>
           <label htmlFor="acquisition-page-number">跳至</label>
           <input id="acquisition-page-number" type="number" min={1} max={assetPagination.totalPages} step={1} value={assetJumpPage} onChange={(event) => setAssetJumpPage(event.target.value)} aria-label="审核图片页码" />
@@ -1113,6 +1122,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           >
             <div><strong>{formatDate(batch.created_at)} · 选择 {batch.total_count} 张</strong><small>已处理 {batch.processed_count} · 成功 {batch.imported_count} · 重复 {batch.duplicate_count} · 失败 {batch.failed_count}</small></div>
             <span className="import-batch-state">
+              <span className="import-batch-type">{batch.is_rich_text ? "图文图片" : "普通图片"}</span>
               <span className={`acquisition-status status-${batch.status}`}>{statusLabel(batch.status)}</span>
               <span className="import-batch-current" aria-hidden="true"><Check size={16} /></span>
             </span>

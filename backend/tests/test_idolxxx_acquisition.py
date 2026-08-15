@@ -19,6 +19,7 @@ from app.services.acquisition_adapters import (
     IdolxxxGalleryAdapter,
     RemoteItem,
     RemotePage,
+    _RequestStartLimiter,
     _request_bytes,
     curl_request_bytes,
     get_script,
@@ -83,9 +84,7 @@ class IdolxxxAdapterTests(unittest.TestCase):
         def request(url: str, *_args: object, **_kwargs: object) -> tuple[bytes, str]:
             return responses[url]
 
-        with patch("app.services.acquisition_adapters._request_bytes", side_effect=request) as mocked, patch(
-            "app.services.acquisition_adapters.random.uniform", return_value=2.5
-        ), patch("app.services.acquisition_adapters.time.sleep"):
+        with patch("app.services.acquisition_adapters._request_bytes", side_effect=request) as mocked:
             items = list(IdolxxxGalleryAdapter().enumerate("https://gallery.example.test/idols/iu/", {}, set(), False))
 
         originals = [item.candidate_urls[0] for item in items]
@@ -105,7 +104,7 @@ class IdolxxxAdapterTests(unittest.TestCase):
         self.assertTrue(all(item.abort_on_access_block for item in items))
         self.assertEqual(items[0].external_key, stable_key(originals[0]))
 
-    def test_scans_inclusive_page_range_and_paces_every_request_after_first(self) -> None:
+    def test_scans_inclusive_page_range_and_limits_every_request_attempt(self) -> None:
         responses = {
             "https://gallery.example.test/idols/iu/": html(
                 '<a href="/idols/iu/page/3/">3</a><article><a href="/post/1/">第一页</a></article>'
@@ -118,11 +117,15 @@ class IdolxxxAdapterTests(unittest.TestCase):
             ),
         }
 
-        with patch(
-            "app.services.acquisition_adapters._request_bytes", side_effect=lambda url, *_args, **_kwargs: responses[url]
-        ) as mocked, patch("app.services.acquisition_adapters.random.uniform", return_value=2.5), patch(
-            "app.services.acquisition_adapters.time.sleep"
-        ) as sleep:
+        def request(url: str, *_args: object, **kwargs: object) -> tuple[bytes, str]:
+            before_attempt = kwargs.get("before_attempt")
+            assert callable(before_attempt)
+            before_attempt()
+            return responses[url]
+
+        with patch("app.services.acquisition_adapters._request_bytes", side_effect=request) as mocked, patch.object(
+            _RequestStartLimiter, "wait"
+        ) as wait:
             pages = list(
                 IdolxxxGalleryAdapter().enumerate_pages(
                     "https://gallery.example.test/idols/iu/page/3/",
@@ -135,7 +138,7 @@ class IdolxxxAdapterTests(unittest.TestCase):
         self.assertEqual([page.page_number for page in pages], [2])
         self.assertEqual(pages[0].stop_reason, "requested_end")
         self.assertEqual(mocked.call_count, 3)
-        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2.5, 2.5])
+        self.assertEqual(wait.call_count, 3)
         self.assertNotIn("https://gallery.example.test/post/1/", [call.args[0] for call in mocked.call_args_list])
 
     def test_duplicate_original_url_is_emitted_once(self) -> None:
@@ -152,8 +155,6 @@ class IdolxxxAdapterTests(unittest.TestCase):
         }
         with patch(
             "app.services.acquisition_adapters._request_bytes", side_effect=lambda url, *_args, **_kwargs: responses[url]
-        ), patch("app.services.acquisition_adapters.random.uniform", return_value=2.0), patch(
-            "app.services.acquisition_adapters.time.sleep"
         ):
             items = list(IdolxxxGalleryAdapter().enumerate("https://gallery.example.test/idols/iu/", {}, set(), False))
 
@@ -212,6 +213,134 @@ class IdolxxxAdapterTests(unittest.TestCase):
         self.assertEqual(content_type, HTML_TYPE)
         self.assertEqual(mocked.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
+
+    def test_html_retries_use_the_request_start_limiter(self) -> None:
+        class Response:
+            headers = {"Content-Type": HTML_TYPE}
+
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            @staticmethod
+            def read() -> bytes:
+                return b"ok"
+
+        before_attempt = Mock()
+        with patch(
+            "app.services.acquisition_adapters.urlopen",
+            side_effect=[TimeoutError("temporary"), TimeoutError("temporary"), Response()],
+        ) as mocked, patch("app.services.acquisition_adapters.time.sleep") as sleep:
+            _request_bytes(
+                "https://gallery.example.test/idols/iu/",
+                "text/html",
+                "https://gallery.example.test/idols/iu/",
+                retries=3,
+                before_attempt=before_attempt,
+            )
+
+        self.assertEqual(mocked.call_count, 3)
+        self.assertEqual(before_attempt.call_count, 3)
+        sleep.assert_not_called()
+
+    def test_detail_cards_are_fetched_two_at_a_time_and_emitted_in_small_batches(self) -> None:
+        listing = html(
+            "".join(f'<article><a href="/post/{index}/">卡片 {index}</a></article>' for index in range(1, 10))
+        )
+        active = 0
+        peak_active = 0
+        lock = threading.Lock()
+        barrier = threading.Barrier(2, timeout=2)
+
+        def request(url: str, *_args: object, **_kwargs: object) -> tuple[bytes, str]:
+            nonlocal active, peak_active
+            if "/post/" not in url:
+                return listing
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            try:
+                post_number = int(url.rstrip("/").rsplit("/", 1)[-1])
+                if post_number != 9:
+                    barrier.wait()
+                return html(
+                    '<div class="post-media">'
+                    f'<a class="post-media-item" href="//media.gallery.example.test/files/src/{post_number}.jpg"><img></a>'
+                    "</div>"
+                )
+            finally:
+                with lock:
+                    active -= 1
+
+        with patch("app.services.acquisition_adapters._request_bytes", side_effect=request):
+            pages = list(IdolxxxGalleryAdapter().enumerate_pages(
+                "https://gallery.example.test/idols/iu/", {}, set(), False
+            ))
+
+        self.assertEqual(peak_active, 2)
+        self.assertEqual([len(page.items) for page in pages], [4, 4, 1])
+        self.assertEqual([page.page_number for page in pages], [1, 1, 1])
+        self.assertEqual([page.stop_reason for page in pages], [None, None, "collection_end"])
+        self.assertEqual(
+            [item.candidate_urls[0] for page in pages for item in page.items],
+            [f"https://media.gallery.example.test/files/src/{index}.jpg" for index in range(1, 10)],
+        )
+
+    def test_incremental_known_page_stops_only_after_the_final_batch(self) -> None:
+        listing = html(
+            '<a href="/idols/iu/page/2/">2</a>'
+            + "".join(f'<article><a href="/post/{index}/">卡片 {index}</a></article>' for index in range(1, 6))
+        )
+        known_keys = {
+            stable_key(f"https://media.gallery.example.test/files/src/{index}.jpg")
+            for index in range(1, 6)
+        }
+
+        def request(url: str, *_args: object, **_kwargs: object) -> tuple[bytes, str]:
+            if "/post/" not in url:
+                return listing
+            post_number = int(url.rstrip("/").rsplit("/", 1)[-1])
+            return html(
+                '<div class="post-media">'
+                f'<a class="post-media-item" href="//media.gallery.example.test/files/src/{post_number}.jpg"><img></a>'
+                "</div>"
+            )
+
+        with patch("app.services.acquisition_adapters._request_bytes", side_effect=request) as mocked:
+            pages = list(IdolxxxGalleryAdapter().enumerate_pages(
+                "https://gallery.example.test/idols/iu/", {}, known_keys, True
+            ))
+
+        self.assertEqual([len(page.items) for page in pages], [4, 1])
+        self.assertEqual([page.stop_reason for page in pages], [None, "known_page"])
+        self.assertNotIn(
+            "https://gallery.example.test/idols/iu/page/2/",
+            [call.args[0] for call in mocked.call_args_list],
+        )
+
+    def test_detail_access_block_does_not_start_the_next_request_group(self) -> None:
+        listing = html(
+            "".join(f'<article><a href="/post/{index}/">卡片 {index}</a></article>' for index in range(1, 5))
+        )
+
+        def request(url: str, *_args: object, **_kwargs: object) -> tuple[bytes, str]:
+            if "/post/" not in url:
+                return listing
+            if url.endswith("/post/1/"):
+                raise AccessBlockedError(url, 429)
+            return html('<div class="post-media"></div>')
+
+        with patch("app.services.acquisition_adapters._request_bytes", side_effect=request) as mocked:
+            with self.assertRaises(AccessBlockedError):
+                list(IdolxxxGalleryAdapter().enumerate_pages(
+                    "https://gallery.example.test/idols/iu/", {}, set(), False
+                ))
+
+        requested_posts = [call.args[0] for call in mocked.call_args_list if "/post/" in call.args[0]]
+        self.assertNotIn("https://gallery.example.test/post/3/", requested_posts)
+        self.assertNotIn("https://gallery.example.test/post/4/", requested_posts)
 
     def test_curl_429_is_not_retried(self) -> None:
         completed = subprocess.CompletedProcess([], 22, stdout="429\ntext/html", stderr="Too Many Requests")
@@ -384,6 +513,23 @@ class IdolxxxDownloadPolicyTests(unittest.TestCase):
 
 
 class IdolxxxDownloadLimiterTests(unittest.TestCase):
+    def test_html_limiter_waits_only_for_the_remaining_interval(self) -> None:
+        now = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        limiter = _RequestStartLimiter(1.0, clock=lambda: now[0], sleeper=sleep)
+        limiter.wait()
+        now[0] = 0.4
+        limiter.wait()
+        now[0] = 3.0
+        limiter.wait()
+
+        self.assertEqual(sleeps, [0.6])
+
     def test_download_starts_are_spaced_by_one_second(self) -> None:
         now = [0.0]
         sleeps: list[float] = []
@@ -409,7 +555,7 @@ class IdolxxxLifecycleTests(unittest.TestCase):
             script = db.scalar(select(AcquisitionScript).where(AcquisitionScript.key == "idolxxx-gallery"))
             self.assertIsNotNone(script)
             assert script is not None
-            self.assertEqual(script.version, "1.0.0")
+            self.assertEqual(script.version, "1.0.1")
             self.assertEqual(script.page_format_key, "idolxxx-gallery-v1")
         engine.dispose()
 

@@ -56,7 +56,7 @@ class AcquisitionAdapterTests(unittest.TestCase):
             {item["name"] for item in catalog},
             {"idolxxx-gallery", "raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page"},
         )
-        self.assertEqual({item["version"] for item in catalog}, {"1.0.0", "1.0.2", "1.2.0"})
+        self.assertEqual({item["version"] for item in catalog}, {"1.0.1", "1.0.2", "1.2.0"})
 
     def test_raindrop_page_normalizes_relative_image_urls(self) -> None:
         payload = (
@@ -593,6 +593,28 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertEqual(status, "pending_review")
         engine.dispose()
 
+    def test_schema_migration_adds_regular_import_type_to_legacy_batches(self) -> None:
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        with engine.begin() as connection:
+            connection.execute(text(
+                "CREATE TABLE acquisition_import_batches ("
+                "id VARCHAR(64) PRIMARY KEY, status VARCHAR(32) NOT NULL)"
+            ))
+            connection.execute(text(
+                "INSERT INTO acquisition_import_batches (id, status) VALUES ('legacy-batch', 'completed')"
+            ))
+
+        ensure_acquisition_schema(engine)
+
+        columns = {column["name"] for column in inspect(engine).get_columns("acquisition_import_batches")}
+        with engine.connect() as connection:
+            is_rich_text = connection.execute(text(
+                "SELECT is_rich_text FROM acquisition_import_batches WHERE id = 'legacy-batch'"
+            )).scalar_one()
+        self.assertIn("is_rich_text", columns)
+        self.assertFalse(is_rich_text)
+        engine.dispose()
+
     def test_process_run_rolls_back_before_recording_database_failure(self) -> None:
         definition = get_script("raindrop-ftxsri-workers-dev")
         assert definition is not None
@@ -734,6 +756,152 @@ class AcquisitionQualityTests(unittest.TestCase):
 
 
 class AcquisitionSimilarityTests(unittest.TestCase):
+    def test_pending_similarity_group_keeps_two_visible_members_after_rejection(self) -> None:
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        workspace = Workspace(name="相似组保留测试")
+        db.add(workspace)
+        db.flush()
+        assets = [
+            AcquisitionAsset(
+                id=f"asset-{name}",
+                workspace_id=workspace.id,
+                sha256=name * 64,
+                filename=f"{name}.jpg",
+                object_key=f"{name}.jpg",
+                status="pending_review",
+            )
+            for name in ("a", "b", "c")
+        ]
+        db.add_all(assets)
+        db.add_all([
+            AcquisitionSimilarityCandidate(
+                workspace_id=workspace.id,
+                scan_type="normal",
+                scan_scope="pending_only",
+                asset_id="asset-a",
+                other_asset_id="asset-b",
+                score=0.96,
+            ),
+            AcquisitionSimilarityCandidate(
+                workspace_id=workspace.id,
+                scan_type="normal",
+                scan_scope="pending_only",
+                asset_id="asset-b",
+                other_asset_id="asset-c",
+                score=0.94,
+            ),
+        ])
+        db.commit()
+
+        assets[1].status = "rejected"
+        assets[1].object_key = None
+        db.commit()
+        result = list_similarity(offset=0, limit=20, db=db, current=SimpleNamespace(workspace_id=workspace.id))
+
+        self.assertEqual(result.total, 1)
+        self.assertEqual([asset.id for asset in result.groups[0].members], ["asset-a", "asset-c"])
+
+        assets[0].status = "rejected"
+        assets[0].object_key = None
+        db.commit()
+        result = list_similarity(offset=0, limit=20, db=db, current=SimpleNamespace(workspace_id=workspace.id))
+
+        self.assertEqual(result.total, 0)
+        db.close()
+        engine.dispose()
+
+    def test_gallery_similarity_group_requires_visible_pending_member(self) -> None:
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        workspace = Workspace(name="图库相似组保留测试")
+        db.add(workspace)
+        db.flush()
+        assets = [
+            AcquisitionAsset(
+                id=f"asset-{name}",
+                workspace_id=workspace.id,
+                sha256=name * 64,
+                filename=f"{name}.jpg",
+                object_key=f"{name}.jpg",
+                status="pending_review",
+            )
+            for name in ("a", "b")
+        ]
+        gallery_photos = [
+            GalleryPhoto(
+                workspace_id=workspace.id,
+                filename=f"gallery-{index}.jpg",
+                content_type="image/jpeg",
+                sha256=str(index) * 64,
+                object_key=f"gallery-{index}.jpg",
+                width=32,
+                height=32,
+            )
+            for index in (1, 2)
+        ]
+        db.add_all([*assets, *gallery_photos])
+        db.flush()
+        db.add_all([
+            AcquisitionSimilarityCandidate(
+                workspace_id=workspace.id,
+                scan_type="normal",
+                scan_scope="pending_to_gallery",
+                asset_id="asset-a",
+                gallery_photo_id=gallery_photos[0].id,
+                score=0.96,
+            ),
+            AcquisitionSimilarityCandidate(
+                workspace_id=workspace.id,
+                scan_type="normal",
+                scan_scope="pending_to_gallery",
+                asset_id="asset-b",
+                gallery_photo_id=gallery_photos[0].id,
+                score=0.95,
+            ),
+            AcquisitionSimilarityCandidate(
+                workspace_id=workspace.id,
+                scan_type="normal",
+                scan_scope="pending_to_gallery",
+                asset_id="asset-b",
+                gallery_photo_id=gallery_photos[1].id,
+                score=0.94,
+            ),
+        ])
+        db.commit()
+
+        assets[1].status = "rejected"
+        assets[1].object_key = None
+        db.commit()
+        result = list_similarity(
+            offset=0,
+            limit=20,
+            scope="pending_to_gallery",
+            db=db,
+            current=SimpleNamespace(workspace_id=workspace.id),
+        )
+
+        self.assertEqual(result.total, 1)
+        self.assertEqual([asset.id for asset in result.groups[0].members], ["asset-a"])
+        self.assertEqual(len(result.groups[0].gallery_members), 2)
+
+        assets[0].status = "rejected"
+        assets[0].object_key = None
+        db.commit()
+        result = list_similarity(
+            offset=0,
+            limit=20,
+            scope="pending_to_gallery",
+            db=db,
+            current=SimpleNamespace(workspace_id=workspace.id),
+        )
+
+        self.assertEqual(result.total, 0)
+        db.close()
+        engine.dispose()
+
     def test_similarity_scan_supports_all_type_and_scope_combinations(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine)
@@ -1132,8 +1300,10 @@ class AcquisitionWorkflowTests(unittest.TestCase):
                 workspace_id: int | None,
                 source_object_key: str,
                 ingest_source: str = "manual_upload",
+                is_rich_text: bool = False,
             ) -> tuple[GalleryPhoto, SimpleNamespace]:
                 test_case.assertEqual(ingest_source, "acquisition")
+                test_case.assertFalse(is_rich_text)
                 object_key = "gallery/imported.jpg"
                 self.storage.put_bytes(object_key, payload, content_type)
                 photo = GalleryPhoto(
@@ -1143,6 +1313,7 @@ class AcquisitionWorkflowTests(unittest.TestCase):
                     sha256=__import__("hashlib").sha256(payload).hexdigest(),
                     object_key=object_key,
                     ingest_source=ingest_source,
+                    is_rich_text=is_rich_text,
                 )
                 db.add(photo)
                 db.flush()
@@ -1334,6 +1505,163 @@ class AcquisitionWorkflowTests(unittest.TestCase):
         db.close()
         engine.dispose()
 
+    def test_rich_text_import_deduplicates_only_against_rich_text_photos(self) -> None:
+        payload = b"same-image"
+        sha256 = hashlib.sha256(payload).hexdigest()
+
+        class MemoryStorage:
+            def __init__(self) -> None:
+                self.objects = {
+                    "temp/first.jpg": payload,
+                    "temp/second.jpg": payload,
+                }
+
+            def get_bytes(self, key: str) -> bytes:
+                return self.objects[key]
+
+            def remove_object(self, key: str) -> None:
+                self.objects.pop(key, None)
+
+        class RecordingImporter:
+            def __init__(self) -> None:
+                self.calls: list[bool] = []
+
+            def import_gallery_photo(
+                self,
+                db: Session,
+                filename: str,
+                _payload: bytes,
+                content_type: str | None,
+                **kwargs: object,
+            ) -> tuple[GalleryPhoto, SimpleNamespace]:
+                is_rich_text = bool(kwargs["is_rich_text"])
+                self.calls.append(is_rich_text)
+                photo = GalleryPhoto(
+                    workspace_id=kwargs["workspace_id"],
+                    filename=filename,
+                    content_type=content_type,
+                    sha256=sha256,
+                    object_key=f"gallery/{filename}",
+                    is_rich_text=is_rich_text,
+                    ingest_source="acquisition",
+                )
+                db.add(photo)
+                db.flush()
+                return photo, SimpleNamespace(duplicated=False)
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        storage = MemoryStorage()
+        importer = RecordingImporter()
+        service = AcquisitionService(storage, importer, SimpleNamespace())
+        db.add(
+            GalleryPhoto(
+                filename="ordinary.jpg",
+                sha256=sha256,
+                object_key="gallery/ordinary.jpg",
+                is_rich_text=False,
+            )
+        )
+        db.add_all([
+            AcquisitionAsset(
+                id="rich-first",
+                sha256=sha256,
+                filename="first.jpg",
+                content_type="image/jpeg",
+                object_key="temp/first.jpg",
+                status="pending_review",
+            ),
+            AcquisitionAsset(
+                id="rich-second",
+                sha256=sha256,
+                filename="second.jpg",
+                content_type="image/jpeg",
+                object_key="temp/second.jpg",
+                status="pending_review",
+            ),
+        ])
+        db.commit()
+
+        first_batch = service.create_import_batch(db, None, ["rich-first"], is_rich_text=True)
+        service.process_import_batch(db, first_batch.id)
+        db.refresh(first_batch)
+        self.assertTrue(first_batch.is_rich_text)
+        self.assertEqual((first_batch.imported_count, first_batch.duplicate_count), (1, 0))
+        self.assertEqual(importer.calls, [True])
+
+        second_batch = service.create_import_batch(db, None, ["rich-second"], is_rich_text=True)
+        service.process_import_batch(db, second_batch.id)
+        db.refresh(second_batch)
+        self.assertEqual((second_batch.imported_count, second_batch.duplicate_count), (0, 1))
+        self.assertEqual(importer.calls, [True])
+        self.assertEqual(db.query(GalleryPhoto).filter_by(sha256=sha256, is_rich_text=True).count(), 1)
+        db.close()
+        engine.dispose()
+
+    def test_recover_imports_uses_the_batch_rich_text_type(self) -> None:
+        payload = b"recover-rich-text"
+        sha256 = hashlib.sha256(payload).hexdigest()
+
+        class MemoryStorage:
+            def __init__(self) -> None:
+                self.objects = {"temp/recover.jpg": payload}
+
+            def remove_object(self, key: str) -> None:
+                self.objects.pop(key, None)
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        storage = MemoryStorage()
+        service = AcquisitionService(storage, SimpleNamespace(), SimpleNamespace())
+        ordinary_photo = GalleryPhoto(
+            filename="ordinary.jpg",
+            sha256=sha256,
+            object_key="gallery/recover-ordinary.jpg",
+            is_rich_text=False,
+        )
+        rich_text_photo = GalleryPhoto(
+            filename="rich.jpg",
+            sha256=sha256,
+            object_key="gallery/recover-rich.jpg",
+            is_rich_text=True,
+        )
+        asset = AcquisitionAsset(
+            id="recover-rich",
+            sha256=sha256,
+            filename="recover.jpg",
+            object_key="temp/recover.jpg",
+            status="importing",
+        )
+        batch = AcquisitionImportBatch(
+            id="recover-rich-batch",
+            status="running",
+            is_rich_text=True,
+            total_count=1,
+        )
+        db.add_all([ordinary_photo, rich_text_photo, asset, batch])
+        db.flush()
+        item = AcquisitionImportBatchItem(
+            batch_id=batch.id,
+            asset_id=asset.id,
+            ordinal=0,
+            status="processing",
+            promotion_intent="new",
+        )
+        db.add(item)
+        db.commit()
+
+        result = service.recover_imports(db)
+
+        db.refresh(item)
+        self.assertEqual(result, {"recovered": 1, "failed": 0})
+        self.assertEqual(item.status, "imported")
+        self.assertEqual(item.gallery_photo_id, rich_text_photo.id)
+        self.assertNotEqual(item.gallery_photo_id, ordinary_photo.id)
+        db.close()
+        engine.dispose()
+
     def test_import_batch_reconciles_gallery_commit_before_later_failure(self) -> None:
         payload = b"already-copied"
 
@@ -1444,6 +1772,7 @@ class AcquisitionWorkflowTests(unittest.TestCase):
         batch = AcquisitionImportBatch(
             id="batch-history",
             status="completed",
+            is_rich_text=True,
             total_count=1,
             processed_count=1,
             imported_count=1,
@@ -1471,6 +1800,7 @@ class AcquisitionWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(batches.total, 1)
         self.assertEqual(batches.unassigned_imported_count, 1)
+        self.assertTrue(batches.items[0].is_rich_text)
         self.assertEqual(set(list_asset_ids(status="imported", db=db, current=context)), {"batched", "legacy"})
 
         detail = list_import_batch_items(

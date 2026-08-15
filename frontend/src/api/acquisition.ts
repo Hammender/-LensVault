@@ -119,11 +119,17 @@ export async function listAcquisitionAssetIds(status: string): Promise<string[]>
   return parse<string[]>(await fetch(`/api/acquisition/assets/ids?${params.toString()}`));
 }
 
-export async function changeAcquisitionAssets(action: "import" | "reject", assetIds: string[]): Promise<AcquisitionImportBatch | void> {
+export async function changeAcquisitionAssets(
+  action: "import" | "reject",
+  assetIds: string[],
+  isRichText = false
+): Promise<AcquisitionImportBatch | void> {
   return parse<AcquisitionImportBatch | { rejected?: number }>(await fetch(`/api/acquisition/assets/${action}`, {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ asset_ids: assetIds })
+    body: JSON.stringify(action === "import"
+      ? { asset_ids: assetIds, is_rich_text: isRichText }
+      : { asset_ids: assetIds })
   })) as Promise<AcquisitionImportBatch | void>;
 }
 
