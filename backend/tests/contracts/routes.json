@@ -12,6 +12,12 @@
     ]
   },
   {
+    "path": "/api/acquisition/sources/page",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/acquisition/sources",
     "methods": [
       "POST"
@@ -48,6 +54,12 @@
     ]
   },
   {
+    "path": "/api/acquisition/categories/page",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/acquisition/sources/{source_id}/categories",
     "methods": [
       "POST"
@@ -73,6 +85,12 @@
   },
   {
     "path": "/api/acquisition/runs",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/runs/page",
     "methods": [
       "GET"
     ]

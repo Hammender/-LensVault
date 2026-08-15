@@ -16,7 +16,7 @@ import { filterPersonMatches, matchesPersonSearch } from "./personPicker";
 import { chooseRecoveredScan, findScanForScope } from "./similarityScanState";
 import { findPreviewAfterCurrentDelete, getSimilarityLightboxShortcut } from "./similarityReviewKeyboard";
 import type { GallerySimilarityGroup, GallerySimilarityScan, Person } from "./types";
-import { formatDate, withImageWidth } from "./utils";
+import { formatBytes, formatDate, withImageWidth } from "./utils";
 
 type SimilarityReviewProps = {
   persons: Person[];
@@ -592,6 +592,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                 <span>对比信息</span>
                 <div className="similarity-lightbox-facts">
                   <b>{previewMember.photo.is_rich_text ? "图文图片" : "普通图片"}</b>
+                  <b>文件大小 {formatBytes(previewMember.photo.size_bytes)}</b>
                   <b>相似度 {(previewMember.score_to_representative * 100).toFixed(1)}%</b>
                   {previewMember.recommended_keep && <b className="similarity-keep-text">建议保留</b>}
                 </div>

@@ -25,6 +25,7 @@ def gallery_photo_to_list_item(photo: GalleryPhoto) -> GalleryPhotoListItem:
     return GalleryPhotoListItem(
         id=photo.id,
         filename=photo.filename,
+        size_bytes=photo.size_bytes,
         width=photo.width,
         height=photo.height,
         taken_at=photo.taken_at,

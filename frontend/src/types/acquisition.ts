@@ -12,6 +12,13 @@ export type AcquisitionSource = {
   updated_at: string;
 };
 
+export type PaginatedAcquisitionSources = {
+  items: AcquisitionSource[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 export type AcquisitionScriptParameterOption = {
   value: string;
   label: string;
@@ -49,6 +56,13 @@ export type AcquisitionCategory = {
   updated_at: string;
 };
 
+export type PaginatedAcquisitionCategories = {
+  items: AcquisitionCategory[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 export type AcquisitionRun = {
   id: string;
   source_id: number;
@@ -84,6 +98,13 @@ export type AcquisitionRun = {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type PaginatedAcquisitionRuns = {
+  items: AcquisitionRun[];
+  total: number;
+  offset: number;
+  limit: number;
 };
 
 export type AcquisitionAsset = {

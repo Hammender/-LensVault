@@ -26,6 +26,7 @@ class GalleryPhoto(Base):
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     object_key: Mapped[str] = mapped_column(String(512), unique=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     taken_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

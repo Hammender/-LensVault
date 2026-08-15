@@ -248,6 +248,16 @@ def ensure_gallery_ingest_source_column(engine: Engine) -> None:
         )
 
 
+def ensure_gallery_photo_size_column(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "gallery_photos" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("gallery_photos")}
+    if "size_bytes" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE gallery_photos ADD COLUMN size_bytes BIGINT"))
+
+
 def ensure_acquisition_schema(engine: Engine) -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
@@ -724,6 +734,7 @@ def initialize_database(engine: Engine) -> None:
         )
     ensure_gallery_display_order_columns(engine)
     ensure_gallery_ingest_source_column(engine)
+    ensure_gallery_photo_size_column(engine)
 
 
 def initialize_runtime(

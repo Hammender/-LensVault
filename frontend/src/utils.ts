@@ -73,7 +73,10 @@ export function toShanghaiDateTimeBoundary(date: string, boundary: "start" | "en
   return `${date}T${time}+08:00`;
 }
 
-export function formatBytes(value: number): string {
+export function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "未知";
+  }
   if (value < 1024) {
     return `${value} B`;
   }

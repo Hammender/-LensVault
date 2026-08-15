@@ -36,6 +36,13 @@ class AcquisitionSourceRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PaginatedAcquisitionSources(BaseModel):
+    items: list[AcquisitionSourceRead]
+    total: int
+    offset: int
+    limit: int
+
+
 class AcquisitionCategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     crawl_url: str = Field(min_length=1, max_length=2048)
@@ -60,6 +67,13 @@ class AcquisitionCategoryRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PaginatedAcquisitionCategories(BaseModel):
+    items: list[AcquisitionCategoryRead]
+    total: int
+    offset: int
+    limit: int
 
 
 class AcquisitionRunCreate(BaseModel):
@@ -105,6 +119,13 @@ class AcquisitionRunRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PaginatedAcquisitionRuns(BaseModel):
+    items: list[AcquisitionRunRead]
+    total: int
+    offset: int
+    limit: int
 
 
 class AcquisitionScriptParameterOption(BaseModel):

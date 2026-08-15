@@ -689,6 +689,7 @@ class PictureService:
             content_type=content_type,
             sha256=sha256,
             object_key=object_key,
+            size_bytes=len(payload),
             width=width,
             height=height,
             taken_at=taken_at,
@@ -1555,6 +1556,7 @@ class PictureService:
                         content_type=photo_data.get("content_type"),
                         sha256=sha256,
                         object_key=object_key,
+                        size_bytes=len(payload),
                         width=photo_data.get("width"),
                         height=photo_data.get("height"),
                         is_rich_text=is_rich_text,
@@ -1574,6 +1576,7 @@ class PictureService:
                         logger.warning("Gallery zip import ignored invalid taken_at photo=%s", photo_data.get("filename"))
                 photo.filename = str(photo_data.get("filename") or photo.filename)
                 photo.content_type = photo_data.get("content_type")
+                photo.size_bytes = len(payload)
                 photo.width = photo_data.get("width")
                 photo.height = photo_data.get("height")
                 photo.taken_at = taken_at

@@ -5,8 +5,11 @@ import type {
   AcquisitionExport,
   AcquisitionHistoryItem,
   AcquisitionImportBatch,
+  PaginatedAcquisitionCategories,
   PaginatedAcquisitionImportBatchItems,
   PaginatedAcquisitionImportBatches,
+  PaginatedAcquisitionRuns,
+  PaginatedAcquisitionSources,
   AcquisitionRun,
   AcquisitionScript,
   AcquisitionSimilarityResult,
@@ -25,6 +28,11 @@ export async function listAcquisitionScripts(): Promise<AcquisitionScript[]> {
 
 export async function listAcquisitionSources(): Promise<AcquisitionSource[]> {
   return parse<AcquisitionSource[]>(await fetch("/api/acquisition/sources"));
+}
+
+export async function listAcquisitionSourcePage(offset = 0, limit = 10): Promise<PaginatedAcquisitionSources> {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  return parse<PaginatedAcquisitionSources>(await fetch(`/api/acquisition/sources/page?${params.toString()}`));
 }
 
 export async function createAcquisitionSource(payload: { name: string; base_url: string; notes?: string | null }): Promise<AcquisitionSource> {
@@ -68,6 +76,11 @@ export async function listAcquisitionCategories(): Promise<AcquisitionCategory[]
   return parse<AcquisitionCategory[]>(await fetch("/api/acquisition/categories"));
 }
 
+export async function listAcquisitionCategoryPage(offset = 0, limit = 10): Promise<PaginatedAcquisitionCategories> {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  return parse<PaginatedAcquisitionCategories>(await fetch(`/api/acquisition/categories/page?${params.toString()}`));
+}
+
 export async function createAcquisitionCategory(
   sourceId: number,
   payload: { name: string; crawl_url: string; notes?: string | null }
@@ -107,6 +120,11 @@ export async function startAcquisitionRun(
 
 export async function listAcquisitionRuns(): Promise<AcquisitionRun[]> {
   return parse<AcquisitionRun[]>(await fetch("/api/acquisition/runs"));
+}
+
+export async function listAcquisitionRunPage(offset = 0, limit = 10): Promise<PaginatedAcquisitionRuns> {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  return parse<PaginatedAcquisitionRuns>(await fetch(`/api/acquisition/runs/page?${params.toString()}`));
 }
 
 export async function listAcquisitionAssets(status = "pending_review", offset = 0, limit = 60): Promise<PaginatedAcquisitionAssets> {

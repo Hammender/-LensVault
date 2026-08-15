@@ -55,8 +55,11 @@ from app.schemas import (
     AcquisitionSimilarityResultRead,
     AcquisitionSimilarityScanCreate,
     PaginatedAcquisitionAssets,
+    PaginatedAcquisitionCategories,
     PaginatedAcquisitionImportBatchItems,
     PaginatedAcquisitionImportBatches,
+    PaginatedAcquisitionRuns,
+    PaginatedAcquisitionSources,
     TaskRead,
 )
 from app.mappers.gallery import gallery_photo_to_list_item
@@ -520,6 +523,21 @@ def list_sources(
     ]
 
 
+@router.get("/sources/page", response_model=PaginatedAcquisitionSources)
+def list_source_page(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> PaginatedAcquisitionSources:
+    query = select(AcquisitionSource).where(AcquisitionSource.workspace_id == current.workspace_id)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    sources = db.scalars(query.order_by(AcquisitionSource.name.asc()).offset(offset).limit(limit)).all()
+    return PaginatedAcquisitionSources(
+        items=[_source_read(db, source) for source in sources], total=total, offset=offset, limit=limit
+    )
+
+
 @router.post("/sources", response_model=AcquisitionSourceRead)
 def create_source(
     payload: AcquisitionSourceCreate,
@@ -601,6 +619,24 @@ def list_categories(
     return [AcquisitionCategoryRead.model_validate(category) for category in db.scalars(query.order_by(AcquisitionCategory.name.asc()))]
 
 
+@router.get("/categories/page", response_model=PaginatedAcquisitionCategories)
+def list_category_page(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> PaginatedAcquisitionCategories:
+    query = select(AcquisitionCategory).join(AcquisitionSource).where(AcquisitionSource.workspace_id == current.workspace_id)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    categories = db.scalars(query.order_by(AcquisitionCategory.name.asc()).offset(offset).limit(limit)).all()
+    return PaginatedAcquisitionCategories(
+        items=[AcquisitionCategoryRead.model_validate(category) for category in categories],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
 @router.post("/sources/{source_id}/categories", response_model=AcquisitionCategoryRead)
 def create_category(
     source_id: int,
@@ -677,6 +713,19 @@ def list_runs(
     if category_id is not None:
         query = query.where(AcquisitionRun.category_id == category_id)
     return [_run_read(run) for run in db.scalars(query.order_by(AcquisitionRun.created_at.desc()))]
+
+
+@router.get("/runs/page", response_model=PaginatedAcquisitionRuns)
+def list_run_page(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> PaginatedAcquisitionRuns:
+    query = select(AcquisitionRun).where(AcquisitionRun.workspace_id == current.workspace_id)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    runs = db.scalars(query.order_by(AcquisitionRun.created_at.desc()).offset(offset).limit(limit)).all()
+    return PaginatedAcquisitionRuns(items=[_run_read(run) for run in runs], total=total, offset=offset, limit=limit)
 
 
 @router.get("/assets", response_model=PaginatedAcquisitionAssets)

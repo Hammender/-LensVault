@@ -48,6 +48,7 @@ export type Face = {
 export type GalleryPhotoListItem = {
   id: number;
   filename: string;
+  size_bytes: number | null;
   width: number | null;
   height: number | null;
   taken_at: string | null;

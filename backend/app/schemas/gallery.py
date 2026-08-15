@@ -48,6 +48,7 @@ class FaceRead(BaseModel):
 class GalleryPhotoListItem(BaseModel):
     id: int
     filename: str
+    size_bytes: int | None
     width: int | None
     height: int | None
     taken_at: datetime | None

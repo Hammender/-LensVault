@@ -253,6 +253,7 @@ CREATE INDEX ix_acquisition_sources_workspace_id ON acquisition_sources (workspa
 --   content_type：文件 MIME 类型
 --   sha256：文件内容 SHA-256 摘要
 --   object_key：对象存储中的文件键
+--   size_bytes：原始文件大小，单位为字节
 --   width：媒体宽度，单位为像素
 --   height：媒体高度，单位为像素
 --   taken_at：媒体拍摄时间
@@ -271,6 +272,7 @@ CREATE TABLE gallery_photos (
 	content_type VARCHAR(128), 
 	sha256 VARCHAR(64) NOT NULL, 
 	object_key VARCHAR(512) NOT NULL, 
+	size_bytes BIGINT,
 	width INTEGER, 
 	height INTEGER, 
 	taken_at DATETIME, 

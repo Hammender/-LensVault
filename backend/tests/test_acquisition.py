@@ -19,7 +19,18 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.api.acquisition import list_asset_ids, list_assets, list_history, list_import_batch_items, list_import_batches, list_similarity, list_sources
+from app.api.acquisition import (
+    list_asset_ids,
+    list_assets,
+    list_category_page,
+    list_history,
+    list_import_batch_items,
+    list_import_batches,
+    list_run_page,
+    list_similarity,
+    list_source_page,
+    list_sources,
+)
 from app.lifecycle import ensure_acquisition_schema
 from app.models import (
     AcquisitionAsset,
@@ -320,6 +331,43 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertEqual(run.category_name_snapshot, "这个名字仅用于展示")
         self.assertEqual(run.category_url_snapshot, category.crawl_url)
         self.assertEqual(json.loads(run.parameters_json), {"max_pages": 2})
+
+    def test_management_pages_return_ordered_workspace_records(self) -> None:
+        sources = [
+            self.service.create_source(self.db, None, name, f"https://{name}.example.test")
+            for name in ("站点 C", "站点 A", "站点 B")
+        ]
+        categories = [
+            self.service.create_category(self.db, source, f"分类 {index}", f"{source.base_url}/list")
+            for index, source in enumerate(sources, start=1)
+        ]
+        self.db.add_all([
+            AcquisitionRun(
+                id=f"run-{index}",
+                source_id=category.source_id,
+                category_id=category.id,
+                script_name_snapshot="测试脚本",
+                script_version_snapshot="1.0.0",
+                source_name_snapshot=f"站点 {index}",
+                category_name_snapshot=category.name,
+                category_url_snapshot=category.crawl_url,
+                created_at=datetime(2026, 8, 14, 10, index, 0),
+            )
+            for index, category in enumerate(categories, start=1)
+        ])
+        self.db.commit()
+
+        context = SimpleNamespace(workspace_id=None)
+        source_page = list_source_page(offset=1, limit=1, db=self.db, current=context)
+        category_page = list_category_page(offset=0, limit=2, db=self.db, current=context)
+        run_page = list_run_page(offset=0, limit=2, db=self.db, current=context)
+
+        self.assertEqual(source_page.total, 3)
+        self.assertEqual([source.name for source in source_page.items], ["站点 B"])
+        self.assertEqual(category_page.total, 3)
+        self.assertEqual(len(category_page.items), 2)
+        self.assertEqual(run_page.total, 3)
+        self.assertEqual([run.id for run in run_page.items], ["run-3", "run-2"])
 
     def test_legacy_force_parameter_maps_to_full_mode_and_is_not_persisted(self) -> None:
         source = self.service.create_source(

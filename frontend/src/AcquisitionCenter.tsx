@@ -14,13 +14,16 @@ import {
   listAcquisitionAssetIds,
   listAcquisitionAssets,
   listAcquisitionCategories,
+  listAcquisitionCategoryPage,
   listAcquisitionExports,
   listAcquisitionImportBatchItems,
   listAcquisitionImportBatches,
   listAcquisitionRuns,
+  listAcquisitionRunPage,
   listAcquisitionScripts,
   listAcquisitionSimilarity,
   listAcquisitionSources,
+  listAcquisitionSourcePage,
   startAcquisitionRun,
   startAcquisitionSimilarityScan,
   unbindAcquisitionScript,
@@ -82,6 +85,7 @@ const tabs: Array<{ key: Tab; label: string }> = [
 const importBatchPageSize = 15;
 const importBatchItemPageSize = 40;
 const similarityGroupPageSize = 12;
+const managementPageSize = 10;
 
 function statusLabel(status: string): string {
   return ({
@@ -125,6 +129,18 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [categories, setCategories] = useState<AcquisitionCategory[]>([]);
   const [scripts, setScripts] = useState<AcquisitionScript[]>([]);
   const [runs, setRuns] = useState<AcquisitionRun[]>([]);
+  const [sourcePageItems, setSourcePageItems] = useState<AcquisitionSource[]>([]);
+  const [sourcePageTotal, setSourcePageTotal] = useState(0);
+  const [sourcePageOffset, setSourcePageOffset] = useState(0);
+  const [sourcePageLoading, setSourcePageLoading] = useState(false);
+  const [categoryPageItems, setCategoryPageItems] = useState<AcquisitionCategory[]>([]);
+  const [categoryPageTotal, setCategoryPageTotal] = useState(0);
+  const [categoryPageOffset, setCategoryPageOffset] = useState(0);
+  const [categoryPageLoading, setCategoryPageLoading] = useState(false);
+  const [runPageItems, setRunPageItems] = useState<AcquisitionRun[]>([]);
+  const [runPageTotal, setRunPageTotal] = useState(0);
+  const [runPageOffset, setRunPageOffset] = useState(0);
+  const [runPageLoading, setRunPageLoading] = useState(false);
   const [assets, setAssets] = useState<AcquisitionAsset[]>([]);
   const [assetsTotal, setAssetsTotal] = useState(0);
   const [assetOffset, setAssetOffset] = useState(0);
@@ -193,6 +209,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     : [], [scriptByKey, selectedRunSource]);
   const selectedRunScript = scriptByKey.get(runScriptKey);
   const assetPagination = getAcquisitionPagination(assetsTotal, assetOffset, assets.length, acquisitionAssetPageSize);
+  const sourcePagePagination = getAcquisitionPagination(sourcePageTotal, sourcePageOffset, sourcePageItems.length, managementPageSize);
+  const categoryPagePagination = getAcquisitionPagination(categoryPageTotal, categoryPageOffset, categoryPageItems.length, managementPageSize);
+  const runPagePagination = getAcquisitionPagination(runPageTotal, runPageOffset, runPageItems.length, managementPageSize);
   const areAllReviewAssetsSelected = hasSelectedAllAcquisitionAssets(selectedAssets, assetsTotal);
   const lightboxAsset = lightboxSelection?.asset ?? null;
   const lightboxAssetIndex = lightboxAsset ? assets.findIndex((asset) => asset.id === lightboxAsset.id) : -1;
@@ -242,6 +261,48 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     const failed = [scriptsResult, sourcesResult, categoriesResult, runsResult, exportsResult, summaryResult]
       .find((result) => result.error);
     if (failed?.error) throw failed.error;
+  }, []);
+
+  const loadSourcePage = useCallback(async (requestedOffset: number) => {
+    setSourcePageLoading(true);
+    try {
+      let page = await listAcquisitionSourcePage(Math.max(0, requestedOffset), managementPageSize);
+      const validOffset = clampAcquisitionOffset(page.total, requestedOffset, managementPageSize);
+      if (validOffset !== page.offset) page = await listAcquisitionSourcePage(validOffset, managementPageSize);
+      setSourcePageItems(page.items);
+      setSourcePageTotal(page.total);
+      setSourcePageOffset(page.offset);
+    } finally {
+      setSourcePageLoading(false);
+    }
+  }, []);
+
+  const loadCategoryPage = useCallback(async (requestedOffset: number) => {
+    setCategoryPageLoading(true);
+    try {
+      let page = await listAcquisitionCategoryPage(Math.max(0, requestedOffset), managementPageSize);
+      const validOffset = clampAcquisitionOffset(page.total, requestedOffset, managementPageSize);
+      if (validOffset !== page.offset) page = await listAcquisitionCategoryPage(validOffset, managementPageSize);
+      setCategoryPageItems(page.items);
+      setCategoryPageTotal(page.total);
+      setCategoryPageOffset(page.offset);
+    } finally {
+      setCategoryPageLoading(false);
+    }
+  }, []);
+
+  const loadRunPage = useCallback(async (requestedOffset: number) => {
+    setRunPageLoading(true);
+    try {
+      let page = await listAcquisitionRunPage(Math.max(0, requestedOffset), managementPageSize);
+      const validOffset = clampAcquisitionOffset(page.total, requestedOffset, managementPageSize);
+      if (validOffset !== page.offset) page = await listAcquisitionRunPage(validOffset, managementPageSize);
+      setRunPageItems(page.items);
+      setRunPageTotal(page.total);
+      setRunPageOffset(page.offset);
+    } finally {
+      setRunPageLoading(false);
+    }
   }, []);
 
   const loadImportBatchPage = useCallback(async (requestedOffset: number) => {
@@ -330,6 +391,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const refresh = useCallback(async () => {
     const requests: Promise<unknown>[] = [
       refreshReferenceData(),
+      loadSourcePage(sourcePageOffset),
+      loadCategoryPage(categoryPageOffset),
+      loadRunPage(runPageOffset),
       loadAssetPage(assetStatus, assetOffset),
       loadSimilarityPage(similarityOffset),
       loadImportBatchPage(importBatchOffset)
@@ -338,9 +402,21 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset));
     }
     await Promise.all(requests);
-  }, [assetOffset, assetStatus, importBatchItemOffset, importBatchOffset, loadAssetPage, loadImportBatchItemPage, loadImportBatchPage, loadSimilarityPage, refreshReferenceData, selectedImportBatchId, similarityOffset]);
+  }, [assetOffset, assetStatus, categoryPageOffset, importBatchItemOffset, importBatchOffset, loadAssetPage, loadCategoryPage, loadImportBatchItemPage, loadImportBatchPage, loadRunPage, loadSimilarityPage, loadSourcePage, refreshReferenceData, runPageOffset, selectedImportBatchId, similarityOffset, sourcePageOffset]);
 
   useEffect(() => { void refreshReferenceData().catch((error: Error) => setNotice(error.message)); }, [refreshReferenceData]);
+
+  useEffect(() => {
+    void loadSourcePage(sourcePageOffset).catch((error: Error) => setNotice(error.message));
+  }, [loadSourcePage, sourcePageOffset]);
+
+  useEffect(() => {
+    void loadCategoryPage(categoryPageOffset).catch((error: Error) => setNotice(error.message));
+  }, [categoryPageOffset, loadCategoryPage]);
+
+  useEffect(() => {
+    void loadRunPage(runPageOffset).catch((error: Error) => setNotice(error.message));
+  }, [loadRunPage, runPageOffset]);
 
   useEffect(() => {
     void loadSimilarityPage(similarityOffset).catch((error: Error) => setNotice(error.message));
@@ -365,12 +441,14 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   }, [importBatchItemOffset, loadImportBatchItemPage, selectedImportBatchId]);
 
   useEffect(() => {
-    if (!runs.some((run) => run.status === "pending" || run.status === "running")) return;
+    if (!runPageItems.some((run) => run.status === "pending" || run.status === "running")) return;
     const timer = window.setInterval(() => {
-      void listAcquisitionRuns().then(setRuns).catch((error: Error) => setNotice(error.message));
+      void Promise.all([listAcquisitionRuns(), loadRunPage(runPageOffset)])
+        .then(([nextRuns]) => setRuns(nextRuns))
+        .catch((error: Error) => setNotice(error.message));
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [runs]);
+  }, [loadRunPage, runPageItems, runPageOffset]);
 
   useEffect(() => {
     if (!importBatches.some((batch) => isAcquisitionImportBatchActive(batch.status))) return;
@@ -885,9 +963,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
 
     {tab === "sources" && <section className="acquisition-grid sources-layout">
       <div className="acquisition-section source-ledger-panel">
-        <div className="acquisition-section-title"><span>已维护站点</span><small>{sources.length} 个</small></div>
-        <div className="source-ledger">
-          {sources.map((source) => {
+        <div className="acquisition-section-title"><span>已维护站点</span><small>{sourcePageTotal} 个</small></div>
+        <div className={sourcePageLoading ? "source-ledger loading" : "source-ledger"} aria-busy={sourcePageLoading}>
+          {sourcePageItems.map((source) => {
             const bindable = compatibleScripts(source);
             const selectedKey = sourceScriptChoices[source.id] ?? bindable[0]?.key ?? "";
             return <article className="source-card" key={source.id}>
@@ -915,8 +993,13 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
               <small className="source-summary">{categories.filter((category) => category.source_id === source.id).length} 个分类 · {source.enabled ? "启用" : "停用"}</small>
             </article>;
           })}
-          {!sources.length && <p className="acquisition-empty">尚未维护采集站点。</p>}
+          {!sourcePageLoading && !sourcePageItems.length && <p className="acquisition-empty">尚未维护采集站点。</p>}
         </div>
+        {sourcePagePagination.totalPages > 1 && <div className="acquisition-pagination compact" aria-label="站点分页">
+          <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={sourcePageLoading || sourcePageOffset === 0} onClick={() => void loadSourcePage(sourcePageOffset - managementPageSize)}><ChevronLeft size={18} /></button>
+          <span className="pagination-summary">第 {sourcePagePagination.currentPage} / {sourcePagePagination.totalPages} 页 · {sourcePagePagination.rangeStart}-{sourcePagePagination.rangeEnd} / {sourcePageTotal}</span>
+          <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={sourcePageLoading || sourcePageOffset + managementPageSize >= sourcePageTotal} onClick={() => void loadSourcePage(sourcePageOffset + managementPageSize)}><ChevronRight size={18} /></button>
+        </div>}
       </div>
 
       {canEdit && <div className="acquisition-section acquisition-forms">
@@ -938,14 +1021,20 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       </div>}
 
       <div className="acquisition-section acquisition-category-list">
-        <div className="acquisition-section-title"><span>分类页面</span><small>{categories.length} 条</small></div>
-        {categories.map((category) => <article key={category.id} className="category-line">
+        <div className="acquisition-section-title"><span>分类页面</span><small>{categoryPageTotal} 条</small></div>
+        {categoryPageItems.map((category) => <article key={category.id} className="category-line">
           <ChevronRight size={15} /><div><strong>{category.name}</strong><small>{sourceById.get(category.source_id)?.name ?? "未知站点"} · {category.crawl_url}</small></div>
           <div className="category-command-row">
             {canEdit && <button type="button" className="icon-button" title="编辑分类" aria-label={`编辑分类 ${category.name}`} onClick={() => editCategory(category)}><Pencil size={15} /></button>}
             {canDelete && <button type="button" className="icon-button danger" title="删除分类" aria-label={`删除分类 ${category.name}`} disabled={busy} onClick={() => void perform(() => deleteAcquisitionCategory(category.id), "分类已删除")}><Trash2 size={15} /></button>}
           </div>
         </article>)}
+        {!categoryPageLoading && !categoryPageItems.length && <p className="acquisition-empty">尚未维护分类页面。</p>}
+        {categoryPagePagination.totalPages > 1 && <div className="acquisition-pagination compact" aria-label="分类分页">
+          <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={categoryPageLoading || categoryPageOffset === 0} onClick={() => void loadCategoryPage(categoryPageOffset - managementPageSize)}><ChevronLeft size={18} /></button>
+          <span className="pagination-summary">第 {categoryPagePagination.currentPage} / {categoryPagePagination.totalPages} 页 · {categoryPagePagination.rangeStart}-{categoryPagePagination.rangeEnd} / {categoryPageTotal}</span>
+          <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={categoryPageLoading || categoryPageOffset + managementPageSize >= categoryPageTotal} onClick={() => void loadCategoryPage(categoryPageOffset + managementPageSize)}><ChevronRight size={18} /></button>
+        </div>}
       </div>
     </section>}
 
@@ -968,8 +1057,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         }, "采集任务已进入队列")}><Play size={16} /> 开始采集</button>
       </div>
       <div className="acquisition-section run-list">
-        <div className="acquisition-section-title"><span>最近运行</span><small>{runs.length} 条</small></div>
-        {runs.map((run) => {
+        <div className="acquisition-section-title"><span>最近运行</span><small>{runPageTotal} 条</small></div>
+        {runPageItems.map((run) => {
           const configuration = getAcquisitionRunFormConfiguration(run, categories, sources, scripts);
           const isActive = run.status === "pending" || run.status === "running";
           const canLoadConfiguration = canAdd && !busy && !isActive && Boolean(configuration);
@@ -986,7 +1075,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
             </div>
           </article>;
         })}
-        {!runs.length && <p className="acquisition-empty">尚无运行记录。</p>}
+        {!runPageLoading && !runPageItems.length && <p className="acquisition-empty">尚无运行记录。</p>}
+        {runPagePagination.totalPages > 1 && <div className="acquisition-pagination compact" aria-label="运行记录分页">
+          <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={runPageLoading || runPageOffset === 0} onClick={() => void loadRunPage(runPageOffset - managementPageSize)}><ChevronLeft size={18} /></button>
+          <span className="pagination-summary">第 {runPagePagination.currentPage} / {runPagePagination.totalPages} 页 · {runPagePagination.rangeStart}-{runPagePagination.rangeEnd} / {runPageTotal}</span>
+          <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={runPageLoading || runPageOffset + managementPageSize >= runPageTotal} onClick={() => void loadRunPage(runPageOffset + managementPageSize)}><ChevronRight size={18} /></button>
+        </div>}
       </div>
     </section>}
 
