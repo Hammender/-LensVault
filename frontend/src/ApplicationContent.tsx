@@ -22,7 +22,8 @@ import {
   UploadCloud,
   UserPlus,
   UsersRound,
-  X
+  X,
+  XCircle
 } from "lucide-react";
 
 import Home from "./Home";
@@ -138,6 +139,7 @@ import {
   undoGalleryPhotoPersonSample,
   reRecognizeGalleryPhoto,
   reRecognizeUnknownGalleryPhotos,
+  clearUnknownGalleryPersonTags,
   updateGalleryPhotoRichText,
   uploadVideoPart,
   unbindPersonTag,
@@ -1152,6 +1154,34 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       window.alert(`已完成重新识别：共 ${result.total} 张，成功 ${result.succeeded} 张，失败 ${result.failed} 张。`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "批量重新识别未知人物失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleClearUnknownPersonTags() {
+    if (
+      !await confirm({
+        title: "清空未知人物标签",
+        message: "确认清空图库所有图片上的未知人物标签吗？仅当图片至少已绑定一个已知人物标签时才会移除其未知人物标签，否则该标签会保留。",
+        confirmLabel: "开始清空",
+        tone: "danger",
+      })
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await clearUnknownGalleryPersonTags();
+      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+      if (selectedPhoto) {
+        const detail = await getGalleryPhoto(selectedPhoto.id);
+        setSelectedPhoto(detail);
+      }
+      window.alert(`已完成清空：共 ${result.total} 张图片带未知人物标签，已清除 ${result.cleared} 张，保留 ${result.kept} 张。`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "批量清空未知人物标签失败。");
     } finally {
       setBusy(false);
     }
@@ -3381,6 +3411,10 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <button disabled={busy || unknownPersonCount === 0} onClick={() => void handleReRecognizeAllUnknownPhotos()}>
                   <RotateCcw size={15} aria-hidden="true" />
                   一键重新识别所有未知人物
+                </button>
+                <button disabled={busy || unknownPersonCount === 0} onClick={() => void handleClearUnknownPersonTags()}>
+                  <XCircle size={15} aria-hidden="true" />
+                  一键清空未知人物标签
                 </button>
               </div>
               <div className="micro-row section-actions people-command-row">

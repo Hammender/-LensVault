@@ -72,6 +72,7 @@ ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
     ("PATCH", "/api/gallery/photos/{photo_id}/rich-text"): "can_edit_gallery",
     ("POST", "/api/gallery/photos/{photo_id}/re-recognize"): "can_edit_gallery",
     ("POST", "/api/gallery/photos/re-recognize-unknown"): "can_edit_gallery",
+    ("POST", "/api/gallery/photos/clear-unknown-tags"): "can_edit_gallery",
     ("POST", "/api/video-category-tags"): "can_edit_videos",
     ("PATCH", "/api/video-category-tags/{tag_id}"): "can_edit_videos",
     ("DELETE", "/api/video-category-tags/{tag_id}"): "can_edit_videos",

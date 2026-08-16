@@ -1135,6 +1135,53 @@ class PictureService:
         )
         return {"total": len(photo_ids), "succeeded": succeeded, "failed": failed}
 
+    def clear_unknown_gallery_person_tags(self, db: Session, workspace_id: int | None) -> dict[str, int]:
+        """Remove unknown-person tags from gallery photos that already carry at least one known-person tag."""
+        photo_ids = db.scalars(
+            select(func.distinct(GalleryPhotoPersonTag.gallery_photo_id))
+            .join(GalleryPhoto, GalleryPhoto.id == GalleryPhotoPersonTag.gallery_photo_id)
+            .join(Person, Person.id == GalleryPhotoPersonTag.person_id)
+            .where(
+                GalleryPhoto.workspace_id == workspace_id,
+                Person.workspace_id == workspace_id,
+                Person.is_unknown.is_(True),
+            )
+            .order_by(GalleryPhotoPersonTag.gallery_photo_id.asc())
+        ).all()
+        cleared = 0
+        kept = 0
+        for photo_id in photo_ids:
+            known_count = db.scalar(
+                select(func.count(GalleryPhotoPersonTag.id))
+                .join(Person, Person.id == GalleryPhotoPersonTag.person_id)
+                .where(
+                    GalleryPhotoPersonTag.gallery_photo_id == photo_id,
+                    Person.is_unknown.is_(False),
+                )
+            ) or 0
+            if known_count == 0:
+                kept += 1
+                continue
+            unknown_links = db.scalars(
+                select(GalleryPhotoPersonTag)
+                .join(Person, Person.id == GalleryPhotoPersonTag.person_id)
+                .where(
+                    GalleryPhotoPersonTag.gallery_photo_id == photo_id,
+                    Person.is_unknown.is_(True),
+                )
+            ).all()
+            for link in unknown_links:
+                db.delete(link)
+            cleared += 1
+        db.commit()
+        logger.info(
+            "Completed clear_unknown_gallery_person_tags total=%d cleared=%d kept=%d",
+            len(photo_ids),
+            cleared,
+            kept,
+        )
+        return {"total": len(photo_ids), "cleared": cleared, "kept": kept}
+
     def re_recognize_gallery_photo(self, db: Session, photo: GalleryPhoto, *, commit: bool = True) -> GalleryPhoto:
         logger.info("Start re_recognize_gallery_photo photo_id=%s", photo.id)
         payload = self.storage.get_bytes(photo.object_key)

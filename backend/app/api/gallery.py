@@ -954,3 +954,11 @@ def re_recognize_unknown_gallery_photos(
     current: CurrentContext = Depends(require_context),
 ) -> dict[str, int]:
     return picture_service.re_recognize_unknown_gallery_photos(db, current.workspace_id)
+
+
+@router.post("/api/gallery/photos/clear-unknown-tags")
+def clear_unknown_gallery_person_tags(
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> dict[str, int]:
+    return picture_service.clear_unknown_gallery_person_tags(db, current.workspace_id)
