@@ -165,6 +165,22 @@ def ensure_similarity_scan_columns(engine: Engine) -> None:
         "gallery_similarity_features": {
             "mirror_phash": "ALTER TABLE gallery_similarity_features ADD COLUMN mirror_phash VARCHAR(64)",
             "mirror_dhash": "ALTER TABLE gallery_similarity_features ADD COLUMN mirror_dhash VARCHAR(64)",
+            "quality_version": "ALTER TABLE gallery_similarity_features ADD COLUMN quality_version VARCHAR(64)",
+            "resolution_score": "ALTER TABLE gallery_similarity_features ADD COLUMN resolution_score FLOAT",
+            "sharpness_score": "ALTER TABLE gallery_similarity_features ADD COLUMN sharpness_score FLOAT",
+            "artifact_score": "ALTER TABLE gallery_similarity_features ADD COLUMN artifact_score FLOAT",
+            "exposure_score": "ALTER TABLE gallery_similarity_features ADD COLUMN exposure_score FLOAT",
+            "primary_face_quality_score": "ALTER TABLE gallery_similarity_features ADD COLUMN primary_face_quality_score FLOAT",
+            "primary_face_embedding": "ALTER TABLE gallery_similarity_features ADD COLUMN primary_face_embedding BLOB",
+            "primary_face_dominant": "ALTER TABLE gallery_similarity_features ADD COLUMN primary_face_dominant BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "gallery_similarity_groups": {
+            "face_quality_enabled": "ALTER TABLE gallery_similarity_groups ADD COLUMN face_quality_enabled BOOLEAN NOT NULL DEFAULT 0",
+            "recommendation_status": "ALTER TABLE gallery_similarity_groups ADD COLUMN recommendation_status VARCHAR(32) NOT NULL DEFAULT 'unavailable'",
+        },
+        "gallery_similarity_group_members": {
+            "overall_quality_score": "ALTER TABLE gallery_similarity_group_members ADD COLUMN overall_quality_score FLOAT NOT NULL DEFAULT 0",
+            "face_quality_score": "ALTER TABLE gallery_similarity_group_members ADD COLUMN face_quality_score FLOAT",
         },
         "gallery_similarity_scans": {
             "scan_type": "ALTER TABLE gallery_similarity_scans ADD COLUMN scan_type VARCHAR(32) NOT NULL DEFAULT 'normal'",
@@ -176,6 +192,8 @@ def ensure_similarity_scan_columns(engine: Engine) -> None:
         },
     }
     with engine.begin() as connection:
+        added_member_overall_score = False
+        added_group_recommendation_status = False
         for table_name, columns in additions.items():
             if table_name not in tables:
                 continue
@@ -183,8 +201,32 @@ def ensure_similarity_scan_columns(engine: Engine) -> None:
             for column_name, statement in columns.items():
                 if column_name not in existing:
                     connection.execute(text(statement))
+                    if table_name == "gallery_similarity_group_members" and column_name == "overall_quality_score":
+                        added_member_overall_score = True
+                    if table_name == "gallery_similarity_groups" and column_name == "recommendation_status":
+                        added_group_recommendation_status = True
+        if added_member_overall_score:
+            connection.execute(
+                text(
+                    "UPDATE gallery_similarity_group_members "
+                    "SET overall_quality_score = quality_score"
+                )
+            )
+        if added_group_recommendation_status:
+            connection.execute(
+                text(
+                    "UPDATE gallery_similarity_groups SET recommendation_status = 'recommended' "
+                    "WHERE EXISTS ("
+                    "SELECT 1 FROM gallery_similarity_group_members "
+                    "WHERE gallery_similarity_group_members.group_id = gallery_similarity_groups.id "
+                    "AND gallery_similarity_group_members.recommended_keep = 1"
+                    ")"
+                )
+            )
         if "gallery_similarity_scans" in tables:
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_gallery_similarity_scans_scan_type ON gallery_similarity_scans (scan_type)"))
+        if "gallery_similarity_features" in tables:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_gallery_similarity_features_quality_version ON gallery_similarity_features (quality_version)"))
         if "acquisition_similarity_candidates" in tables:
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_acquisition_similarity_candidates_scan_type ON acquisition_similarity_candidates (scan_type)"))
             connection.execute(text("CREATE INDEX IF NOT EXISTS ix_acquisition_similarity_candidates_scan_scope ON acquisition_similarity_candidates (scan_scope)"))
@@ -293,6 +335,14 @@ def ensure_acquisition_schema(engine: Engine) -> None:
             "perceptual_phash": "ALTER TABLE acquisition_assets ADD COLUMN perceptual_phash VARCHAR(32)",
             "perceptual_dhash": "ALTER TABLE acquisition_assets ADD COLUMN perceptual_dhash VARCHAR(32)",
             "quality_score": "ALTER TABLE acquisition_assets ADD COLUMN quality_score FLOAT",
+            "quality_version": "ALTER TABLE acquisition_assets ADD COLUMN quality_version VARCHAR(64)",
+            "resolution_score": "ALTER TABLE acquisition_assets ADD COLUMN resolution_score FLOAT",
+            "sharpness_score": "ALTER TABLE acquisition_assets ADD COLUMN sharpness_score FLOAT",
+            "artifact_score": "ALTER TABLE acquisition_assets ADD COLUMN artifact_score FLOAT",
+            "exposure_score": "ALTER TABLE acquisition_assets ADD COLUMN exposure_score FLOAT",
+            "primary_face_quality_score": "ALTER TABLE acquisition_assets ADD COLUMN primary_face_quality_score FLOAT",
+            "primary_face_embedding": "ALTER TABLE acquisition_assets ADD COLUMN primary_face_embedding BLOB",
+            "primary_face_dominant": "ALTER TABLE acquisition_assets ADD COLUMN primary_face_dominant BOOLEAN NOT NULL DEFAULT 0",
         },
         "acquisition_import_batches": {
             "is_rich_text": "ALTER TABLE acquisition_import_batches ADD COLUMN is_rich_text BOOLEAN NOT NULL DEFAULT 0",
@@ -324,6 +374,12 @@ def ensure_acquisition_schema(engine: Engine) -> None:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_acquisition_assets_perceptual_phash "
                     "ON acquisition_assets (perceptual_phash)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_acquisition_assets_quality_version "
+                    "ON acquisition_assets (quality_version)"
                 )
             )
             connection.execute(

@@ -58,6 +58,8 @@ from app.services.acquisition_adapters import (
 from app.services.similarity import (
     DinoV2FeatureExtractor,
     GallerySimilarityScanner,
+    PrimaryFaceAssessment,
+    assess_primary_face,
     compute_mirrored_perceptual_hashes,
     compute_orb_features,
     compute_perceptual_features,
@@ -201,12 +203,14 @@ class AcquisitionService:
         settings: Settings | None = None,
         similarity_extractor: DinoV2FeatureExtractor | None = None,
         similarity_scanner: GallerySimilarityScanner | None = None,
+        face_service: object | None = None,
     ) -> None:
         self.storage = storage
         self.pictures = pictures
         self.settings = settings or get_settings()
         self._download_policy = threading.local()
         self.similarity_scanner = similarity_scanner
+        self.face_service = face_service
         self.similarity_extractor = similarity_extractor or (
             similarity_scanner.extractor if similarity_scanner is not None else DinoV2FeatureExtractor(self.settings)
         )
@@ -1319,7 +1323,30 @@ class AcquisitionService:
             try:
                 payload = self.storage.get_bytes(asset.object_key or "")
                 asset_payloads[asset.id] = payload
-                fingerprints[asset.id] = compute_perceptual_features(payload)
+                perceptual = compute_perceptual_features(payload)
+                fingerprints[asset.id] = perceptual
+                asset.blur_score = getattr(perceptual, "blur_score", asset.blur_score)
+                asset.quality_score = getattr(perceptual, "quality_score", asset.quality_score)
+                asset.quality_version = getattr(
+                    self.settings,
+                    "gallery_similarity_quality_version",
+                    "technical-quality-v2",
+                )
+                asset.resolution_score = getattr(perceptual, "resolution_score", asset.resolution_score)
+                asset.sharpness_score = getattr(perceptual, "sharpness_score", asset.sharpness_score)
+                asset.artifact_score = getattr(perceptual, "artifact_score", asset.artifact_score)
+                asset.exposure_score = getattr(perceptual, "exposure_score", asset.exposure_score)
+                primary_face = PrimaryFaceAssessment(None, None, False)
+                if self.face_service is not None:
+                    try:
+                        detections = self.face_service.detect_faces(payload)  # type: ignore[attr-defined]
+                        primary_face = assess_primary_face(payload, detections, self.settings)
+                    except Exception:
+                        primary_face = PrimaryFaceAssessment(None, None, False)
+                asset.primary_face_quality_score = primary_face.quality_score
+                asset.primary_face_embedding = primary_face.embedding
+                asset.primary_face_dominant = primary_face.dominant
+                db.add(asset)
                 if scan_type == "mirror":
                     mirror_hashes[asset.id] = compute_mirrored_perceptual_hashes(payload)
             except Exception:

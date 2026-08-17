@@ -878,7 +878,12 @@ class PictureService:
         deleted = 0
         photo_ids = [photo.id for photo in photos]
         workspace_ids = {int(photo.workspace_id) for photo in photos if photo.workspace_id is not None}
-        cleanup_deleted_similarity_photos(db, self.vector_store, photo_ids)
+        cleanup_deleted_similarity_photos(
+            db,
+            self.vector_store,
+            photo_ids,
+            self.settings.gallery_similarity_quality_min_margin,
+        )
         for workspace_id in workspace_ids:
             mark_similarity_scans_stale(db, workspace_id)
         for photo in photos:

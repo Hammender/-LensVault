@@ -642,6 +642,12 @@
     ]
   },
   {
+    "path": "/api/gallery/photos/clear-unknown-tags",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/video-category-tags",
     "methods": [
       "GET"

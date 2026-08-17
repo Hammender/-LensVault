@@ -116,6 +116,10 @@ export type AcquisitionAsset = {
   width: number | null;
   height: number | null;
   blur_score: number | null;
+  overall_quality_score: number | null;
+  face_quality_score: number | null;
+  similarity_quality_score: number | null;
+  recommended_keep: boolean;
   quality_warnings: string[];
   status: string;
   created_at: string;
@@ -204,10 +208,14 @@ export type AcquisitionSimilarityGroup = {
   id: string;
   max_score: number;
   average_score: number;
+  face_quality_enabled: boolean;
+  recommendation_status: "recommended" | "close_quality" | "unavailable";
   members: AcquisitionAsset[];
   gallery_members: Array<{
     photo: GalleryPhotoListItem;
     score: number;
+    overall_quality_score: number;
+    face_quality_score: number | null;
     quality_score: number;
     recommended_keep: boolean;
   }>;

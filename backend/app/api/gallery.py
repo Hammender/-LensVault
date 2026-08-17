@@ -237,6 +237,8 @@ def _gallery_similarity_group_read(db: Session, group: GallerySimilarityGroup) -
             GallerySimilarityMemberRead(
                 photo=_gallery_photo_to_list_item(photo),
                 score_to_representative=member.score_to_representative,
+                overall_quality_score=member.overall_quality_score,
+                face_quality_score=member.face_quality_score,
                 quality_score=member.quality_score,
                 recommended_keep=member.recommended_keep,
             )
@@ -248,6 +250,8 @@ def _gallery_similarity_group_read(db: Session, group: GallerySimilarityGroup) -
         review_status=group.review_status,
         min_score=group.min_score,
         average_score=group.average_score,
+        face_quality_enabled=group.face_quality_enabled,
+        recommendation_status=group.recommendation_status,
         people=[person_to_read(db, person) for person in people],
         members=members,
     )

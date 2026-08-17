@@ -13,6 +13,7 @@ from PIL import Image, ImageOps
 
 from app.core.config import Settings
 from app.models import (
+    FaceRecord,
     GalleryPhoto,
     GalleryPhotoPersonTag,
     GallerySimilarityFeature,
@@ -34,6 +35,33 @@ class PerceptualFeatures:
     dhash: str
     blur_score: float
     quality_score: float
+    resolution_score: float
+    sharpness_score: float
+    artifact_score: float
+    exposure_score: float
+
+
+@dataclass(frozen=True)
+class QualityRecommendation:
+    recommended_id: int | str | None
+    status: str
+
+
+@dataclass(frozen=True)
+class ImageQualityAssessment:
+    overall_score: float
+    resolution_score: float
+    sharpness_score: float
+    artifact_score: float
+    exposure_score: float
+    blur_score: float
+
+
+@dataclass(frozen=True)
+class PrimaryFaceAssessment:
+    quality_score: float | None
+    embedding: bytes | None
+    dominant: bool
 
 
 @dataclass(frozen=True)
@@ -106,26 +134,175 @@ def ensure_perceptual_feature_dependencies() -> None:
         raise RuntimeError(f"图片分析依赖不可用：{packages}。请在后端运行环境重新安装 requirements.txt。")
 
 
-def compute_perceptual_features(payload: bytes) -> PerceptualFeatures:
+def assess_image_quality(image: Image.Image) -> ImageQualityAssessment:
+    """计算有界技术质量分；文件体积不参与评分。"""
     ensure_perceptual_feature_dependencies()
     import cv2
+
+    pixels = max(image.width * image.height, 1)
+    analysis = image.copy()
+    if max(analysis.size) > 1600:
+        analysis.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    gray = cv2.cvtColor(np.asarray(analysis), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    analysis.close()
+
+    sobel_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    gradient = cv2.magnitude(sobel_x, sobel_y)
+    mean_gradient = float(np.mean(gradient))
+    sharpness = 1.0 - math.exp(-18.0 * mean_gradient)
+
+    smoothed = cv2.GaussianBlur(gray, (0, 0), 1.0)
+    residual = np.abs(gray - smoothed)
+    low_detail = gradient <= float(np.percentile(gradient, 60))
+    noise = float(np.mean(residual[low_detail])) if np.any(low_detail) else float(np.mean(residual))
+    noise_quality = math.exp(-22.0 * noise)
+
+    horizontal = np.abs(np.diff(gray, axis=1))
+    vertical = np.abs(np.diff(gray, axis=0))
+    boundary_parts = [horizontal[:, 7::8].ravel(), vertical[7::8, :].ravel()]
+    interior_parts = [horizontal[:, 3::8].ravel(), vertical[3::8, :].ravel()]
+    boundary = float(np.mean(np.concatenate([part for part in boundary_parts if part.size]))) if any(
+        part.size for part in boundary_parts
+    ) else 0.0
+    interior = float(np.mean(np.concatenate([part for part in interior_parts if part.size]))) if any(
+        part.size for part in interior_parts
+    ) else boundary
+    block_excess = max(0.0, boundary - interior)
+    block_quality = math.exp(-24.0 * block_excess)
+    artifact_quality = math.sqrt(noise_quality * block_quality)
+
+    clipped_ratio = float(np.mean((gray <= 0.01) | (gray >= 0.99)))
+    contrast = float(np.percentile(gray, 95) - np.percentile(gray, 5))
+    exposure_quality = max(0.0, min(1.0, 0.65 * (1.0 - clipped_ratio) + 0.35 * min(1.0, contrast / 0.55)))
+    resolution_quality = max(0.0, min(1.0, (math.log2(pixels) - 16.0) / 8.0))
+    effective_detail = sharpness * artifact_quality
+    overall = 100.0 * (
+        0.25 * resolution_quality
+        + 0.40 * effective_detail
+        + 0.20 * artifact_quality
+        + 0.15 * exposure_quality
+    )
+    blur_score = float(cv2.Laplacian(gray, cv2.CV_32F).var() * 255.0 * 255.0)
+    return ImageQualityAssessment(
+        overall_score=round(max(0.0, min(100.0, overall)), 3),
+        resolution_score=round(100.0 * resolution_quality, 3),
+        sharpness_score=round(100.0 * effective_detail, 3),
+        artifact_score=round(100.0 * artifact_quality, 3),
+        exposure_score=round(100.0 * exposure_quality, 3),
+        blur_score=blur_score,
+    )
+
+
+def choose_quality_recommendation(
+    scores: dict[int | str, float], minimum_margin: float
+) -> QualityRecommendation:
+    ordered = sorted(scores.items(), key=lambda item: (-item[1], str(item[0])))
+    if not ordered:
+        return QualityRecommendation(None, "unavailable")
+    if len(ordered) == 1:
+        return QualityRecommendation(ordered[0][0], "recommended")
+    if ordered[0][1] - ordered[1][1] < minimum_margin:
+        return QualityRecommendation(None, "close_quality")
+    return QualityRecommendation(ordered[0][0], "recommended")
+
+
+def compose_group_quality_scores(
+    entries: dict[int | str, tuple[float, float | None, bytes | None, bool]],
+    face_threshold: float,
+) -> tuple[dict[int | str, float], bool]:
+    if not entries:
+        return {}, False
+    face_enabled = all(face_score is not None and embedding and dominant for _, face_score, embedding, dominant in entries.values())
+    if face_enabled:
+        vectors = {
+            member_id: np.frombuffer(embedding or b"", dtype=np.float32)
+            for member_id, (_, _, embedding, _) in entries.items()
+        }
+        vector_list = list(vectors.values())
+        reference = vector_list[0]
+        face_enabled = bool(reference.size) and all(
+            left.shape == right.shape and cosine_similarity(left, right) >= face_threshold
+            for index, left in enumerate(vector_list)
+            for right in vector_list[index + 1 :]
+        )
+    scores = {
+        member_id: (
+            0.55 * overall_score + 0.45 * float(face_score)
+            if face_enabled and face_score is not None
+            else overall_score
+        )
+        for member_id, (overall_score, face_score, _embedding, _dominant) in entries.items()
+    }
+    return scores, face_enabled
+
+
+def assess_primary_face(
+    payload: bytes,
+    detections: list[Any],
+    settings: Settings,
+) -> PrimaryFaceAssessment:
+    image = open_normalized_image(payload)
+    try:
+        eligible: list[tuple[float, Any]] = []
+        image_area = max(1.0, float(image.width * image.height))
+        for face in detections:
+            score = getattr(face, "score", None)
+            bbox = getattr(face, "bbox", None)
+            face_size = float(getattr(face, "face_size", 0.0) or 0.0)
+            embedding = getattr(face, "embedding", None)
+            if (
+                bbox is None
+                or embedding is None
+                or score is None
+                or float(score) < settings.face_sample_min_detection_score
+                or face_size < settings.face_sample_min_size
+            ):
+                continue
+            area = max(0.0, float(bbox[2] - bbox[0])) * max(0.0, float(bbox[3] - bbox[1]))
+            if area / image_area >= 0.01:
+                eligible.append((area, face))
+        eligible.sort(key=lambda item: item[0], reverse=True)
+        if not eligible or (len(eligible) > 1 and eligible[0][0] < eligible[1][0] * 1.5):
+            return PrimaryFaceAssessment(None, None, False)
+        face = eligible[0][1]
+        bbox = face.bbox
+        left = max(0, min(image.width - 1, int(math.floor(float(bbox[0])))))
+        top = max(0, min(image.height - 1, int(math.floor(float(bbox[1])))))
+        right = max(left + 1, min(image.width, int(math.ceil(float(bbox[2])))))
+        bottom = max(top + 1, min(image.height, int(math.ceil(float(bbox[3])))))
+        crop = image.crop((left, top, right, bottom))
+        try:
+            quality_score = assess_image_quality(crop).overall_score
+        finally:
+            crop.close()
+        embedding = np.asarray(face.embedding, dtype=np.float32)
+        norm = float(np.linalg.norm(embedding))
+        if not norm:
+            return PrimaryFaceAssessment(None, None, False)
+        return PrimaryFaceAssessment(quality_score, (embedding / norm).astype(np.float32).tobytes(), True)
+    finally:
+        image.close()
+
+
+def compute_perceptual_features(payload: bytes) -> PerceptualFeatures:
+    ensure_perceptual_feature_dependencies()
     import imagehash
 
     image = open_normalized_image(payload)
-    pixels = max(image.width * image.height, 1)
     phash = str(imagehash.phash(image))
     dhash = str(imagehash.dhash(image))
-    if max(image.size) > 1024:
-        image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
-    gray = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
-    blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    assessment = assess_image_quality(image)
     image.close()
-    quality_score = math.log2(pixels) + math.log1p(max(blur_score, 0.0))
     return PerceptualFeatures(
         phash=phash,
         dhash=dhash,
-        blur_score=blur_score,
-        quality_score=quality_score,
+        blur_score=assessment.blur_score,
+        quality_score=assessment.overall_score,
+        resolution_score=assessment.resolution_score,
+        sharpness_score=assessment.sharpness_score,
+        artifact_score=assessment.artifact_score,
+        exposure_score=assessment.exposure_score,
     )
 
 
@@ -311,11 +488,13 @@ class GallerySimilarityScanner:
         vector_store: QdrantVectorStore,
         settings: Settings,
         extractor: DinoV2FeatureExtractor | None = None,
+        face_service: Any | None = None,
     ) -> None:
         self.storage = storage
         self.vector_store = vector_store
         self.settings = settings
         self.extractor = extractor or DinoV2FeatureExtractor(settings)
+        self.face_service = face_service
 
     def _load_scope(
         self, db: Session, workspace_id: int, person_id: int | None
@@ -343,6 +522,7 @@ class GallerySimilarityScanner:
         include_vectors: bool = True,
     ) -> tuple[dict[int, GallerySimilarityFeature], dict[int, np.ndarray]]:
         version = self.settings.gallery_similarity_model_version
+        quality_version = self.settings.gallery_similarity_quality_version
         cached = {
             feature.gallery_photo_id: feature
             for feature in db.scalars(
@@ -355,7 +535,8 @@ class GallerySimilarityScanner:
         for photo_id, photo in photos.items():
             feature = cached.get(photo_id)
             base_changed = feature is None or feature.sha256 != photo.sha256 or feature.feature_version != version
-            if base_changed or not feature.mirror_phash or not feature.mirror_dhash:
+            quality_changed = feature is None or feature.sha256 != photo.sha256 or feature.quality_version != quality_version
+            if base_changed or quality_changed or not feature.mirror_phash or not feature.mirror_dhash:
                 payload = self.storage.get_bytes(photo.object_key)
                 perceptual = compute_perceptual_features(payload)
                 mirror_phash, mirror_dhash = compute_mirrored_perceptual_hashes(payload)
@@ -370,6 +551,23 @@ class GallerySimilarityScanner:
                 feature.mirror_dhash = mirror_dhash
                 feature.blur_score = perceptual.blur_score
                 feature.quality_score = perceptual.quality_score
+                feature.quality_version = quality_version
+                feature.resolution_score = perceptual.resolution_score
+                feature.sharpness_score = perceptual.sharpness_score
+                feature.artifact_score = perceptual.artifact_score
+                feature.exposure_score = perceptual.exposure_score
+                if quality_changed and self.face_service is not None:
+                    try:
+                        primary_face = assess_primary_face(
+                            payload,
+                            self.face_service.detect_faces(payload),
+                            self.settings,
+                        )
+                    except Exception:
+                        primary_face = PrimaryFaceAssessment(None, None, False)
+                    feature.primary_face_quality_score = primary_face.quality_score
+                    feature.primary_face_embedding = primary_face.embedding
+                    feature.primary_face_dominant = primary_face.dominant
                 if base_changed:
                     feature.vector_point_id = None
                     feature.vector_ready = False
@@ -439,6 +637,59 @@ class GallerySimilarityScanner:
     ) -> tuple[dict[int, GallerySimilarityFeature], dict[int, np.ndarray]]:
         """为其他受控工作流复用图库相似特征缓存和 Qdrant 向量。"""
         return self._ensure_features(db, photos, progress, include_vectors=include_vectors)
+
+    def _group_quality_scores(
+        self,
+        db: Session,
+        photos: dict[int, GalleryPhoto],
+        features: dict[int, GallerySimilarityFeature],
+        member_ids: tuple[int, ...],
+        person_ids: list[int],
+    ) -> tuple[dict[int, float], dict[int, float | None], bool]:
+        overall_scores = {photo_id: float(features[photo_id].quality_score) for photo_id in member_ids}
+        if len(person_ids) != 1:
+            return overall_scores, {photo_id: None for photo_id in member_ids}, False
+        person_id = person_ids[0]
+        faces = db.scalars(
+            select(FaceRecord).where(
+                FaceRecord.gallery_photo_id.in_(member_ids),
+                FaceRecord.matched_person_id == person_id,
+                FaceRecord.needs_review.is_(False),
+                FaceRecord.detection_score >= self.settings.face_sample_min_detection_score,
+                FaceRecord.face_size >= self.settings.face_sample_min_size,
+            )
+        ).all()
+        faces_by_photo: dict[int, list[FaceRecord]] = {}
+        for face in faces:
+            if face.gallery_photo_id is not None:
+                faces_by_photo.setdefault(face.gallery_photo_id, []).append(face)
+        if any(photo_id not in faces_by_photo for photo_id in member_ids):
+            return overall_scores, {photo_id: None for photo_id in member_ids}, False
+
+        face_scores: dict[int, float | None] = {}
+        for photo_id in member_ids:
+            face = max(
+                faces_by_photo[photo_id],
+                key=lambda item: (item.face_size or 0.0, item.detection_score or 0.0),
+            )
+            image = open_normalized_image(self.storage.get_bytes(photos[photo_id].object_key))
+            try:
+                left = max(0, min(image.width - 1, int(math.floor(face.bbox_left))))
+                top = max(0, min(image.height - 1, int(math.floor(face.bbox_top))))
+                right = max(left + 1, min(image.width, int(math.ceil(face.bbox_right))))
+                bottom = max(top + 1, min(image.height, int(math.ceil(face.bbox_bottom))))
+                crop = image.crop((left, top, right, bottom))
+                try:
+                    face_scores[photo_id] = assess_image_quality(crop).overall_score
+                finally:
+                    crop.close()
+            finally:
+                image.close()
+        combined = {
+            photo_id: 0.55 * overall_scores[photo_id] + 0.45 * float(face_scores[photo_id])
+            for photo_id in member_ids
+        }
+        return combined, face_scores, True
 
     def _candidate_pairs(
         self,
@@ -626,17 +877,29 @@ class GallerySimilarityScanner:
             live_group_person_ids = sorted(person_id for person_id in person_ids if person_id in live_person_ids)
             if len(live_member_ids) < 2 or not live_group_person_ids:
                 continue
+            quality_scores, face_scores, face_quality_enabled = self._group_quality_scores(
+                db,
+                photos,
+                features,
+                live_member_ids,
+                live_group_person_ids,
+            )
+            recommendation = choose_quality_recommendation(
+                quality_scores,
+                self.settings.gallery_similarity_quality_min_margin,
+            )
             group = GallerySimilarityGroup(
                 scan_id=scan.id,
                 ordinal=published_group_count + 1,
                 tier=tier,
                 min_score=cluster.min_score,
                 average_score=cluster.average_score,
+                face_quality_enabled=face_quality_enabled,
+                recommendation_status=recommendation.status,
             )
             db.add(group)
             db.flush()
-            recommended_id = max(live_member_ids, key=lambda photo_id: features[photo_id].quality_score)
-            representative_id = recommended_id
+            representative_id = max(live_member_ids, key=lambda photo_id: quality_scores[photo_id])
             score_map = near_scores if tier == "near_duplicate" else scene_scores
             for photo_id in live_member_ids:
                 score = 1.0 if photo_id == representative_id else score_map.get(tuple(sorted((photo_id, representative_id))), cluster.min_score)
@@ -646,6 +909,8 @@ class GallerySimilarityScanner:
                             "group_id",
                             "gallery_photo_id",
                             "score_to_representative",
+                            "overall_quality_score",
+                            "face_quality_score",
                             "quality_score",
                             "recommended_keep",
                         ],
@@ -654,7 +919,9 @@ class GallerySimilarityScanner:
                             GalleryPhoto.id,
                             literal(score),
                             literal(features[photo_id].quality_score),
-                            literal(photo_id == recommended_id),
+                            literal(face_scores[photo_id]),
+                            literal(quality_scores[photo_id]),
+                            literal(photo_id == recommendation.recommended_id),
                         ).where(
                             GalleryPhoto.id == photo_id,
                             GalleryPhoto.workspace_id == scan.workspace_id,
@@ -684,7 +951,10 @@ def mark_similarity_scans_stale(db: Session, workspace_id: int, person_ids: set[
 
 
 def cleanup_deleted_similarity_photos(
-    db: Session, vector_store: QdrantVectorStore, photo_ids: list[int]
+    db: Session,
+    vector_store: QdrantVectorStore,
+    photo_ids: list[int],
+    minimum_quality_margin: float = 3.0,
 ) -> None:
     if not photo_ids:
         return
@@ -722,8 +992,16 @@ def cleanup_deleted_similarity_photos(
         if len(members) < 2:
             db.execute(delete(GallerySimilarityGroup).where(GallerySimilarityGroup.id == group_id))
             continue
-        for index, member in enumerate(members):
-            member.recommended_keep = index == 0
+        recommendation = choose_quality_recommendation(
+            {member.gallery_photo_id: member.quality_score for member in members},
+            minimum_quality_margin,
+        )
+        group = db.get(GallerySimilarityGroup, group_id)
+        if group is not None:
+            group.recommendation_status = recommendation.status
+            db.add(group)
+        for member in members:
+            member.recommended_keep = member.gallery_photo_id == recommendation.recommended_id
             db.add(member)
     db.flush()
     for scan_id in affected_scan_ids:

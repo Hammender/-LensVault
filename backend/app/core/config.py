@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     gallery_similarity_qdrant_collection: str = "pictureshow_gallery_similarity_dinov2_base_v1"
     gallery_similarity_near_threshold: float = 0.92
     gallery_similarity_scene_threshold: float = 0.88
+    gallery_similarity_quality_version: str = "technical-quality-v2"
+    gallery_similarity_quality_min_margin: float = 3.0
 
     acquisition_download_workers: int = 8
     acquisition_download_timeout_seconds: int = 30

@@ -41,6 +41,8 @@ class GallerySimilarityScanOverview(BaseModel):
 class GallerySimilarityMemberRead(BaseModel):
     photo: GalleryPhotoListItem
     score_to_representative: float
+    overall_quality_score: float
+    face_quality_score: float | None
     quality_score: float
     recommended_keep: bool
 
@@ -52,6 +54,8 @@ class GallerySimilarityGroupRead(BaseModel):
     review_status: Literal["pending", "dismissed"]
     min_score: float
     average_score: float
+    face_quality_enabled: bool
+    recommendation_status: Literal["recommended", "close_quality", "unavailable"]
     people: list[PersonRead]
     members: list[GallerySimilarityMemberRead]
 

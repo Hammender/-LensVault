@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.models import (
+    FaceRecord,
     GalleryPhoto,
     GalleryPhotoPersonTag,
     GallerySimilarityFeature,
@@ -26,8 +27,11 @@ from app.services.similarity import (
     DinoV2FeatureExtractor,
     GallerySimilarityScanner,
     SimilarityCandidate,
+    assess_primary_face,
+    choose_quality_recommendation,
     cleanup_deleted_similarity_photos,
     complete_link_clusters,
+    compose_group_quality_scores,
     compute_mirrored_perceptual_hashes,
     compute_perceptual_features,
     cosine_similarity,
@@ -141,6 +145,119 @@ def test_similarity_math_and_complete_link_prevent_chain_merging() -> None:
         0.90,
     )
     assert [cluster.member_ids for cluster in clusters] == [(1, 2)]
+
+
+def test_quality_score_does_not_depend_on_encoded_file_size() -> None:
+    image = Image.new("RGB", (256, 256), "white")
+    draw = ImageDraw.Draw(image)
+    for offset in range(0, 256, 16):
+        draw.line((0, offset, 255, 255 - offset), fill=(offset, 60, 180), width=3)
+    compact = BytesIO()
+    large = BytesIO()
+    image.save(compact, format="PNG", compress_level=9)
+    image.save(large, format="PNG", compress_level=0)
+    image.close()
+
+    compact_features = compute_perceptual_features(compact.getvalue())
+    large_features = compute_perceptual_features(large.getvalue())
+
+    assert len(compact.getvalue()) < len(large.getvalue())
+    assert compact_features.quality_score == large_features.quality_score
+
+
+def test_quality_recommendation_requires_minimum_margin() -> None:
+    close = choose_quality_recommendation({"small": 78.0, "large": 80.999}, 3.0)
+    clear = choose_quality_recommendation({"small": 78.0, "large": 81.0}, 3.0)
+
+    assert close.recommended_id is None
+    assert close.status == "close_quality"
+    assert clear.recommended_id == "large"
+    assert clear.status == "recommended"
+
+
+def test_group_quality_uses_faces_only_for_same_dominant_face() -> None:
+    face_a = np.array([1.0, 0.0], dtype=np.float32).tobytes()
+    face_a_near = np.array([0.99, 0.01], dtype=np.float32).tobytes()
+    face_b = np.array([0.0, 1.0], dtype=np.float32).tobytes()
+
+    weighted, enabled = compose_group_quality_scores(
+        {1: (70.0, 90.0, face_a, True), 2: (80.0, 60.0, face_a_near, True)},
+        0.5,
+    )
+    fallback, fallback_enabled = compose_group_quality_scores(
+        {1: (70.0, 90.0, face_a, True), 2: (80.0, 60.0, face_b, True)},
+        0.5,
+    )
+
+    assert enabled is True
+    assert weighted == pytest.approx({1: 79.0, 2: 71.0})
+    assert fallback_enabled is False
+    assert fallback == {1: 70.0, 2: 80.0}
+
+
+def test_primary_face_rejects_ambiguous_crowd() -> None:
+    payload = image_bytes((120, 100, 80))
+    detections = [
+        SimpleNamespace(score=0.9, bbox=(4, 4, 44, 54), face_size=40, embedding=np.array([1.0, 0.0])),
+        SimpleNamespace(score=0.9, bbox=(20, 8, 60, 56), face_size=40, embedding=np.array([0.0, 1.0])),
+    ]
+
+    assessment = assess_primary_face(payload, detections, Settings())
+
+    assert assessment.dominant is False
+    assert assessment.quality_score is None
+    assert assessment.embedding is None
+
+
+def test_gallery_quality_uses_only_the_single_confirmed_group_person(db_session: Session) -> None:
+    _, person, photos = create_scope(db_session, photo_count=2)
+    for photo in photos:
+        db_session.add(
+            FaceRecord(
+                gallery_photo_id=photo.id,
+                matched_person_id=person.id,
+                bbox_left=0,
+                bbox_top=0,
+                bbox_right=64,
+                bbox_bottom=64,
+                detection_score=0.9,
+                face_size=64,
+                needs_review=False,
+            )
+        )
+    db_session.flush()
+    scanner = GallerySimilarityScanner(
+        FakeStorage({photo.object_key: image_bytes((120, 100, 80)) for photo in photos}),
+        FakeVectorStore(),
+        Settings(),
+        FakeExtractor(),
+    )
+    features = {
+        photos[0].id: GallerySimilarityFeature(gallery_photo_id=photos[0].id, quality_score=60.0),
+        photos[1].id: GallerySimilarityFeature(gallery_photo_id=photos[1].id, quality_score=70.0),
+    }
+
+    weighted, face_scores, enabled = scanner._group_quality_scores(
+        db_session,
+        {photo.id: photo for photo in photos},
+        features,
+        tuple(photo.id for photo in photos),
+        [person.id],
+    )
+    fallback, fallback_face_scores, fallback_enabled = scanner._group_quality_scores(
+        db_session,
+        {photo.id: photo for photo in photos},
+        features,
+        tuple(photo.id for photo in photos),
+        [person.id, person.id + 1],
+    )
+
+    assert enabled is True
+    assert all(score is not None for score in face_scores.values())
+    assert weighted != {photos[0].id: 60.0, photos[1].id: 70.0}
+    assert fallback_enabled is False
+    assert fallback_face_scores == {photos[0].id: None, photos[1].id: None}
+    assert fallback == {photos[0].id: 60.0, photos[1].id: 70.0}
 
 
 def test_dinov2_reports_incomplete_local_model(tmp_path: Path) -> None:
@@ -435,7 +552,7 @@ def test_dismissed_similarity_group_is_filtered_from_scan_results(db_session: Se
     assert refreshed.items == []
 
 
-def test_cleanup_deleted_photo_recommends_best_remaining_member(db_session: Session) -> None:
+def test_cleanup_deleted_photo_does_not_recommend_when_remaining_quality_is_close(db_session: Session) -> None:
     workspace, person, photos = create_scope(db_session)
     scan = GallerySimilarityScan(
         id="scan-cleanup",
@@ -486,7 +603,8 @@ def test_cleanup_deleted_photo_recommends_best_remaining_member(db_session: Sess
 
     assert vector_store.deleted == [f"photo-{photos[2].id}"]
     assert [member.gallery_photo_id for member in members] == [photos[1].id, photos[0].id]
-    assert [member.recommended_keep for member in members] == [True, False]
+    assert [member.recommended_keep for member in members] == [False, False]
+    assert db_session.get(GallerySimilarityGroup, group.id).recommendation_status == "close_quality"
     assert db_session.get(GallerySimilarityScan, scan.id).group_count == 1
 
     cleanup_deleted_similarity_photos(db_session, vector_store, [photos[1].id])

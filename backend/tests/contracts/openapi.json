@@ -47,6 +47,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "face_quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Face Quality Score"
+          },
           "filename": {
             "title": "Filename",
             "type": "string"
@@ -77,6 +88,17 @@
             ],
             "title": "Original Url"
           },
+          "overall_quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Quality Score"
+          },
           "preview_url": {
             "anyOf": [
               {
@@ -95,9 +117,25 @@
             "title": "Quality Warnings",
             "type": "array"
           },
+          "recommended_keep": {
+            "default": false,
+            "title": "Recommended Keep",
+            "type": "boolean"
+          },
           "sha256": {
             "title": "Sha256",
             "type": "string"
+          },
+          "similarity_quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity Quality Score"
           },
           "size_bytes": {
             "title": "Size Bytes",
@@ -1188,6 +1226,21 @@
       },
       "AcquisitionSimilarityGalleryMemberRead": {
         "properties": {
+          "face_quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Face Quality Score"
+          },
+          "overall_quality_score": {
+            "title": "Overall Quality Score",
+            "type": "number"
+          },
           "photo": {
             "$ref": "#/components/schemas/GalleryPhotoListItem"
           },
@@ -1208,6 +1261,7 @@
         "required": [
           "photo",
           "score",
+          "overall_quality_score",
           "quality_score"
         ],
         "title": "AcquisitionSimilarityGalleryMemberRead",
@@ -1218,6 +1272,11 @@
           "average_score": {
             "title": "Average Score",
             "type": "number"
+          },
+          "face_quality_enabled": {
+            "default": false,
+            "title": "Face Quality Enabled",
+            "type": "boolean"
           },
           "gallery_members": {
             "items": {
@@ -1240,6 +1299,16 @@
             },
             "title": "Members",
             "type": "array"
+          },
+          "recommendation_status": {
+            "default": "unavailable",
+            "enum": [
+              "recommended",
+              "close_quality",
+              "unavailable"
+            ],
+            "title": "Recommendation Status",
+            "type": "string"
           }
         },
         "required": [
@@ -2633,6 +2702,10 @@
             "title": "Average Score",
             "type": "number"
           },
+          "face_quality_enabled": {
+            "title": "Face Quality Enabled",
+            "type": "boolean"
+          },
           "id": {
             "title": "Id",
             "type": "integer"
@@ -2659,6 +2732,15 @@
             "title": "People",
             "type": "array"
           },
+          "recommendation_status": {
+            "enum": [
+              "recommended",
+              "close_quality",
+              "unavailable"
+            ],
+            "title": "Recommendation Status",
+            "type": "string"
+          },
           "review_status": {
             "enum": [
               "pending",
@@ -2679,6 +2761,8 @@
           "review_status",
           "min_score",
           "average_score",
+          "face_quality_enabled",
+          "recommendation_status",
           "people",
           "members"
         ],
@@ -2704,6 +2788,21 @@
       },
       "GallerySimilarityMemberRead": {
         "properties": {
+          "face_quality_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Face Quality Score"
+          },
+          "overall_quality_score": {
+            "title": "Overall Quality Score",
+            "type": "number"
+          },
           "photo": {
             "$ref": "#/components/schemas/GalleryPhotoListItem"
           },
@@ -2723,6 +2822,8 @@
         "required": [
           "photo",
           "score_to_representative",
+          "overall_quality_score",
+          "face_quality_score",
           "quality_score",
           "recommended_keep"
         ],
@@ -9997,6 +10098,103 @@
           }
         },
         "summary": "Batch Delete Gallery Photos"
+      }
+    },
+    "/api/gallery/photos/clear-unknown-tags": {
+      "post": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Clear Unknown Gallery Person Tags Api Gallery Photos Clear Unknown Tags Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Unknown Gallery Person Tags"
       }
     },
     "/api/gallery/photos/export": {

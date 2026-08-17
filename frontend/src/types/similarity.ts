@@ -27,6 +27,8 @@ export type GallerySimilarityScanOverview = {
 export type GallerySimilarityMember = {
   photo: GalleryPhotoListItem;
   score_to_representative: number;
+  overall_quality_score: number;
+  face_quality_score: number | null;
   quality_score: number;
   recommended_keep: boolean;
 };
@@ -38,6 +40,8 @@ export type GallerySimilarityGroup = {
   review_status: "pending" | "dismissed";
   min_score: number;
   average_score: number;
+  face_quality_enabled: boolean;
+  recommendation_status: "recommended" | "close_quality" | "unavailable";
   people: Person[];
   members: GallerySimilarityMember[];
 };

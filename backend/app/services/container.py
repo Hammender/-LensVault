@@ -46,7 +46,7 @@ def build_service_container(settings: Settings) -> ServiceContainer:
     vector_store = QdrantVectorStore(settings)
     ocr = OcrService()
     pictures = PictureService(storage, face, vector_store, ocr, settings)
-    similarity = GallerySimilarityScanner(storage, vector_store, settings)
+    similarity = GallerySimilarityScanner(storage, vector_store, settings, face_service=face)
     return ServiceContainer(
         storage=storage,
         face=face,
@@ -62,5 +62,6 @@ def build_service_container(settings: Settings) -> ServiceContainer:
             settings,
             similarity.extractor,
             similarity,
+            face,
         ),
     )

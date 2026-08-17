@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -145,6 +145,16 @@ class AcquisitionAsset(Base):
     perceptual_phash: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     perceptual_dhash: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quality_version: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    resolution_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sharpness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    artifact_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exposure_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    primary_face_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    primary_face_embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    primary_face_dominant: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     quality_warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending_review", nullable=False, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

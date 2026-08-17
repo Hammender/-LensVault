@@ -1148,7 +1148,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
             const allSelected = groupIds.every((id) => selectedAssets.includes(id));
             return <article className="similarity-group" key={group.id}>
               <header>
-                <div><strong>相似组 {similarity.offset + groupIndex + 1}</strong><small>{group.members.length + group.gallery_members.length} 张 · 最高 {Math.round(group.max_score * 100)}%</small></div>
+                <div><strong>相似组 {similarity.offset + groupIndex + 1}</strong><small>{group.members.length + group.gallery_members.length} 张 · 最高 {Math.round(group.max_score * 100)}% · {group.recommendation_status === "close_quality" ? "质量接近" : group.face_quality_enabled ? "整体 + 人脸" : "仅整体"}</small></div>
                 <button type="button" className="secondary-command" onClick={() => setSelectedAssets((current) => allSelected
                   ? current.filter((id) => !groupIds.includes(id))
                   : [...new Set([...current, ...groupIds])]
@@ -1159,12 +1159,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
                   {asset.preview_url ? <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" /> : <span>文件已清除</span>}
                 </button>
                 <label><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={() => toggleAsset(asset.id)} /><span title={asset.filename}>{asset.filename}</span></label>
-                <small className="similarity-source-label">待审核</small>
+                <small className="similarity-source-label">待审核{asset.recommended_keep ? " · 建议保留" : ""}{asset.similarity_quality_score !== null ? ` · 综合 ${asset.similarity_quality_score.toFixed(1)} · 整体 ${(asset.overall_quality_score ?? 0).toFixed(1)}${asset.face_quality_score !== null ? ` · 人脸 ${asset.face_quality_score.toFixed(1)}` : ""}` : ""}</small>
               </div>)}{group.gallery_members.map((member) => <div className="similarity-member gallery-readonly" key={`gallery-${member.photo.id}`}>
                 <a className="similarity-image-button" href={member.photo.original_url} target="_blank" rel="noreferrer" aria-label={`查看图库原图 ${member.photo.filename}`}>
                   <img src={member.photo.thumbnail_url} alt={member.photo.filename} loading="lazy" decoding="async" />
                 </a>
-                <div className="similarity-gallery-meta"><span title={member.photo.filename}>{member.photo.filename}</span><small>图库 · 相似 {Math.round(member.score * 100)}% · 质量 {member.quality_score.toFixed(1)}</small></div>
+                <div className="similarity-gallery-meta"><span title={member.photo.filename}>{member.photo.filename}</span><small>图库 · 相似 {Math.round(member.score * 100)}% · 综合 {member.quality_score.toFixed(1)} · 整体 {member.overall_quality_score.toFixed(1)}{member.face_quality_score !== null ? ` · 人脸 ${member.face_quality_score.toFixed(1)}` : ""}{member.recommended_keep ? " · 建议保留" : ""}</small></div>
               </div>)}</div>
             </article>;
           })}

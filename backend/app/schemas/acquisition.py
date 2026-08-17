@@ -168,6 +168,10 @@ class AcquisitionAssetRead(BaseModel):
     width: int | None
     height: int | None
     blur_score: float | None
+    overall_quality_score: float | None = None
+    face_quality_score: float | None = None
+    similarity_quality_score: float | None = None
+    recommended_keep: bool = False
     quality_warnings: list[str] = Field(default_factory=list)
     status: str
     created_at: datetime
@@ -186,6 +190,8 @@ class AcquisitionSimilarityGroupRead(BaseModel):
     id: str
     max_score: float
     average_score: float
+    face_quality_enabled: bool = False
+    recommendation_status: Literal["recommended", "close_quality", "unavailable"] = "unavailable"
     members: list[AcquisitionAssetRead]
     gallery_members: list["AcquisitionSimilarityGalleryMemberRead"] = Field(default_factory=list)
 
@@ -193,6 +199,8 @@ class AcquisitionSimilarityGroupRead(BaseModel):
 class AcquisitionSimilarityGalleryMemberRead(BaseModel):
     photo: GalleryPhotoListItem
     score: float
+    overall_quality_score: float
+    face_quality_score: float | None = None
     quality_score: float
     recommended_keep: bool = False
 

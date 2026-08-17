@@ -427,6 +427,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                 <span>{group.people.map((person) => person.display_name).join("、")}</span>
               </div>
               <small>最低相似度 {(group.min_score * 100).toFixed(1)}%</small>
+              <small>{group.recommendation_status === "close_quality" ? "质量接近，未强制推荐" : group.face_quality_enabled ? "整体 55% + 人脸 45%" : "仅按整体质量"}</small>
               <div className="similarity-group-actions">
                 <button
                   className="danger-button"
@@ -468,6 +469,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                       <span>选择删除</span>
                     </label>
                     <span>相似 {(member.score_to_representative * 100).toFixed(1)}%</span>
+                    <span>综合 {member.quality_score.toFixed(1)} · 整体 {member.overall_quality_score.toFixed(1)}{member.face_quality_score !== null ? ` · 人脸 ${member.face_quality_score.toFixed(1)}` : ""}</span>
                   </div>
                 </article>
               ))}

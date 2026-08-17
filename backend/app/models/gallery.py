@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -83,6 +83,16 @@ class GallerySimilarityFeature(Base):
     mirror_dhash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     blur_score: Mapped[float] = mapped_column(Float, nullable=False)
     quality_score: Mapped[float] = mapped_column(Float, nullable=False)
+    quality_version: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    resolution_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sharpness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    artifact_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exposure_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    primary_face_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    primary_face_embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    primary_face_dominant: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     vector_point_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     vector_ready: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
@@ -136,6 +146,12 @@ class GallerySimilarityGroup(Base):
     review_status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     min_score: Mapped[float] = mapped_column(Float, nullable=False)
     average_score: Mapped[float] = mapped_column(Float, nullable=False)
+    face_quality_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    recommendation_status: Mapped[str] = mapped_column(
+        String(32), default="unavailable", server_default="unavailable", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     scan: Mapped[GallerySimilarityScan] = relationship(back_populates="groups")
@@ -159,6 +175,10 @@ class GallerySimilarityGroupMember(Base):
         ForeignKey("gallery_photos.id", ondelete="CASCADE"), nullable=False, index=True
     )
     score_to_representative: Mapped[float] = mapped_column(Float, nullable=False)
+    overall_quality_score: Mapped[float] = mapped_column(
+        Float, default=0.0, server_default="0", nullable=False
+    )
+    face_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     quality_score: Mapped[float] = mapped_column(Float, nullable=False)
     recommended_keep: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

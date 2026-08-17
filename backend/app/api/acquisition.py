@@ -12,6 +12,7 @@ from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session, aliased
 
 from app.core.timezones import as_shanghai_naive, shanghai_isoformat, shanghai_now
+from app.core.config import get_settings
 from app.db import get_db
 from app.dependencies.context import CurrentContext, require_context
 from app.http.media import stream_storage_object
@@ -64,6 +65,7 @@ from app.schemas import (
 )
 from app.mappers.gallery import gallery_photo_to_list_item
 from app.services.acquisition import AcquisitionService
+from app.services.similarity import choose_quality_recommendation, compose_group_quality_scores
 from app.services.tasks import create_task, update_task
 from app.services.thumbnails import render_acquisition_preview
 
@@ -97,7 +99,12 @@ def _category_or_404(db: Session, category_id: int, workspace_id: int) -> Acquis
     return category
 
 
-def _asset_read(asset: AcquisitionAsset) -> AcquisitionAssetRead:
+def _asset_read(
+    asset: AcquisitionAsset,
+    *,
+    similarity_quality_score: float | None = None,
+    recommended_keep: bool = False,
+) -> AcquisitionAssetRead:
     try:
         warnings = json.loads(asset.quality_warnings or "[]")
     except json.JSONDecodeError:
@@ -111,6 +118,10 @@ def _asset_read(asset: AcquisitionAsset) -> AcquisitionAssetRead:
         width=asset.width,
         height=asset.height,
         blur_score=asset.blur_score,
+        overall_quality_score=asset.quality_score,
+        face_quality_score=asset.primary_face_quality_score,
+        similarity_quality_score=similarity_quality_score,
+        recommended_keep=recommended_keep,
         quality_warnings=warnings if isinstance(warnings, list) else [],
         status=asset.status,
         created_at=asset.created_at,
@@ -401,7 +412,7 @@ def _list_gallery_similarity(
     parent: dict[str, str] = {}
     pending_assets: dict[str, AcquisitionAsset] = {}
     gallery_photos: dict[int, GalleryPhoto] = {}
-    gallery_quality: dict[int, float] = {}
+    gallery_features: dict[int, GallerySimilarityFeature | None] = {}
     edge_scores: dict[tuple[str, str], float] = {}
 
     def find(node_id: str) -> str:
@@ -422,7 +433,7 @@ def _list_gallery_similarity(
         if asset.status == "pending_review" and asset.object_key:
             pending_assets[asset.id] = asset
         gallery_photos[photo.id] = photo
-        gallery_quality[photo.id] = float(feature.quality_score) if feature is not None else 0.0
+        gallery_features[photo.id] = feature
         union(pending_node, gallery_node)
         edge_scores[(pending_node, gallery_node)] = max(
             candidate.score,
@@ -449,11 +460,47 @@ def _list_gallery_similarity(
             for (left, right), score in edge_scores.items()
             if left in nodes and right in nodes
         ]
+        settings = get_settings()
+        quality_entries: dict[str, tuple[float, float | None, bytes | None, bool]] = {
+            f"pending:{asset_id}": (
+                float(pending_assets[asset_id].quality_score or 0.0),
+                pending_assets[asset_id].primary_face_quality_score,
+                pending_assets[asset_id].primary_face_embedding,
+                pending_assets[asset_id].primary_face_dominant,
+            )
+            for asset_id in pending_ids
+        }
+        quality_entries.update({
+            f"gallery:{photo_id}": (
+                float(gallery_features[photo_id].quality_score if gallery_features[photo_id] is not None else 0.0),
+                gallery_features[photo_id].primary_face_quality_score if gallery_features[photo_id] is not None else None,
+                gallery_features[photo_id].primary_face_embedding if gallery_features[photo_id] is not None else None,
+                gallery_features[photo_id].primary_face_dominant if gallery_features[photo_id] is not None else False,
+            )
+            for photo_id in gallery_ids
+        })
+        quality_scores, face_quality_enabled = compose_group_quality_scores(
+            quality_entries,
+            settings.face_recognition_threshold,
+        )
+        recommendation = choose_quality_recommendation(
+            quality_scores,
+            settings.gallery_similarity_quality_min_margin,
+        )
         groups.append({
             "id": "|".join(sorted(nodes)),
             "max_score": max(scores, default=0.0),
             "average_score": sum(scores) / len(scores) if scores else 0.0,
-            "members": [_asset_read(pending_assets[asset_id]).model_dump() for asset_id in pending_ids],
+            "face_quality_enabled": face_quality_enabled,
+            "recommendation_status": recommendation.status,
+            "members": [
+                _asset_read(
+                    pending_assets[asset_id],
+                    similarity_quality_score=quality_scores[f"pending:{asset_id}"],
+                    recommended_keep=recommendation.recommended_id == f"pending:{asset_id}",
+                ).model_dump()
+                for asset_id in pending_ids
+            ],
             "gallery_members": [
                 {
                     "photo": gallery_photo_to_list_item(gallery_photos[photo_id]).model_dump(),
@@ -465,8 +512,10 @@ def _list_gallery_similarity(
                         ),
                         default=0.0,
                     ),
-                    "quality_score": gallery_quality[photo_id],
-                    "recommended_keep": False,
+                    "overall_quality_score": quality_entries[f"gallery:{photo_id}"][0],
+                    "face_quality_score": quality_entries[f"gallery:{photo_id}"][1],
+                    "quality_score": quality_scores[f"gallery:{photo_id}"],
+                    "recommended_keep": recommendation.recommended_id == f"gallery:{photo_id}",
                 }
                 for photo_id in gallery_ids
             ],
@@ -1071,11 +1120,38 @@ def list_similarity(
             score for (left, right), score in edge_scores.items()
             if left in original_member_ids and right in original_member_ids
         ]
+        settings = get_settings()
+        quality_entries = {
+            asset_id: (
+                float(assets[asset_id].quality_score or 0.0),
+                assets[asset_id].primary_face_quality_score,
+                assets[asset_id].primary_face_embedding,
+                assets[asset_id].primary_face_dominant,
+            )
+            for asset_id in member_ids
+        }
+        quality_scores, face_quality_enabled = compose_group_quality_scores(
+            quality_entries,
+            settings.face_recognition_threshold,
+        )
+        recommendation = choose_quality_recommendation(
+            quality_scores,
+            settings.gallery_similarity_quality_min_margin,
+        )
         groups.append({
             "id": "-".join(sorted(original_member_ids)),
             "max_score": max(scores, default=0.0),
             "average_score": sum(scores) / len(scores) if scores else 0.0,
-            "members": [_asset_read(assets[asset_id]).model_dump() for asset_id in member_ids],
+            "face_quality_enabled": face_quality_enabled,
+            "recommendation_status": recommendation.status,
+            "members": [
+                _asset_read(
+                    assets[asset_id],
+                    similarity_quality_score=quality_scores[asset_id],
+                    recommended_keep=recommendation.recommended_id == asset_id,
+                ).model_dump()
+                for asset_id in member_ids
+            ],
             "gallery_members": [],
         })
     groups.sort(key=lambda group: (-float(group["max_score"]), str(group["id"])))

@@ -93,10 +93,18 @@ CREATE INDEX ix_workspaces_owner_user_id ON workspaces (owner_user_id);
 --   size_bytes：文件大小，单位为字节
 --   width：媒体宽度，单位为像素
 --   height：媒体高度，单位为像素
---   blur_score：人脸清晰度评分
+--   blur_score：兼容保留的旧版清晰度评分
 --   perceptual_phash：采集图片感知哈希值
 --   perceptual_dhash：采集图片差异哈希值
 --   quality_score：图片质量评分
+--   quality_version：质量评估算法版本
+--   resolution_score：有效分辨率评分
+--   sharpness_score：细节清晰度评分
+--   artifact_score：噪点与压缩伪影评分
+--   exposure_score：曝光质量评分
+--   primary_face_quality_score：明确主脸区域质量评分
+--   primary_face_embedding：明确主脸归一化特征向量
+--   primary_face_dominant：是否检测到面积优势明确的主脸
 --   quality_warnings：图片质量告警，JSON 或文本
 --   status：采集图片状态：pending_review、import_queued、importing、imported、import_failed、gallery_duplicate 或 rejected
 --   error_message：失败或异常原因
@@ -116,6 +124,14 @@ CREATE TABLE acquisition_assets (
 	perceptual_phash VARCHAR(32), 
 	perceptual_dhash VARCHAR(32), 
 	quality_score FLOAT, 
+	quality_version VARCHAR(64), 
+	resolution_score FLOAT, 
+	sharpness_score FLOAT, 
+	artifact_score FLOAT, 
+	exposure_score FLOAT, 
+	primary_face_quality_score FLOAT, 
+	primary_face_embedding BLOB, 
+	primary_face_dominant BOOLEAN DEFAULT '0' NOT NULL, 
 	quality_warnings TEXT, 
 	status VARCHAR(32) NOT NULL, 
 	error_message TEXT, 
@@ -128,6 +144,7 @@ CREATE TABLE acquisition_assets (
 );
 CREATE INDEX ix_acquisition_assets_perceptual_dhash ON acquisition_assets (perceptual_dhash);
 CREATE INDEX ix_acquisition_assets_perceptual_phash ON acquisition_assets (perceptual_phash);
+CREATE INDEX ix_acquisition_assets_quality_version ON acquisition_assets (quality_version);
 CREATE INDEX ix_acquisition_assets_sha256 ON acquisition_assets (sha256);
 CREATE INDEX ix_acquisition_assets_status ON acquisition_assets (status);
 CREATE INDEX ix_acquisition_assets_workspace_id ON acquisition_assets (workspace_id);
@@ -272,7 +289,7 @@ CREATE TABLE gallery_photos (
 	content_type VARCHAR(128), 
 	sha256 VARCHAR(64) NOT NULL, 
 	object_key VARCHAR(512) NOT NULL, 
-	size_bytes BIGINT,
+	size_bytes BIGINT, 
 	width INTEGER, 
 	height INTEGER, 
 	taken_at DATETIME, 
@@ -875,8 +892,16 @@ CREATE INDEX ix_gallery_photo_tags_tag_id ON gallery_photo_tags (tag_id);
 --   dhash：差异哈希值
 --   mirror_phash：水平镜像后的感知哈希值
 --   mirror_dhash：水平镜像后的差异哈希值
---   blur_score：人脸清晰度评分
+--   blur_score：兼容保留的旧版清晰度评分
 --   quality_score：图片质量评分
+--   quality_version：质量评估算法版本
+--   resolution_score：有效分辨率评分
+--   sharpness_score：细节清晰度评分
+--   artifact_score：噪点与压缩伪影评分
+--   exposure_score：曝光质量评分
+--   primary_face_quality_score：明确主脸区域质量评分
+--   primary_face_embedding：明确主脸归一化特征向量
+--   primary_face_dominant：是否检测到面积优势明确的主脸
 --   vector_point_id：向量库中的点标识
 --   vector_ready：图片向量是否已写入向量库
 --   created_at：记录创建时间（上海时区无时区值）
@@ -892,6 +917,14 @@ CREATE TABLE gallery_similarity_features (
 	mirror_dhash VARCHAR(64), 
 	blur_score FLOAT NOT NULL, 
 	quality_score FLOAT NOT NULL, 
+	quality_version VARCHAR(64), 
+	resolution_score FLOAT, 
+	sharpness_score FLOAT, 
+	artifact_score FLOAT, 
+	exposure_score FLOAT, 
+	primary_face_quality_score FLOAT, 
+	primary_face_embedding BLOB, 
+	primary_face_dominant BOOLEAN DEFAULT '0' NOT NULL, 
 	vector_point_id VARCHAR(64), 
 	vector_ready BOOLEAN NOT NULL, 
 	created_at DATETIME NOT NULL, 
@@ -901,6 +934,7 @@ CREATE TABLE gallery_similarity_features (
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
 );
 CREATE INDEX ix_gallery_similarity_features_feature_version ON gallery_similarity_features (feature_version);
+CREATE INDEX ix_gallery_similarity_features_quality_version ON gallery_similarity_features (quality_version);
 CREATE INDEX ix_gallery_similarity_features_sha256 ON gallery_similarity_features (sha256);
 CREATE INDEX ix_gallery_similarity_features_vector_point_id ON gallery_similarity_features (vector_point_id);
 CREATE INDEX ix_gallery_similarity_features_vector_ready ON gallery_similarity_features (vector_ready);
@@ -1342,6 +1376,8 @@ CREATE INDEX ix_face_records_workspace_id ON face_records (workspace_id);
 --   review_status：相似图片分组审核状态，当前为 pending、approved 或 rejected
 --   min_score：分组内最低相似度得分
 --   average_score：分组内平均相似度得分
+--   face_quality_enabled：分组是否启用人脸质量加权
+--   recommendation_status：推荐状态：recommended、close_quality 或 unavailable
 --   created_at：记录创建时间（上海时区无时区值）
 CREATE TABLE gallery_similarity_groups (
 	id INTEGER NOT NULL, 
@@ -1351,6 +1387,8 @@ CREATE TABLE gallery_similarity_groups (
 	review_status VARCHAR(32) NOT NULL, 
 	min_score FLOAT NOT NULL, 
 	average_score FLOAT NOT NULL, 
+	face_quality_enabled BOOLEAN DEFAULT '0' NOT NULL, 
+	recommendation_status VARCHAR(32) DEFAULT 'unavailable' NOT NULL, 
 	created_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_gallery_similarity_group_ordinal UNIQUE (scan_id, ordinal), 
@@ -1437,6 +1475,8 @@ CREATE INDEX ix_acquisition_run_items_status ON acquisition_run_items (status);
 --   group_id：关联相似图片分组标识
 --   gallery_photo_id：关联图库图片标识
 --   score_to_representative：成员相对代表图片的相似度得分
+--   overall_quality_score：图片整体质量评分
+--   face_quality_score：目标人脸区域质量评分；未启用时为空
 --   quality_score：图片质量评分
 --   recommended_keep：是否建议保留该图片
 CREATE TABLE gallery_similarity_group_members (
@@ -1444,6 +1484,8 @@ CREATE TABLE gallery_similarity_group_members (
 	group_id INTEGER NOT NULL, 
 	gallery_photo_id INTEGER NOT NULL, 
 	score_to_representative FLOAT NOT NULL, 
+	overall_quality_score FLOAT DEFAULT '0' NOT NULL, 
+	face_quality_score FLOAT, 
 	quality_score FLOAT NOT NULL, 
 	recommended_keep BOOLEAN NOT NULL, 
 	PRIMARY KEY (id), 
