@@ -76,6 +76,7 @@ export async function createGallerySimilarityScan(payload: {
   person_id: number | null;
   include_cross_type: boolean;
   scan_type: "normal" | "mirror";
+  auto_delete_exact_mirror: boolean;
 }): Promise<GallerySimilarityScan> {
   return parseResponse<GallerySimilarityScan>(
     await authFetch("/api/gallery/similarity-scans", {
@@ -83,6 +84,11 @@ export async function createGallerySimilarityScan(payload: {
       headers: jsonHeaders,
       body: JSON.stringify(payload)
     })
+  );
+}
+export async function autoDeleteExactMirrorGroups(scanId: string): Promise<{ deleted: number; scan: GallerySimilarityScan }> {
+  return parseResponse<{ deleted: number; scan: GallerySimilarityScan }>(
+    await authFetch(`/api/gallery/similarity-scans/${scanId}/auto-delete-exact-mirrors`, { method: "POST" })
   );
 }
 export async function getLatestGallerySimilarityScan(personId: number | null, includeCrossType: boolean, scanType: "normal" | "mirror" = "normal"): Promise<GallerySimilarityScan | null> {

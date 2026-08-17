@@ -949,6 +949,8 @@ CREATE INDEX ix_gallery_similarity_features_workspace_id ON gallery_similarity_f
 --   person_id：关联人物标识
 --   include_cross_type：是否跨普通图与图文图进行比较
 --   scan_type：检查类型：normal（普通相似）或 mirror（镜像相似）
+--   auto_delete_exact_mirror：扫描完成后是否自动整理 100% 镜像相似组
+--   auto_deleted_count：按自动整理规则实际删除的图片累计数量
 --   status：相似度扫描状态：pending、running、completed 或 failed
 --   is_stale：扫描结果是否因图库变化而过期
 --   feature_version：相似度特征提取算法版本
@@ -965,6 +967,8 @@ CREATE TABLE gallery_similarity_scans (
 	person_id INTEGER, 
 	include_cross_type BOOLEAN NOT NULL, 
 	scan_type VARCHAR(32) NOT NULL, 
+	auto_delete_exact_mirror BOOLEAN NOT NULL,
+	auto_deleted_count INTEGER NOT NULL,
 	status VARCHAR(32) NOT NULL, 
 	is_stale BOOLEAN NOT NULL, 
 	feature_version VARCHAR(64) NOT NULL, 

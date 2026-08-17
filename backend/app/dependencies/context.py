@@ -60,6 +60,7 @@ ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
     ("POST", "/api/gallery/rich-photos/import"): "can_add_gallery",
     ("POST", "/api/gallery/photos/import-zip"): "can_add_gallery",
     ("POST", "/api/gallery/similarity-scans"): "can_edit_gallery",
+    ("POST", "/api/gallery/similarity-scans/{scan_id}/auto-delete-exact-mirrors"): "can_delete_gallery",
     ("PATCH", "/api/gallery/similarity-scans/{scan_id}/groups/{group_id}"): "can_edit_gallery",
     ("POST", "/api/gallery/photos/batch-delete"): "can_delete_gallery",
     ("DELETE", "/api/gallery/photos/{photo_id}"): "can_delete_gallery",

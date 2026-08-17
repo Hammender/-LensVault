@@ -19,12 +19,13 @@ from app.api._helpers import get_workspace_object
 from app.core.timezones import shanghai_isoformat, shanghai_now
 from app.background_tasks import process_gallery_import_task, process_gallery_similarity_scan_task, process_gallery_zip_import_task
 from app.db import get_db
-from app.dependencies.context import CurrentContext, require_context
+from app.dependencies.context import CurrentContext, require_context, require_permission
 from app.http.media import stream_storage_object
 from app.mappers.gallery import gallery_photo_to_detail as _gallery_photo_to_detail, gallery_photo_to_list_item as _gallery_photo_to_list_item
 from app.mappers.people import person_to_read
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityGroup, GallerySimilarityScan, Person, PersonTag, SamplePhoto, Tag, Task
 from app.schemas import (
+    GallerySimilarityAutoDeleteResponse,
     GallerySimilarityGroupRead,
     GallerySimilarityGroupUpdate,
     GallerySimilarityMemberRead,
@@ -41,7 +42,7 @@ from app.schemas import (
     PaginatedGallerySimilarityGroups,
     TaskRead,
 )
-from app.services.similarity import load_similarity_scan_overview, mark_similarity_scans_stale
+from app.services.similarity import load_similarity_scan_overview, mark_similarity_scans_stale, select_exact_mirror_auto_delete_photo_ids
 from app.services.tasks import create_task
 from app.services.thumbnails import animated_thumbnail_cache_key, render_gallery_thumbnail
 
@@ -211,6 +212,8 @@ def _gallery_similarity_scan_read(db: Session, scan: GallerySimilarityScan) -> G
         person_id=scan.person_id,
         include_cross_type=scan.include_cross_type,
         scan_type=scan.scan_type,
+        auto_delete_exact_mirror=scan.auto_delete_exact_mirror,
+        auto_deleted_count=scan.auto_deleted_count,
         status=scan.status,
         is_stale=scan.is_stale,
         feature_version=scan.feature_version,
@@ -483,6 +486,10 @@ def create_gallery_similarity_scan(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> GallerySimilarityScanRead:
+    if payload.auto_delete_exact_mirror and payload.scan_type != "mirror":
+        raise HTTPException(status_code=422, detail="自动整理仅支持镜像相似扫描")
+    if payload.auto_delete_exact_mirror:
+        require_permission(current, "can_delete_gallery")
     if payload.person_id is not None:
         get_workspace_object(db, Person, payload.person_id, current.workspace_id, "Person")
     running = db.scalar(
@@ -501,6 +508,7 @@ def create_gallery_similarity_scan(
         person_id=payload.person_id,
         include_cross_type=payload.include_cross_type,
         scan_type=payload.scan_type,
+        auto_delete_exact_mirror=payload.auto_delete_exact_mirror,
         status="pending",
         feature_version=request.app.state.settings.gallery_similarity_model_version,
     )
@@ -511,10 +519,44 @@ def create_gallery_similarity_scan(
         process_gallery_similarity_scan_task,
         request.app.state.session_factory,
         request.app.state.services.similarity,
+        request.app.state.services.pictures,
         scan.id,
         task.id,
     )
     return _gallery_similarity_scan_read(db, scan)
+
+
+@router.post(
+    "/api/gallery/similarity-scans/{scan_id}/auto-delete-exact-mirrors",
+    response_model=GallerySimilarityAutoDeleteResponse,
+)
+def auto_delete_exact_mirror_groups(
+    scan_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GallerySimilarityAutoDeleteResponse:
+    require_permission(current, "can_delete_gallery")
+    scan = db.get(GallerySimilarityScan, scan_id)
+    if scan is None or scan.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Similarity scan not found")
+    if scan.scan_type != "mirror":
+        raise HTTPException(status_code=422, detail="自动整理仅支持镜像相似扫描")
+    if scan.status != "completed" or scan.is_stale:
+        raise HTTPException(status_code=409, detail="仅可整理未过期的已完成镜像扫描结果")
+    photo_ids = select_exact_mirror_auto_delete_photo_ids(db, scan)
+    photos = db.scalars(
+        select(GalleryPhoto).where(
+            GalleryPhoto.workspace_id == current.workspace_id,
+            GalleryPhoto.id.in_(photo_ids),
+        )
+    ).all()
+    deleted = picture_service.delete_gallery_photos(db, photos)
+    db.refresh(scan)
+    scan.auto_deleted_count += deleted
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+    return GallerySimilarityAutoDeleteResponse(deleted=deleted, scan=_gallery_similarity_scan_read(db, scan))
 
 
 @router.get("/api/gallery/similarity-scans/latest", response_model=GallerySimilarityScanRead | None)

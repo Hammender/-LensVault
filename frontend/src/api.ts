@@ -63,7 +63,7 @@ export {
 } from "./api/videos";
 
 export {
-  addGalleryPhotoPerson, addGalleryPhotoTag, batchDeleteGalleryPhotos, createGallerySimilarityScan,
+  addGalleryPhotoPerson, addGalleryPhotoTag, autoDeleteExactMirrorGroups, batchDeleteGalleryPhotos, createGallerySimilarityScan,
   deleteGalleryPhoto, deleteGalleryPhotoPerson, deleteGalleryPhotoTag, downloadGalleryExport, getGalleryExportUrl,
   getGalleryPhoto, getGallerySimilarityGroup, getGallerySimilarityScanOverview, getLatestGallerySimilarityScan,
   getTask, importGalleryExportZip, importGalleryPhotos, importGalleryRichPhotos, listGalleryPhotos,

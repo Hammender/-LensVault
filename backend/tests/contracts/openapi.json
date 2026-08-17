@@ -2696,6 +2696,23 @@
         "title": "GalleryPhotoTagCreate",
         "type": "object"
       },
+      "GallerySimilarityAutoDeleteResponse": {
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "scan": {
+            "$ref": "#/components/schemas/GallerySimilarityScanRead"
+          }
+        },
+        "required": [
+          "deleted",
+          "scan"
+        ],
+        "title": "GallerySimilarityAutoDeleteResponse",
+        "type": "object"
+      },
       "GallerySimilarityGroupRead": {
         "properties": {
           "average_score": {
@@ -2832,6 +2849,11 @@
       },
       "GallerySimilarityScanCreate": {
         "properties": {
+          "auto_delete_exact_mirror": {
+            "default": false,
+            "title": "Auto Delete Exact Mirror",
+            "type": "boolean"
+          },
           "include_cross_type": {
             "default": false,
             "title": "Include Cross Type",
@@ -2889,6 +2911,14 @@
       },
       "GallerySimilarityScanRead": {
         "properties": {
+          "auto_delete_exact_mirror": {
+            "title": "Auto Delete Exact Mirror",
+            "type": "boolean"
+          },
+          "auto_deleted_count": {
+            "title": "Auto Deleted Count",
+            "type": "integer"
+          },
           "candidate_pair_count": {
             "title": "Candidate Pair Count",
             "type": "integer"
@@ -2996,6 +3026,8 @@
           "person_id",
           "include_cross_type",
           "scan_type",
+          "auto_delete_exact_mirror",
+          "auto_deleted_count",
           "status",
           "is_stale",
           "feature_version",
@@ -12587,6 +12619,108 @@
           }
         },
         "summary": "Get Gallery Similarity Scan Overview"
+      }
+    },
+    "/api/gallery/similarity-scans/{scan_id}/auto-delete-exact-mirrors": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scan_id",
+            "required": true,
+            "schema": {
+              "title": "Scan Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GallerySimilarityAutoDeleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Auto Delete Exact Mirror Groups"
       }
     },
     "/api/gallery/similarity-scans/{scan_id}/groups": {

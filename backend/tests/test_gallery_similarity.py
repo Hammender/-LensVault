@@ -38,6 +38,7 @@ from app.services.similarity import (
     hash_similarity,
     load_similarity_scan_overview,
     mark_similarity_scans_stale,
+    select_exact_mirror_auto_delete_photo_ids,
 )
 from tests.support.app_loader import load_test_main
 
@@ -386,6 +387,56 @@ def test_mirror_scan_requires_mirror_score_to_be_strictly_better(db_session: Ses
         "mirror",
     )
     assert tied_scores == {}
+
+
+def test_exact_mirror_auto_delete_prefers_recommendation_then_unique_largest_file(db_session: Session) -> None:
+    workspace, person, photos = create_scope(db_session, photo_count=9)
+    for photo, size_bytes in zip(photos, [900, 700, 500, 400, 200, 100, 100, 80, 60], strict=True):
+        photo.size_bytes = size_bytes
+    scan = GallerySimilarityScan(
+        id="scan-exact-mirror-auto-delete",
+        workspace_id=workspace.id,
+        person_id=person.id,
+        scan_type="mirror",
+        status="completed",
+        feature_version="v1",
+    )
+    db_session.add(scan)
+    db_session.flush()
+    groups = [
+        GallerySimilarityGroup(scan_id=scan.id, ordinal=1, tier="near_duplicate", min_score=1.0, average_score=1.0),
+        GallerySimilarityGroup(scan_id=scan.id, ordinal=2, tier="near_duplicate", min_score=1.0, average_score=1.0),
+        GallerySimilarityGroup(scan_id=scan.id, ordinal=3, tier="near_duplicate", min_score=1.0, average_score=1.0),
+        GallerySimilarityGroup(scan_id=scan.id, ordinal=4, tier="near_duplicate", min_score=0.99, average_score=0.99),
+    ]
+    db_session.add_all(groups)
+    db_session.flush()
+    memberships = [
+        (groups[0], photos[0], True),
+        (groups[0], photos[1], False),
+        (groups[0], photos[2], False),
+        (groups[1], photos[3], False),
+        (groups[1], photos[4], False),
+        (groups[2], photos[5], False),
+        (groups[2], photos[6], False),
+        (groups[3], photos[7], False),
+        (groups[3], photos[8], False),
+    ]
+    db_session.add_all(
+        GallerySimilarityGroupMember(
+            group_id=group.id,
+            gallery_photo_id=photo.id,
+            score_to_representative=group.min_score,
+            quality_score=1.0,
+            recommended_keep=recommended_keep,
+        )
+        for group, photo, recommended_keep in memberships
+    )
+    db_session.commit()
+
+    deleted_ids = select_exact_mirror_auto_delete_photo_ids(db_session, scan)
+
+    assert deleted_ids == [photos[1].id, photos[2].id, photos[4].id]
 
 
 def test_mark_scans_stale_only_for_affected_person_scope(db_session: Session) -> None:

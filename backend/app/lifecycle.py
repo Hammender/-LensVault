@@ -184,6 +184,8 @@ def ensure_similarity_scan_columns(engine: Engine) -> None:
         },
         "gallery_similarity_scans": {
             "scan_type": "ALTER TABLE gallery_similarity_scans ADD COLUMN scan_type VARCHAR(32) NOT NULL DEFAULT 'normal'",
+            "auto_delete_exact_mirror": "ALTER TABLE gallery_similarity_scans ADD COLUMN auto_delete_exact_mirror BOOLEAN NOT NULL DEFAULT 0",
+            "auto_deleted_count": "ALTER TABLE gallery_similarity_scans ADD COLUMN auto_deleted_count INTEGER NOT NULL DEFAULT 0",
         },
         "acquisition_similarity_candidates": {
             "scan_type": "ALTER TABLE acquisition_similarity_candidates ADD COLUMN scan_type VARCHAR(32) NOT NULL DEFAULT 'normal'",

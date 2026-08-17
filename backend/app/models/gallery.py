@@ -118,6 +118,8 @@ class GallerySimilarityScan(Base):
     )
     include_cross_type: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     scan_type: Mapped[str] = mapped_column(String(32), default="normal", nullable=False, index=True)
+    auto_delete_exact_mirror: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_deleted_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     is_stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     feature_version: Mapped[str] = mapped_column(String(64), nullable=False)

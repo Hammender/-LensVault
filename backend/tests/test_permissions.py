@@ -16,6 +16,7 @@ PERMISSION_CASES = (
     ("can_delete_gallery", "DELETE", "/api/gallery/photos/1", "/api/gallery/photos/{photo_id}"),
     ("can_edit_gallery", "PATCH", "/api/gallery/photos/1/rich-text", "/api/gallery/photos/{photo_id}/rich-text"),
     ("can_edit_gallery", "PATCH", "/api/gallery/similarity-scans/scan-1/groups/1", "/api/gallery/similarity-scans/{scan_id}/groups/{group_id}"),
+    ("can_delete_gallery", "POST", "/api/gallery/similarity-scans/scan-1/auto-delete-exact-mirrors", "/api/gallery/similarity-scans/{scan_id}/auto-delete-exact-mirrors"),
     ("can_add_samples", "POST", "/api/persons/1/samples", "/api/persons/{person_id}/samples"),
     ("can_delete_samples", "DELETE", "/api/persons/1/samples/1", "/api/persons/{person_id}/samples/{sample_photo_id}"),
     ("can_edit_samples", "PATCH", "/api/persons/1", "/api/persons/{person_id}"),

@@ -950,6 +950,57 @@ def mark_similarity_scans_stale(db: Session, workspace_id: int, person_ids: set[
     return int(result.rowcount or 0)
 
 
+def select_exact_mirror_auto_delete_photo_ids(db: Session, scan: GallerySimilarityScan) -> list[int]:
+    """返回可按镜像自动整理规则删除的图片标识，不执行删除。"""
+    if scan.scan_type != "mirror":
+        return []
+    groups = [
+        group
+        for group in db.scalars(
+            select(GallerySimilarityGroup)
+            .where(
+                GallerySimilarityGroup.scan_id == scan.id,
+                GallerySimilarityGroup.tier == "near_duplicate",
+                GallerySimilarityGroup.review_status == "pending",
+                GallerySimilarityGroup.min_score == 1.0,
+            )
+            .order_by(GallerySimilarityGroup.ordinal.asc())
+        ).all()
+        if len(group.members) >= 2
+    ]
+    group_ids_by_photo: dict[int, set[int]] = {}
+    for group in groups:
+        for member in group.members:
+            group_ids_by_photo.setdefault(member.gallery_photo_id, set()).add(group.id)
+    overlapping_group_ids = {
+        group_id
+        for group_ids in group_ids_by_photo.values()
+        if len(group_ids) > 1
+        for group_id in group_ids
+    }
+
+    photo_ids: list[int] = []
+    for group in groups:
+        if group.id in overlapping_group_ids:
+            continue
+        recommended = [member for member in group.members if member.recommended_keep]
+        if len(recommended) == 1:
+            retained_photo_id = recommended[0].gallery_photo_id
+        elif recommended:
+            continue
+        else:
+            sizes = [member.gallery_photo.size_bytes for member in group.members]
+            if any(size is None for size in sizes):
+                continue
+            largest_size = max(size for size in sizes if size is not None)
+            largest = [member for member in group.members if member.gallery_photo.size_bytes == largest_size]
+            if len(largest) != 1:
+                continue
+            retained_photo_id = largest[0].gallery_photo_id
+        photo_ids.extend(member.gallery_photo_id for member in group.members if member.gallery_photo_id != retained_photo_id)
+    return photo_ids
+
+
 def cleanup_deleted_similarity_photos(
     db: Session,
     vector_store: QdrantVectorStore,

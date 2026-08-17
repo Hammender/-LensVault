@@ -7,6 +7,8 @@ export type GallerySimilarityScan = {
   person_id: number | null;
   include_cross_type: boolean;
   scan_type: "normal" | "mirror";
+  auto_delete_exact_mirror: boolean;
+  auto_deleted_count: number;
   status: string;
   is_stale: boolean;
   feature_version: string;

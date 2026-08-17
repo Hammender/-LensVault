@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.timezones import shanghai_now
 from app.models import GalleryPhoto, GallerySimilarityScan, Person, UploadHistory
-from app.services.similarity import mark_similarity_scans_stale
+from app.services.similarity import mark_similarity_scans_stale, select_exact_mirror_auto_delete_photo_ids
 from app.services.tasks import update_task
 
 logger = logging.getLogger(__name__)
@@ -334,6 +334,7 @@ def process_gallery_zip_import_task(
 def process_gallery_similarity_scan_task(
     session_factory: SessionFactory,
     similarity_service: Any,
+    picture_service: Any,
     scan_id: str,
     task_id: str,
 ) -> None:
@@ -351,6 +352,19 @@ def process_gallery_similarity_scan_task(
             update_task(db, task_id, status="running", progress=min(progress, 0.99), message=message)
 
         similarity_service.run_scan(db, scan, progress_callback)
+        auto_deleted = 0
+        if scan.auto_delete_exact_mirror:
+            photo_ids = select_exact_mirror_auto_delete_photo_ids(db, scan)
+            if photo_ids:
+                photos = db.scalars(
+                    select(GalleryPhoto).where(
+                        GalleryPhoto.workspace_id == scan.workspace_id,
+                        GalleryPhoto.id.in_(photo_ids),
+                    )
+                ).all()
+                auto_deleted = picture_service.delete_gallery_photos(db, photos)
+                db.refresh(scan)
+                scan.auto_deleted_count += auto_deleted
         scan.status = "completed"
         scan.is_stale = False
         scan.completed_at = shanghai_now()
@@ -361,7 +375,10 @@ def process_gallery_similarity_scan_task(
             task_id,
             status="completed",
             progress=1.0,
-            message=f"扫描完成：比较 {scan.candidate_pair_count} 对图片，生成 {scan.group_count} 个相似组",
+            message=(
+                f"扫描完成：比较 {scan.candidate_pair_count} 对图片，生成 {scan.group_count} 个相似组"
+                + (f"，自动整理删除 {auto_deleted} 张图片" if scan.auto_delete_exact_mirror else "")
+            ),
         )
     except Exception:
         logger.exception("Gallery similarity scan failed scan_id=%s task_id=%s", scan_id, task_id)

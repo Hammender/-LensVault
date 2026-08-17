@@ -516,6 +516,12 @@
     ]
   },
   {
+    "path": "/api/gallery/similarity-scans/{scan_id}/auto-delete-exact-mirrors",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/gallery/similarity-scans/latest",
     "methods": [
       "GET"

@@ -15,6 +15,8 @@ function scan(
     person_id: personId,
     include_cross_type: includeCrossType,
     scan_type: scanType,
+    auto_delete_exact_mirror: false,
+    auto_deleted_count: 0,
     status: "completed",
     is_stale: false,
     feature_version: "dinov2-v1",

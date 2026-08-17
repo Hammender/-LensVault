@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Images, RefreshCw, ScanSearch, Trash2, X } from "lucide-react";
 
 import {
+  autoDeleteExactMirrorGroups,
   batchDeleteGalleryPhotos,
   createGallerySimilarityScan,
   getGallerySimilarityScanOverview,
@@ -32,6 +33,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
   const [personSearch, setPersonSearch] = useState("全部人物");
   const [includeCrossType, setIncludeCrossType] = useState(false);
   const [scanType, setScanType] = useState<"normal" | "mirror">("normal");
+  const [autoDeleteExactMirror, setAutoDeleteExactMirror] = useState(false);
   const [tier, setTier] = useState<"near_duplicate" | "same_scene">("near_duplicate");
   const [activeScan, setActiveScan] = useState<GallerySimilarityScan | null>(null);
   const [resultScan, setResultScan] = useState<GallerySimilarityScan | null>(null);
@@ -234,9 +236,12 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     const matchMode = includeCrossType
       ? "允许普通图库与图文图库跨类型匹配"
       : "普通图库与图文图库分别匹配";
+    const autoDeleteMessage = scanType === "mirror" && autoDeleteExactMirror
+      ? "\n\n扫描结束后会自动整理相似度为 100% 的镜像组：优先保留系统建议图片，否则保留唯一体积最大的图片，并永久删除其余图片。"
+      : "";
     const confirmed = await confirm({
       title: "开始相似图片扫描",
-      message: `确认开始${scanType === "mirror" ? "镜像相似" : "普通相似"}图片扫描吗？\n\n扫描人物：${personLabel(personId)}\n匹配方式：${matchMode}\n\n扫描耗时较长，完成前会继续保留当前成功结果。`,
+      message: `确认开始${scanType === "mirror" ? "镜像相似" : "普通相似"}图片扫描吗？\n\n扫描人物：${personLabel(personId)}\n匹配方式：${matchMode}\n\n扫描耗时较长，完成前会继续保留当前成功结果。${autoDeleteMessage}`,
       confirmLabel: "开始扫描"
     });
     if (!confirmed) return;
@@ -244,11 +249,37 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     setBusy(true);
     setNotice(null);
     try {
-      const created = await createGallerySimilarityScan({ person_id: personId, include_cross_type: includeCrossType, scan_type: scanType });
+      const created = await createGallerySimilarityScan({
+        person_id: personId,
+        include_cross_type: includeCrossType,
+        scan_type: scanType,
+        auto_delete_exact_mirror: scanType === "mirror" && autoDeleteExactMirror
+      });
       setActiveScan(created);
       setSelectedIds([]);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "发起扫描失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function autoDeleteCurrentExactMirrorGroups() {
+    if (!resultScan || !await confirm({
+      title: "自动整理 100% 镜像组",
+      message: "将按系统建议保留图片；没有建议时保留唯一体积最大的图片，并永久删除其余图片。\n\n仅处理当前未过期结果中相似度为 100% 的镜像组。此操作不可撤销。",
+      confirmLabel: "执行删除",
+      tone: "danger"
+    })) return;
+    setBusy(true);
+    try {
+      const response = await autoDeleteExactMirrorGroups(resultScan.id);
+      setResultScan(response.scan);
+      setScanHistory((current) => current.map((scan) => scan.id === response.scan.id ? response.scan : scan));
+      setNotice(`已自动整理删除 ${response.deleted} 张图片，累计自动删除 ${response.scan.auto_deleted_count} 张。`);
+      await loadGroups(response.scan, 0);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "自动整理失败");
     } finally {
       setBusy(false);
     }
@@ -366,6 +397,17 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
           />
           <span>允许普通图库与图文图库跨类型匹配</span>
         </label>
+        {scanType === "mirror" && (
+          <label className="similarity-switch">
+            <input
+              type="checkbox"
+              checked={autoDeleteExactMirror}
+              disabled={busy || !canDelete}
+              onChange={(event) => setAutoDeleteExactMirror(event.target.checked)}
+            />
+            <span>扫描后自动整理 100% 镜像组</span>
+          </label>
+        )}
         <button disabled={busy || deletingGroupIds.length > 0 || !canEdit || Boolean(activeScan)} onClick={() => void startScan()}>
           <RefreshCw size={16} /> {targetResult ? "重新扫描" : "开始扫描"}
         </button>
@@ -405,6 +447,16 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
             <span>{resultScan.scan_type === "mirror" ? "镜像相似" : "普通相似"} · {personLabel(resultScan.person_id)} · {resultScan.include_cross_type ? "跨类型" : "分类型"} · 完成于 {formatDate(resultScan.completed_at || resultScan.created_at)}</span>
           </div>
           <small>{resultScan.photo_count} 张图片 · {resultScan.candidate_pair_count} 个候选对 · {resultScan.group_count} 个相似组</small>
+          {resultScan.scan_type === "mirror" && !resultScan.is_stale && (
+            <button
+              className="danger-button similarity-auto-delete-button"
+              disabled={!canDelete || busy || Boolean(activeScan)}
+              onClick={() => void autoDeleteCurrentExactMirrorGroups()}
+            >
+              <Trash2 size={15} /> 自动整理 100% 镜像组
+            </button>
+          )}
+          {resultScan.auto_deleted_count > 0 && <small>累计自动删除 {resultScan.auto_deleted_count} 张图片</small>}
           {resultScan.is_stale && <b>图库内容已变化，当前结果可能过期</b>}
         </section>
       )}

@@ -13,6 +13,7 @@ class GallerySimilarityScanCreate(BaseModel):
     person_id: int | None = None
     include_cross_type: bool = False
     scan_type: Literal["normal", "mirror"] = "normal"
+    auto_delete_exact_mirror: bool = False
 
 
 class GallerySimilarityScanRead(BaseModel):
@@ -21,6 +22,8 @@ class GallerySimilarityScanRead(BaseModel):
     person_id: int | None
     include_cross_type: bool
     scan_type: Literal["normal", "mirror"]
+    auto_delete_exact_mirror: bool
+    auto_deleted_count: int
     status: str
     is_stale: bool
     feature_version: str
@@ -36,6 +39,11 @@ class GallerySimilarityScanRead(BaseModel):
 class GallerySimilarityScanOverview(BaseModel):
     active: GallerySimilarityScanRead | None = None
     results: list[GallerySimilarityScanRead]
+
+
+class GallerySimilarityAutoDeleteResponse(BaseModel):
+    deleted: int
+    scan: GallerySimilarityScanRead
 
 
 class GallerySimilarityMemberRead(BaseModel):

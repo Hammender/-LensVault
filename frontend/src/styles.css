@@ -4114,6 +4114,13 @@ time {
 .similarity-status { display: grid; gap: 9px; padding: 16px 22px; }
 .similarity-status > div { display: flex; justify-content: space-between; gap: 12px; }
 .similarity-status span, .similarity-status small { color: var(--muted); }
+.similarity-auto-delete-button {
+  justify-self: start;
+  width: auto;
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
 .similarity-status.stale { border-color: #c8872d; }
 .similarity-status.stale b { color: #a86612; }
 .similarity-notice { padding: 13px 18px; }
