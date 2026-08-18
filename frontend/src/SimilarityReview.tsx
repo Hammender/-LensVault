@@ -648,6 +648,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                   <b>{previewMember.photo.is_rich_text ? "图文图片" : "普通图片"}</b>
                   <b>文件大小 {formatBytes(previewMember.photo.size_bytes)}</b>
                   <b>相似度 {(previewMember.score_to_representative * 100).toFixed(1)}%</b>
+                  <b>质量评分 综合 {previewMember.quality_score.toFixed(1)} · 整体 {previewMember.overall_quality_score.toFixed(1)}{previewMember.face_quality_score !== null ? ` · 人脸 ${previewMember.face_quality_score.toFixed(1)}` : ""}</b>
                   {previewMember.recommended_keep && <b className="similarity-keep-text">建议保留</b>}
                 </div>
               </div>

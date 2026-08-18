@@ -1399,6 +1399,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           <div><dt>文件名</dt><dd title={similarityLightboxAsset.filename}>{similarityLightboxAsset.filename}</dd></div>
           <div><dt>尺寸</dt><dd>{similarityLightboxAsset.width && similarityLightboxAsset.height ? `${similarityLightboxAsset.width} × ${similarityLightboxAsset.height}` : "未知"}</dd></div>
           <div><dt>大小</dt><dd>{formatBytes(similarityLightboxAsset.size_bytes)}</dd></div>
+          {similarityLightboxAsset.similarity_quality_score !== null && <div><dt>质量评分</dt><dd>综合 {similarityLightboxAsset.similarity_quality_score.toFixed(1)} · 整体 {(similarityLightboxAsset.overall_quality_score ?? 0).toFixed(1)}{similarityLightboxAsset.face_quality_score !== null ? ` · 人脸 ${similarityLightboxAsset.face_quality_score.toFixed(1)}` : ""}</dd></div>}
         </dl>
         <div className="acquisition-lightbox-actions">
           <button type="button" className={selectedAssets.includes(similarityLightboxAsset.id) ? "selected" : ""} onClick={() => toggleAsset(similarityLightboxAsset.id)} disabled={busy}>
