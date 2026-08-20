@@ -29,9 +29,13 @@ export type Face = {
   predicted_person_id: number | null;
   predicted_person_name: string | null;
   match_score: number | null;
+  predicted_match_source: "sample" | "centroid" | null;
+  predicted_sample_photo_id: number | null;
   second_person_id: number | null;
   second_person_name: string | null;
   second_match_score: number | null;
+  second_match_source: "sample" | "centroid" | null;
+  second_sample_photo_id: number | null;
   match_margin: number | null;
   rejection_reason: string | null;
   recognition_adapter_id: string | null;

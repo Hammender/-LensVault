@@ -293,6 +293,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
+  const [highlightedSampleId, setHighlightedSampleId] = useState<number | null>(null);
   const peopleMainRef = useRef<HTMLElement | null>(null);
   const galleryFilterRef = useRef<HTMLElement | null>(null);
   const galleryDetailRef = useRef<HTMLElement | null>(null);
@@ -857,6 +858,15 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }, [selectedPerson]);
 
   useEffect(() => {
+    if (highlightedSampleId === null || !samples.some((sample) => sample.id === highlightedSampleId)) {
+      return undefined;
+    }
+    document.getElementById(`sample-${highlightedSampleId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const timer = window.setTimeout(() => setHighlightedSampleId(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [highlightedSampleId, samples]);
+
+  useEffect(() => {
     if (!task || task.status === "completed" || task.status === "failed" || task.status === "canceled") {
       return undefined;
     }
@@ -1318,6 +1328,54 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
         peopleMainRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     }
+  }
+
+  function handleOpenMatchedSample(personId: number, samplePhotoId: number) {
+    const person = persons.find((item) => item.id === personId);
+    if (!person) {
+      setError("对应人物已删除，无法打开命中样本。");
+      return;
+    }
+    pendingSampleUploads.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    setPendingSampleUploads([]);
+    setSelectedPerson(person);
+    setHighlightedSampleId(samplePhotoId);
+    setPageState("people");
+    setRoute("people");
+    window.requestAnimationFrame(() => {
+      peopleMainRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  function renderFaceMatchSource(
+    personId: number,
+    source: "sample" | "centroid" | null,
+    samplePhotoId: number | null,
+  ) {
+    if (source === "sample") {
+      return samplePhotoId !== null ? (
+        <button
+          type="button"
+          className="matched-sample-link"
+          onClick={() => handleOpenMatchedSample(personId, samplePhotoId)}
+        >
+          命中样本 #{samplePhotoId}
+        </button>
+      ) : <span>命中样本已删除</span>;
+    }
+    if (source === "centroid") {
+      return <span>人物中心向量</span>;
+    }
+    return <span>历史记录未保存来源，请重新识别</span>;
+  }
+
+  function faceRejectionReasonLabel(reason: string): string {
+    return {
+      no_candidate: "没有候选人物",
+      candidate_not_found: "候选人物不存在",
+      below_threshold: "第一候选低于阈值",
+      insufficient_margin: "前两名差值不足",
+    }[reason] ?? reason;
   }
 
   async function handleBindPersonTag() {
@@ -2560,7 +2618,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const lightboxMeta = lightboxPhoto ? (
     <>
       <div className="lightbox-meta-head">
-        <span>#{lightboxPhoto.id}</span>
+        <span className="lightbox-photo-id">#{lightboxPhoto.id}</span>
         <strong>{lightboxIndex >= 0 ? `${galleryOffset + lightboxIndex + 1} / ${galleryTotal}` : "图片信息"}</strong>
       </div>
       <div className="lightbox-meta-section">
@@ -3181,6 +3239,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <div className="detail-copy">
                   <h3>图片详情</h3>
                   <p>{formatPhotoDate(selectedPhoto.taken_at, selectedPhoto.created_at)}</p>
+                  <p className="detail-photo-id">图片编号 #{selectedPhoto.id}</p>
                   <p>
                     {selectedPhoto.width} × {selectedPhoto.height}
                   </p>
@@ -3334,30 +3393,49 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
                 <div className="face-list">
                   {selectedPhoto.faces.map((face) => (
-                    <article key={face.id}>
-                      <strong>Face #{face.id}</strong>
-                      <span>{galleryFaceStatusLabel(face.needs_review, face.matched_person_id)}</span>
-                      <span>
-                        {face.predicted_person_id !== null && face.match_score !== null
-                          ? `第一候选 ${face.predicted_person_name ?? `#${face.predicted_person_id}`}（#${face.predicted_person_id}），score ${face.match_score.toFixed(3)}`
-                          : "无第一候选"}
-                      </span>
-                      {face.second_person_id !== null && face.second_match_score !== null && (
-                        <span>
-                          第二候选 {face.second_person_name ?? `#${face.second_person_id}`}（#{face.second_person_id}），score {face.second_match_score.toFixed(3)}
+                    <article className="face-card" key={face.id}>
+                      <header className="face-card-head">
+                        <strong>人脸 #{face.id}</strong>
+                        <span className={`face-status${face.needs_review ? " review" : face.matched_person_id === null ? " ignored" : " confirmed"}`}>
+                          {galleryFaceStatusLabel(face.needs_review, face.matched_person_id)}
                         </span>
-                      )}
-                      {face.match_margin !== null && <span>候选差值 {face.match_margin.toFixed(3)}</span>}
-                      {face.rejection_reason && (
-                        <span>
-                          拒绝原因：
-                          {{
-                            no_candidate: "没有候选人物",
-                            candidate_not_found: "候选人物不存在",
-                            below_threshold: "第一候选低于阈值",
-                            insufficient_margin: "前两名差值不足",
-                          }[face.rejection_reason] ?? face.rejection_reason}
-                        </span>
+                      </header>
+                      <div className="face-candidates">
+                        {face.predicted_person_id !== null && face.match_score !== null ? (
+                          <div className="face-candidate-row primary">
+                            <span className="face-candidate-rank">第一候选</span>
+                            <strong>{face.predicted_person_name ?? "已删除人物"}</strong>
+                            <span className="face-score"><small>score</small>{face.match_score.toFixed(3)}</span>
+                            <span className="face-source">
+                              {renderFaceMatchSource(face.predicted_person_id, face.predicted_match_source, face.predicted_sample_photo_id)}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="face-empty-candidate">无第一候选</div>
+                        )}
+                        {face.second_person_id !== null && face.second_match_score !== null && (
+                          <div className="face-candidate-row">
+                            <span className="face-candidate-rank">第二候选</span>
+                            <strong>{face.second_person_name ?? "已删除人物"}</strong>
+                            <span className="face-score"><small>score</small>{face.second_match_score.toFixed(3)}</span>
+                            <span className="face-source">
+                              {renderFaceMatchSource(face.second_person_id, face.second_match_source, face.second_sample_photo_id)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      {(face.match_margin !== null || face.rejection_reason) && (
+                        <footer className={`face-card-foot${face.rejection_reason ? " has-rejection" : ""}`}>
+                          {face.rejection_reason && (
+                            <span className="face-rejection">
+                              <b>拒绝原因</b>
+                              <strong>{faceRejectionReasonLabel(face.rejection_reason)}</strong>
+                            </span>
+                          )}
+                          {face.match_margin !== null && (
+                            <span className="face-margin">候选差值 <strong>{face.match_margin.toFixed(3)}</strong></span>
+                          )}
+                        </footer>
                       )}
                     </article>
                   ))}
@@ -3614,7 +3692,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     const cardClass = `sample-card ${isLandscape ? "span-2" : ""}`;
 
                     return (
-                      <article key={sample.id} className={cardClass}>
+                      <article id={`sample-${sample.id}`} key={sample.id} className={`${cardClass}${highlightedSampleId === sample.id ? " matched-sample-highlight" : ""}`}>
                         <a href={sample.original_url} target="_blank" rel="noreferrer">
                           <img src={withImageWidth(sample.thumbnail_url, 480)} alt="样本缩略图" />
                         </a>

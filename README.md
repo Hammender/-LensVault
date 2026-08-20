@@ -180,10 +180,3 @@ python -m uvicorn app.main:app --reload --app-dir backend
 ```
 
 后端测试位于 `backend/tests/`。提交后端改动时应运行完整测试并检查 `/api/health` 和受影响接口；提交前端改动时至少运行 `cmd /c npm.cmd run build`。
-
-## 开源发布前建议
-
-- 添加 `LICENSE` 文件，并在本节说明实际许可证。
-- 检查 `.env.example` 和 `docker-compose.yml`，避免保留个人机器路径。
-- 清理本地生成文件，例如数据库、对象存储数据、模型文件、日志和前端构建缓存。
-- 如需完全改名，可继续把代码中的 `PictureShow`、`pictureshow-*`、存储桶和 collection 默认名统一迁移为 `LensVault` 命名。

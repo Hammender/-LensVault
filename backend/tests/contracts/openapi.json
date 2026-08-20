@@ -2120,6 +2120,21 @@
             ],
             "title": "Pose Yaw"
           },
+          "predicted_match_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sample",
+                  "centroid"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Match Source"
+          },
           "predicted_person_id": {
             "anyOf": [
               {
@@ -2141,6 +2156,17 @@
               }
             ],
             "title": "Predicted Person Name"
+          },
+          "predicted_sample_photo_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Sample Photo Id"
           },
           "recognition_adapter_id": {
             "anyOf": [
@@ -2175,6 +2201,21 @@
             ],
             "title": "Second Match Score"
           },
+          "second_match_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sample",
+                  "centroid"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Second Match Source"
+          },
           "second_person_id": {
             "anyOf": [
               {
@@ -2196,6 +2237,17 @@
               }
             ],
             "title": "Second Person Name"
+          },
+          "second_sample_photo_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Second Sample Photo Id"
           },
           "vector_collection": {
             "anyOf": [

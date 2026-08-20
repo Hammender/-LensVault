@@ -1277,24 +1277,192 @@ input:focus, select:focus, textarea:focus {
 .detail-copy h3 { margin-bottom: 8px; }
 .detail-copy p { margin: 4px 0; font-family: var(--font-sans); }
 
-.face-list article {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border: 2px solid var(--panel-border);
-  background: var(--bg-strong);
-  box-shadow: 2px 2px 0 var(--panel-border);
+.face-list {
+  display: grid;
+  gap: 10px;
   width: 100%;
 }
 
-.face-list article strong {
-  margin-right: auto;
+.face-card {
+  overflow: hidden;
+  min-width: 0;
+  border: 1px solid rgba(53, 37, 29, 0.28);
+  border-radius: 6px;
+  background: var(--bg-strong);
 }
 
-.face-list article span {
-  font-size: 0.85rem;
+.face-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(53, 37, 29, 0.12);
+  background: rgba(236, 229, 218, 0.34);
+}
+
+.face-card-head strong {
+  font-family: var(--font-num);
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.face-status {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid rgba(53, 37, 29, 0.22);
+  border-radius: 4px;
   color: var(--muted);
+  background: var(--bg-strong);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.face-status.confirmed { color: #39744e; }
+.face-status.review { color: var(--unknown); }
+.face-status.ignored { color: var(--accent-strong); }
+
+.face-candidates {
+  display: grid;
+}
+
+.face-candidate-row {
+  display: grid;
+  grid-template-columns: 62px minmax(70px, 1fr) auto minmax(88px, auto);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 10px;
+  color: var(--text);
+}
+
+.face-candidate-row + .face-candidate-row {
+  border-top: 1px solid rgba(53, 37, 29, 0.08);
+}
+
+.face-candidate-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.86rem;
+  line-height: 1.25;
+}
+
+.face-candidate-rank {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.face-candidate-row.primary .face-candidate-rank,
+.face-candidate-row.primary > strong {
+  color: var(--text);
+}
+
+.face-score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-family: var(--font-num);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.face-score small {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 0.65rem;
+  font-weight: 600;
+}
+
+.face-source {
+  min-width: 0;
+  text-align: right;
+}
+
+.face-source > * {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.face-source .matched-sample-link {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.face-empty-candidate {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.face-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+  padding: 5px 10px;
+  border-top: 1px solid rgba(53, 37, 29, 0.1);
+  color: var(--muted);
+  font-size: 0.73rem;
+  line-height: 1.3;
+}
+
+.face-card-foot.has-rejection {
+  justify-content: space-between;
+  border-left: 3px solid var(--accent);
+  background: rgba(199, 71, 85, 0.045);
+}
+
+.face-rejection {
+  display: inline-flex;
+  gap: 6px;
+  min-width: 0;
+  color: var(--accent-strong);
+}
+
+.face-rejection b {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+}
+
+.face-rejection strong {
+  min-width: 0;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.face-margin {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.face-margin strong {
+  color: var(--text);
+  font-family: var(--font-num);
+}
+
+@media (max-width: 540px) {
+  .face-candidate-row {
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+    gap: 6px;
+  }
+  .face-source {
+    grid-column: 2 / -1;
+    text-align: left;
+  }
+  .face-card-foot,
+  .face-card-foot.has-rejection {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
 }
 
 .person-card {
@@ -2554,6 +2722,45 @@ input:focus, select:focus, textarea:focus {
   font-size: 1.15rem;
   line-height: 1.3;
   color: var(--text);
+}
+
+.lightbox-meta-head .lightbox-photo-id {
+  color: var(--text);
+  font-family: var(--font-num);
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
+}
+
+.detail-photo-id {
+  color: var(--muted);
+  font-family: var(--font-num);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.matched-sample-link {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.matched-sample-link:hover,
+.matched-sample-link:focus-visible {
+  color: var(--accent);
+}
+
+.matched-sample-highlight {
+  outline: 3px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .lightbox-meta-chips {

@@ -177,11 +177,28 @@ def test_person_level_matching_uses_best_sample_and_workspace_version_filters() 
     match = service._match_face(detected, workspace_id=7)
 
     assert (match.person_id, match.score) == (10, 0.81)
+    assert (match.source_type, match.sample_photo_id) == ("centroid", None)
     assert (match.second_person_id, match.second_score) == (20, 0.72)
+    assert (match.second_source_type, match.second_sample_photo_id) == ("sample", 2)
     assert round(match.margin or 0, 2) == 0.09
     assert store.search_args["workspace_id"] == 7
     assert store.search_args["embedding_version"] == "test-v1"
     assert store.search_args["limit"] == 50
+
+
+def test_person_level_matching_prefers_direct_sample_when_scores_are_equal() -> None:
+    store = FakeVectorStore([
+        FaceSearchHit("centroid", 10, 0.81, "centroid", None),
+        FaceSearchHit(9, 10, 0.81, "sample", 9),
+    ])
+    service = PictureService.__new__(PictureService)
+    service.settings = Settings(face_search_limit=50, face_embedding_version="test-v1")
+    service.vector_store = store
+    detected = DetectedFace((0, 0, 100, 100), 0.9, np.ones(512, dtype=np.float32), 100, 90, 0)
+
+    match = service._match_face(detected, workspace_id=7)
+
+    assert (match.person_id, match.score, match.source_type, match.sample_photo_id) == (10, 0.81, "sample", 9)
 
 
 def test_confident_match_requires_top_two_margin() -> None:

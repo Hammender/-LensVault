@@ -12,7 +12,7 @@ from zipfile import ZipFile
 
 import numpy as np
 from PIL import Image, ImageOps
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -20,7 +20,7 @@ from app.core.timezones import as_shanghai_naive, shanghai_now
 from app.models import FaceRecognitionCorrection, FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
 from app.services.face import DetectedFace, FaceService
 from app.services.image_metadata import parse_image_metadata
-from app.services.qdrant import QdrantVectorStore
+from app.services.qdrant import FaceSearchHit, QdrantVectorStore
 from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
 from app.services.thumbnails import animated_thumbnail_cache_key
@@ -43,6 +43,10 @@ class PersonMatch:
     score: float | None
     second_person_id: int | None = None
     second_score: float | None = None
+    source_type: str | None = None
+    sample_photo_id: int | None = None
+    second_source_type: str | None = None
+    second_sample_photo_id: int | None = None
 
     @property
     def margin(self) -> float | None:
@@ -75,7 +79,7 @@ class PictureService:
         self.unknown_person_name = "未知人物"
 
     def _match_face(self, detected: DetectedFace, workspace_id: int | None) -> PersonMatch:
-        by_person: dict[int, float] = {}
+        by_person: dict[int, FaceSearchHit] = {}
         embeddings = (detected.embedding, *detected.embedding_variants)
         for embedding in embeddings:
             hits = self.vector_store.search_candidates(
@@ -86,16 +90,28 @@ class PictureService:
                 limit=self.settings.face_search_limit,
             )
             for hit in hits:
-                by_person[hit.person_id] = max(by_person.get(hit.person_id, -1.0), hit.score)
-        ranked = sorted(by_person.items(), key=lambda item: item[1], reverse=True)
+                current = by_person.get(hit.person_id)
+                if current is None or self._is_better_candidate_hit(hit, current):
+                    by_person[hit.person_id] = hit
+        ranked = sorted(by_person.values(), key=self._candidate_hit_sort_key)
         if not ranked:
             logger.info(
                 "Face match evaluated embedding_candidates=%d person_id=None score=None margin=None",
                 len(embeddings),
             )
             return PersonMatch(None, None)
-        second = ranked[1] if len(ranked) > 1 else (None, None)
-        match = PersonMatch(ranked[0][0], ranked[0][1], second[0], second[1])
+        first = ranked[0]
+        second = ranked[1] if len(ranked) > 1 else None
+        match = PersonMatch(
+            first.person_id,
+            first.score,
+            second.person_id if second else None,
+            second.score if second else None,
+            first.source_type,
+            first.sample_photo_id,
+            second.source_type if second else None,
+            second.sample_photo_id if second else None,
+        )
         logger.info(
             "Face match evaluated embedding_candidates=%d person_id=%s score=%.4f "
             "second_person_id=%s second_score=%s margin=%s",
@@ -107,6 +123,14 @@ class PictureService:
             f"{match.margin:.4f}" if match.margin is not None else "None",
         )
         return match
+
+    @staticmethod
+    def _candidate_hit_sort_key(hit: FaceSearchHit) -> tuple[float, int, int, str]:
+        return (-hit.score, 0 if hit.source_type == "sample" else 1, hit.sample_photo_id or 0, str(hit.point_id))
+
+    @classmethod
+    def _is_better_candidate_hit(cls, candidate: FaceSearchHit, current: FaceSearchHit) -> bool:
+        return cls._candidate_hit_sort_key(candidate) < cls._candidate_hit_sort_key(current)
 
     def _recognition_plan(
         self,
@@ -240,8 +264,12 @@ class PictureService:
             "bbox_bottom": detected.bbox[3],
             "detection_score": detected.score,
             "predicted_person_id": match.person_id if match else None,
+            "predicted_match_source": match.source_type if match else None,
+            "predicted_sample_photo_id": match.sample_photo_id if match else None,
             "second_person_id": match.second_person_id if match else None,
             "second_match_score": match.second_score if match else None,
+            "second_match_source": match.second_source_type if match else None,
+            "second_sample_photo_id": match.second_sample_photo_id if match else None,
             "match_margin": match.margin if match else None,
             "rejection_reason": decision.rejection_reason if decision else None,
             "recognition_adapter_id": self.settings.face_adapter_id,
@@ -860,6 +888,24 @@ class PictureService:
         face_ids = [face.id for face in sample_photo.faces if face.vector_collection == "known"]
         self.vector_store.delete_faces(self.settings.qdrant_known_collection, face_ids)
         object_key = sample_photo.object_key
+        db.execute(
+            update(FaceRecord)
+            .where(
+                FaceRecord.sample_photo_id.is_(None),
+                (FaceRecord.predicted_sample_photo_id == sample_photo.id)
+                | (FaceRecord.second_sample_photo_id == sample_photo.id),
+            )
+            .values(
+                predicted_sample_photo_id=case(
+                    (FaceRecord.predicted_sample_photo_id == sample_photo.id, None),
+                    else_=FaceRecord.predicted_sample_photo_id,
+                ),
+                second_sample_photo_id=case(
+                    (FaceRecord.second_sample_photo_id == sample_photo.id, None),
+                    else_=FaceRecord.second_sample_photo_id,
+                ),
+            )
+        )
         db.delete(sample_photo)
         db.flush()
         self._recompute_person_centroid(db, person_id, workspace_id)
@@ -909,6 +955,25 @@ class PictureService:
                 person.id,
                 self.settings.face_embedding_version,
             )
+            sample_ids = [sample.id for sample in person.sample_photos]
+            if sample_ids:
+                db.execute(
+                    update(FaceRecord)
+                    .where(
+                        (FaceRecord.predicted_sample_photo_id.in_(sample_ids))
+                        | (FaceRecord.second_sample_photo_id.in_(sample_ids))
+                    )
+                    .values(
+                        predicted_sample_photo_id=case(
+                            (FaceRecord.predicted_sample_photo_id.in_(sample_ids), None),
+                            else_=FaceRecord.predicted_sample_photo_id,
+                        ),
+                        second_sample_photo_id=case(
+                            (FaceRecord.second_sample_photo_id.in_(sample_ids), None),
+                            else_=FaceRecord.second_sample_photo_id,
+                        ),
+                    )
+                )
             for sample in person.sample_photos:
                 self.storage.remove_object(sample.object_key)
             db.delete(person)

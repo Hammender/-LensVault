@@ -104,8 +104,12 @@ def ensure_face_recognition_columns(engine: Engine) -> None:
         },
         "face_records": {
             "predicted_person_id": "ALTER TABLE face_records ADD COLUMN predicted_person_id INTEGER",
+            "predicted_match_source": "ALTER TABLE face_records ADD COLUMN predicted_match_source VARCHAR(16)",
+            "predicted_sample_photo_id": "ALTER TABLE face_records ADD COLUMN predicted_sample_photo_id INTEGER",
             "second_person_id": "ALTER TABLE face_records ADD COLUMN second_person_id INTEGER",
             "second_match_score": "ALTER TABLE face_records ADD COLUMN second_match_score FLOAT",
+            "second_match_source": "ALTER TABLE face_records ADD COLUMN second_match_source VARCHAR(16)",
+            "second_sample_photo_id": "ALTER TABLE face_records ADD COLUMN second_sample_photo_id INTEGER",
             "match_margin": "ALTER TABLE face_records ADD COLUMN match_margin FLOAT",
             "rejection_reason": "ALTER TABLE face_records ADD COLUMN rejection_reason VARCHAR(32)",
             "recognition_adapter_id": "ALTER TABLE face_records ADD COLUMN recognition_adapter_id VARCHAR(64)",

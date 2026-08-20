@@ -967,8 +967,8 @@ CREATE TABLE gallery_similarity_scans (
 	person_id INTEGER, 
 	include_cross_type BOOLEAN NOT NULL, 
 	scan_type VARCHAR(32) NOT NULL, 
-	auto_delete_exact_mirror BOOLEAN NOT NULL,
-	auto_deleted_count INTEGER NOT NULL,
+	auto_delete_exact_mirror BOOLEAN NOT NULL, 
+	auto_deleted_count INTEGER NOT NULL, 
 	status VARCHAR(32) NOT NULL, 
 	is_stale BOOLEAN NOT NULL, 
 	feature_version VARCHAR(64) NOT NULL, 
@@ -1317,8 +1317,12 @@ CREATE INDEX ix_acquisition_source_items_status ON acquisition_source_items (sta
 --   matched_person_id：最终匹配人物标识
 --   predicted_person_id：识别模型第一候选人物标识
 --   match_score：最终匹配人物相似度得分
+--   predicted_match_source：第一候选来源：sample（样本照片）或 centroid（人物中心向量）
+--   predicted_sample_photo_id：第一候选直接命中的样本图片标识
 --   second_person_id：识别模型第二候选人物标识
 --   second_match_score：第二候选人物相似度得分
+--   second_match_source：第二候选来源：sample（样本照片）或 centroid（人物中心向量）
+--   second_sample_photo_id：第二候选直接命中的样本图片标识
 --   match_margin：第一候选与第二候选得分差值
 --   rejection_reason：识别结果被拒绝的原因，如低分或差距不足
 --   recognition_adapter_id：执行识别的人脸模型适配器标识
@@ -1344,8 +1348,12 @@ CREATE TABLE face_records (
 	matched_person_id INTEGER, 
 	predicted_person_id INTEGER, 
 	match_score FLOAT, 
+	predicted_match_source VARCHAR(16), 
+	predicted_sample_photo_id INTEGER, 
 	second_person_id INTEGER, 
 	second_match_score FLOAT, 
+	second_match_source VARCHAR(16), 
+	second_sample_photo_id INTEGER, 
 	match_margin FLOAT, 
 	rejection_reason VARCHAR(32), 
 	recognition_adapter_id VARCHAR(64), 

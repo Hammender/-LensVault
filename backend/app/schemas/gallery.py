@@ -29,9 +29,13 @@ class FaceRead(BaseModel):
     predicted_person_id: int | None = None
     predicted_person_name: str | None = None
     match_score: float | None
+    predicted_match_source: Literal["sample", "centroid"] | None = None
+    predicted_sample_photo_id: int | None = None
     second_person_id: int | None = None
     second_person_name: str | None = None
     second_match_score: float | None = None
+    second_match_source: Literal["sample", "centroid"] | None = None
+    second_sample_photo_id: int | None = None
     match_margin: float | None = None
     rejection_reason: str | None = None
     recognition_adapter_id: str | None = None
