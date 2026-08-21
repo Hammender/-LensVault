@@ -12,3 +12,4 @@ backend/app/data/
 .env.example
 .idea
 newweb
+*.jar

@@ -286,7 +286,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
   }
 
   async function deleteSelected() {
-    if (!selectedIds.length || !await confirm({ title: "删除相似图片", message: `确认删除选中的 ${selectedIds.length} 张图片？原图也会被删除。`, confirmLabel: "删除", tone: "danger" })) return;
+    if (!selectedIds.length || !await confirm({ title: "删除相似图片", message: `确认删除选中的 ${selectedIds.length} 张图片（含其他页选中的图片）？原图也会被删除。`, confirmLabel: "删除", tone: "danger" })) return;
     setBusy(true);
     try {
       const deleted = await batchDeleteGalleryPhotos(selectedIds);
@@ -510,7 +510,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                   </button>
                   <span className="similarity-member-type">{member.photo.is_rich_text ? "图文" : "普通"}</span>
                   {member.recommended_keep && <span className="keep-badge"><CheckCircle2 size={14} /> 建议保留</span>}
-                  <div>
+                  <div className="similarity-member-facts">
                     <label className="similarity-delete-choice">
                       <input
                         type="checkbox"
@@ -522,6 +522,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                     </label>
                     <span>相似 {(member.score_to_representative * 100).toFixed(1)}%</span>
                     <span>综合 {member.quality_score.toFixed(1)} · 整体 {member.overall_quality_score.toFixed(1)}{member.face_quality_score !== null ? ` · 人脸 ${member.face_quality_score.toFixed(1)}` : ""}</span>
+                    <span>文件大小 {formatBytes(member.photo.size_bytes)}</span>
                   </div>
                 </article>
               ))}
@@ -534,9 +535,9 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
         {!resultScan && !busy && <div className="panel empty-card">当前范围没有成功扫描结果。可切换历史结果，或点击“开始扫描”。</div>}
         {total > pageSize && (
           <div className="pagination-row">
-            <button disabled={offset === 0 || busy} onClick={() => void loadGroups(resultScan, Math.max(0, offset - pageSize))}>上一页</button>
+            <button disabled={offset === 0 || busy} onClick={() => void loadGroups(resultScan, Math.max(0, offset - pageSize), false)}>上一页</button>
             <span>{offset + 1} - {Math.min(offset + pageSize, total)} / {total}</span>
-            <button disabled={offset + pageSize >= total || busy} onClick={() => void loadGroups(resultScan, offset + pageSize)}>下一页</button>
+            <button disabled={offset + pageSize >= total || busy} onClick={() => void loadGroups(resultScan, offset + pageSize, false)}>下一页</button>
           </div>
         )}
       </section>
