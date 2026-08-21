@@ -389,7 +389,26 @@ def test_all_failed_matches_trigger_rotation_fallback() -> None:
 def test_any_accepted_match_skips_rotation_fallback() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    face_service = FallbackFaceService([detected_face(3), detected_face(1)], [detected_face(2)])
+    face_service = FallbackFaceService([detected_face(3)], [detected_face(2)])
+    service = make_recognition_service(face_service)
+    with Session(engine) as db:
+        db.add(Person(id=2, name="person-2", display_name="人物二", is_unknown=False))
+        db.commit()
+
+        plan = service._recognition_plan(db, make_payload(), workspace_id=None)
+
+    assert face_service.fallback_calls == 0
+    assert len(plan) == 1
+    assert plan[0][1].score == pytest.approx(0.75)
+
+
+def test_partial_rejection_runs_fallback_and_merges_per_face() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    face_service = FallbackFaceService(
+        [detected_face(3, bbox=(10, 10, 80, 80)), detected_face(1, bbox=(100, 10, 170, 80))],
+        [detected_face(2, bbox=(100, 10, 170, 80)), detected_face(3, bbox=(10, 10, 80, 80))],
+    )
     service = make_recognition_service(face_service)
     with Session(engine) as db:
         db.add_all([
@@ -400,8 +419,10 @@ def test_any_accepted_match_skips_rotation_fallback() -> None:
 
         plan = service._recognition_plan(db, make_payload(), workspace_id=None)
 
-    assert face_service.fallback_calls == 0
+    assert face_service.fallback_calls == 1
     assert len(plan) == 2
+    scores = sorted(match.score for _, match in plan)
+    assert scores == pytest.approx([0.70, 0.75])
 
 
 class EmptyRuntime:

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.core.timezones import as_shanghai_naive, shanghai_now
 from app.models import FaceRecognitionCorrection, FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
-from app.services.face import DetectedFace, FaceService
+from app.services.face import DetectedFace, FaceRuntime, FaceService
 from app.services.image_metadata import parse_image_metadata
 from app.services.qdrant import FaceSearchHit, QdrantVectorStore
 from app.services.ocr import OcrService
@@ -164,50 +164,30 @@ class PictureService:
         plan = [(detected, self._match_face(detected, workspace_id)) for detected in detected_faces]
         if not plan:
             return selected_plan("primary", plan, reason="no_faces")
-        primary_accepted = self._plan_has_accepted_match(db, plan, workspace_id)
+        has_rejected = self._plan_has_rejected_match(db, plan, workspace_id)
         logger.info(
-            "Primary recognition evaluated faces=%d accepted=%s",
+            "Primary recognition evaluated faces=%d has_rejected=%s",
             len(plan),
-            primary_accepted,
+            has_rejected,
         )
-        if primary_accepted:
+        if not has_rejected:
             return selected_plan("primary", plan, reason="accepted_match")
         if not self.settings.face_rotation_fallback_enabled:
             return selected_plan("primary", plan, reason="fallback_disabled")
         fallback = getattr(self.face_service, "detect_faces_with_rotation_fallback", None)
         if not callable(fallback):
             return selected_plan("primary", plan, reason="fallback_unavailable")
-        logger.info("Rotation fallback triggered reason=all_primary_matches_rejected faces=%d", len(plan))
+        logger.info("Rotation fallback triggered reason=has_rejected_face faces=%d", len(plan))
         fallback_faces = fallback(payload)
         fallback_plan = [(detected, self._match_face(detected, workspace_id)) for detected in fallback_faces]
-        fallback_accepted = self._plan_has_accepted_match(db, fallback_plan, workspace_id)
+        merged = self._merge_fallback_plan(db, plan, fallback_plan, workspace_id)
         logger.info(
-            "Fallback recognition evaluated faces=%d accepted=%s",
+            "Recognition plan merged primary_faces=%d fallback_faces=%d merged_faces=%d",
+            len(plan),
             len(fallback_plan),
-            fallback_accepted,
+            len(merged),
         )
-        if fallback_accepted:
-            return selected_plan("fallback", fallback_plan, reason="accepted_match")
-        primary_score = max(
-            (match.score if match.score is not None else -1.0 for _, match in plan),
-            default=-1.0,
-        )
-        fallback_score = max(
-            (match.score if match.score is not None else -1.0 for _, match in fallback_plan),
-            default=-1.0,
-        )
-        use_fallback = bool(fallback_plan and fallback_score > primary_score)
-        selection = fallback_plan if use_fallback else plan
-        logger.info(
-            "Recognition plan compared primary_score=%.4f fallback_score=%.4f",
-            primary_score,
-            fallback_score,
-        )
-        return selected_plan(
-            "fallback" if use_fallback else "primary",
-            selection,
-            reason="higher_rejected_score",
-        )
+        return selected_plan("merged", merged, reason="per_face_fallback")
 
     def _plan_has_accepted_match(
         self,
@@ -224,6 +204,74 @@ class PictureService:
             if self._evaluate_match(match, matched_person).accepted:
                 return True
         return False
+
+    @staticmethod
+    def _matched_person(
+        db: Session,
+        match: PersonMatch,
+        workspace_id: int | None,
+    ) -> Person | None:
+        if match.person_id is None:
+            return None
+        return db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == workspace_id))
+
+    def _plan_has_rejected_match(
+        self,
+        db: Session,
+        plan: list[tuple[DetectedFace, PersonMatch]],
+        workspace_id: int | None,
+    ) -> bool:
+        for _, match in plan:
+            if not self._evaluate_match(match, self._matched_person(db, match, workspace_id)).accepted:
+                return True
+        return False
+
+    def _merge_fallback_plan(
+        self,
+        db: Session,
+        primary_plan: list[tuple[DetectedFace, PersonMatch]],
+        fallback_plan: list[tuple[DetectedFace, PersonMatch]],
+        workspace_id: int | None,
+    ) -> list[tuple[DetectedFace, PersonMatch]]:
+        merged: list[tuple[DetectedFace, PersonMatch]] = []
+        used_fallback: set[int] = set()
+        for detected, match in primary_plan:
+            fallback_index = self._best_overlapping_face(detected, fallback_plan, used_fallback)
+            if self._evaluate_match(match, self._matched_person(db, match, workspace_id)).accepted:
+                merged.append((detected, match))
+                if fallback_index is not None:
+                    used_fallback.add(fallback_index)
+                continue
+            if fallback_index is None:
+                merged.append((detected, match))
+                continue
+            used_fallback.add(fallback_index)
+            fb_detected, fb_match = fallback_plan[fallback_index]
+            if fb_match.score is not None and (match.score is None or fb_match.score > match.score):
+                merged.append((fb_detected, fb_match))
+            else:
+                merged.append((detected, match))
+        for index, (fb_detected, fb_match) in enumerate(fallback_plan):
+            if index not in used_fallback:
+                merged.append((fb_detected, fb_match))
+        return merged
+
+    @staticmethod
+    def _best_overlapping_face(
+        face: DetectedFace,
+        candidates: list[tuple[DetectedFace, PersonMatch]],
+        excluded: set[int],
+    ) -> int | None:
+        best_index: int | None = None
+        best_iou = 0.3
+        for index, (candidate, _match) in enumerate(candidates):
+            if index in excluded:
+                continue
+            overlap = FaceRuntime.bbox_iou(face.bbox, candidate.bbox)
+            if overlap >= best_iou:
+                best_index = index
+                best_iou = overlap
+        return best_index
 
     def _is_confident_match(self, match: PersonMatch, matched_person: Person | None) -> bool:
         return self._evaluate_match(match, matched_person).accepted
