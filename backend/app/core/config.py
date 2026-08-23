@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     gallery_similarity_quality_version: str = "technical-quality-v2"
     gallery_similarity_quality_min_margin: float = 3.0
     gallery_similarity_auto_delete_threshold: float = 0.985
+    # 自动整理成簇的纯哈希门槛：综合分再高，pHash/dHash 均值低于该值不视为“肉眼相同”，
+    # 用于拦截同机位不同瞬间的图片被 ORB 加成误判。
+    gallery_similarity_auto_delete_perceptual_min: float = 0.96
 
     acquisition_download_workers: int = 8
     acquisition_download_timeout_seconds: int = 30

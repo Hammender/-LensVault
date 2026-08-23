@@ -653,6 +653,26 @@ def test_run_scan_persists_intra_group_pair_scores(db_session: Session) -> None:
     )
     assert [cluster.member_ids for cluster in clusters] == [expected_pair]
 
+    # 回归防护：带成员、特征与两两分数的组列表读取必须走通。
+    # 曾因 api 层漏导入 GallerySimilarityFeature 在此崩溃，而成员为空的旧测试无法暴露。
+    module = load_test_main()
+    read_request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=settings)))
+    page = module.list_gallery_similarity_groups(
+        scan_id=scan.id,
+        request=read_request,
+        tier="near_duplicate",
+        offset=0,
+        limit=20,
+        db=db_session,
+        current=SimpleNamespace(workspace_id=workspace.id),
+    )
+    assert page.total == 1
+    group_read = page.items[0]
+    assert len(group_read.clusters) == 1
+    assert group_read.clusters[0].member_photo_ids == list(expected_pair)
+    cluster_index_by_photo = {member.photo.id: member.auto_cluster_index for member in group_read.members}
+    assert all(cluster_index_by_photo[photo_id] == 1 for photo_id in expected_pair)
+
 
 def test_normal_auto_delete_does_not_merge_transitive_pairs(db_session: Session, monkeypatch) -> None:
     import app.services.similarity as similarity_module
@@ -686,6 +706,32 @@ def test_normal_auto_delete_does_not_merge_transitive_pairs(db_session: Session,
     assert plans[0].retained_photo_id == photos[0].id
     assert plans[0].delete_photo_ids == (photos[1].id,)
     assert select_normal_near_duplicate_auto_delete_photo_ids(db_session, scan, storage, Settings()) == [photos[1].id]
+
+
+def test_normal_auto_delete_requires_perceptual_hash_floor(db_session: Session, monkeypatch) -> None:
+    import app.services.similarity as similarity_module
+
+    workspace, person, photos = create_scope(db_session, photo_count=2)
+    for photo in photos:
+        photo.size_bytes = 100
+    storage = FakeStorage({photo.object_key: image_bytes((120, 100, 80)) for photo in photos})
+    scan = add_normal_scan(db_session, workspace, person)
+    add_normal_group(db_session, scan, 1, [(photos[0], 90.0), (photos[1], 70.0)])
+    # 纯哈希相似度约 0.875，低于门槛 0.96：即使 ORB 加成把综合分抬到 0.99，也不得视为肉眼相同。
+    add_normal_feature(db_session, photos[0], FULL_HASH, FULL_HASH)
+    add_normal_feature(db_session, photos[1], LOOSE_HASH, LOOSE_HASH)
+    db_session.commit()
+
+    monkeypatch.setattr(
+        similarity_module,
+        "near_duplicate_pair_score",
+        lambda left, right, *, load_orb_features: 0.99,
+    )
+
+    plans = build_normal_near_duplicate_auto_delete_plan(db_session, scan, storage, Settings())
+
+    assert plans == []
+    assert select_normal_near_duplicate_auto_delete_photo_ids(db_session, scan, storage, Settings()) == []
 
 
 def test_preview_normal_auto_delete_endpoint_returns_plan(db_session: Session) -> None:

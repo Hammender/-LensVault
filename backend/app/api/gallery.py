@@ -23,7 +23,7 @@ from app.dependencies.context import CurrentContext, require_context, require_pe
 from app.http.media import stream_storage_object
 from app.mappers.gallery import gallery_photo_to_detail as _gallery_photo_to_detail, gallery_photo_to_list_item as _gallery_photo_to_list_item
 from app.mappers.people import person_to_read
-from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityGroup, GallerySimilarityGroupMember, GallerySimilarityGroupPair, GallerySimilarityScan, Person, PersonTag, SamplePhoto, Tag, Task
+from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityFeature, GallerySimilarityGroup, GallerySimilarityGroupMember, GallerySimilarityGroupPair, GallerySimilarityScan, Person, PersonTag, SamplePhoto, Tag, Task
 from app.schemas import (
     GallerySimilarityAutoDeleteExecuteRequest,
     GallerySimilarityAutoDeleteResponse,
@@ -53,6 +53,7 @@ from app.services.similarity import (
     derive_group_auto_clusters,
     load_similarity_scan_overview,
     mark_similarity_scans_stale,
+    perceptual_component,
     select_exact_mirror_auto_delete_photo_ids,
     select_normal_near_duplicate_auto_delete_photo_ids,
 )
@@ -244,14 +245,36 @@ def _gallery_similarity_group_read(
     db: Session,
     group: GallerySimilarityGroup,
     auto_cluster_threshold: float,
+    auto_cluster_perceptual_min: float,
 ) -> GallerySimilarityGroupRead:
     pair_rows = db.scalars(
         select(GallerySimilarityGroupPair).where(GallerySimilarityGroupPair.group_id == group.id)
     ).all()
-    clusters = derive_group_auto_clusters(
-        [(row.left_gallery_photo_id, row.right_gallery_photo_id, row.score) for row in pair_rows],
-        auto_cluster_threshold,
+    member_photo_ids = [member.gallery_photo_id for member in group.members]
+    feature_map = (
+        {
+            row.gallery_photo_id: row
+            for row in db.scalars(
+                select(GallerySimilarityFeature).where(
+                    GallerySimilarityFeature.gallery_photo_id.in_(member_photo_ids)
+                )
+            ).all()
+        }
+        if member_photo_ids
+        else {}
     )
+    # 与自动整理预案同一道纯哈希门槛，避免 ORB 背景加成把同机位不同瞬间的图混入簇。
+    qualifying_pairs = [
+        (row.left_gallery_photo_id, row.right_gallery_photo_id, row.score)
+        for row in pair_rows
+        if row.score >= auto_cluster_threshold
+        and perceptual_component(
+            feature_map.get(row.left_gallery_photo_id),
+            feature_map.get(row.right_gallery_photo_id),
+        )
+        >= auto_cluster_perceptual_min
+    ]
+    clusters = derive_group_auto_clusters(qualifying_pairs, auto_cluster_threshold)
     cluster_index_by_photo: dict[int, int] = {}
     for index, cluster in enumerate(clusters, start=1):
         for photo_id in cluster.member_ids:
@@ -797,7 +820,12 @@ def list_gallery_similarity_groups(
     groups = db.scalars(select(GallerySimilarityGroup).where(*condition).order_by(GallerySimilarityGroup.ordinal.asc()).offset(offset).limit(limit)).all()
     return PaginatedGallerySimilarityGroups(
         items=[
-            _gallery_similarity_group_read(db, group, request.app.state.settings.gallery_similarity_auto_delete_threshold)
+            _gallery_similarity_group_read(
+                db,
+                group,
+                request.app.state.settings.gallery_similarity_auto_delete_threshold,
+                request.app.state.settings.gallery_similarity_auto_delete_perceptual_min,
+            )
             for group in groups
         ],
         total=total,
@@ -820,7 +848,12 @@ def get_gallery_similarity_group(
     group = db.scalar(select(GallerySimilarityGroup).where(GallerySimilarityGroup.id == group_id, GallerySimilarityGroup.scan_id == scan_id))
     if group is None:
         return None
-    return _gallery_similarity_group_read(db, group, request.app.state.settings.gallery_similarity_auto_delete_threshold)
+    return _gallery_similarity_group_read(
+        db,
+        group,
+        request.app.state.settings.gallery_similarity_auto_delete_threshold,
+        request.app.state.settings.gallery_similarity_auto_delete_perceptual_min,
+    )
 
 
 @router.patch("/api/gallery/similarity-scans/{scan_id}/groups/{group_id}", response_model=GallerySimilarityGroupRead)
@@ -842,7 +875,12 @@ def update_gallery_similarity_group(
     db.add(group)
     db.commit()
     db.refresh(group)
-    return _gallery_similarity_group_read(db, group, request.app.state.settings.gallery_similarity_auto_delete_threshold)
+    return _gallery_similarity_group_read(
+        db,
+        group,
+        request.app.state.settings.gallery_similarity_auto_delete_threshold,
+        request.app.state.settings.gallery_similarity_auto_delete_perceptual_min,
+    )
 
 
 @router.get("/api/gallery/photos", response_model=PaginatedGalleryPhotos)

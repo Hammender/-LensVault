@@ -1033,6 +1033,16 @@ def select_exact_mirror_auto_delete_photo_ids(db: Session, scan: GallerySimilari
     return photo_ids
 
 
+def perceptual_component(
+    left: GallerySimilarityFeature | None,
+    right: GallerySimilarityFeature | None,
+) -> float:
+    """两图 pHash/dHash 相似度均值；缺少特征时返回 0。"""
+    if left is None or right is None:
+        return 0.0
+    return (hash_similarity(left.phash, right.phash) + hash_similarity(left.dhash, right.dhash)) / 2
+
+
 def derive_group_auto_clusters(
     pair_scores: Iterable[tuple[int, int, float]], threshold: float
 ) -> list[SimilarityCluster]:
@@ -1139,9 +1149,13 @@ def build_normal_near_duplicate_auto_delete_plan(
         if left_feature is None or right_feature is None:
             return 0.0
         try:
-            return near_duplicate_pair_score(left_feature, right_feature, load_orb_features=orb_loader)
+            score = near_duplicate_pair_score(left_feature, right_feature, load_orb_features=orb_loader)
         except Exception:
             return 0.0
+        # 纯哈希门槛：同机位不同瞬间的图片会被 ORB 背景匹配抬分，但哈希相似度上不去。
+        if score >= threshold and perceptual_component(left_feature, right_feature) < settings.gallery_similarity_auto_delete_perceptual_min:
+            return 0.0
+        return score
 
     # 每个组内独立做高阈值子聚类：严格完全连接——簇内每一对分数都须达阈值，避免传递链误成簇。
     cluster_to_group: dict[tuple[int, ...], GallerySimilarityGroup] = {}
