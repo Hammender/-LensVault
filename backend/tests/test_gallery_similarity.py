@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from fastapi import HTTPException
 from PIL import Image, ImageDraw, ImageOps
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -72,6 +73,9 @@ class FakeStorage:
     def get_bytes(self, object_key: str) -> bytes:
         self.calls.append(object_key)
         return self.objects[object_key]
+
+    def remove_object(self, object_key: str) -> None:
+        self.objects.pop(object_key, None)
 
 
 class FakeVectorStore:
@@ -721,6 +725,76 @@ def test_preview_normal_auto_delete_endpoint_returns_plan(db_session: Session) -
     assert [member.photo_id for member in retained] == [photos[0].id]
     assert [member.photo_id for member in dropped] == [photos[1].id]
     assert dropped[0].thumbnail_url.startswith("/api/gallery/photos/")
+    assert dropped[0].original_url.startswith("/api/gallery/photos/")
+
+
+def test_auto_delete_endpoint_validates_explicit_photo_ids(db_session: Session) -> None:
+    import app.api.gallery as gallery_api
+    from app.schemas import GallerySimilarityAutoDeleteExecuteRequest
+    from app.services.importer import PictureService
+
+    workspace, person, photos = create_scope(db_session, photo_count=3)
+    for photo in photos:
+        photo.size_bytes = 100
+    storage = FakeStorage({photo.object_key: image_bytes((120, 100, 80)) for photo in photos})
+    scan = add_normal_scan(db_session, workspace, person)
+    # 仅簇 {photo0, photo1}；photo2 为散图。
+    add_normal_group(db_session, scan, 1, [(photos[0], 90.0), (photos[1], 70.0)])
+    add_normal_feature(db_session, photos[0], FULL_HASH, FULL_HASH)
+    add_normal_feature(db_session, photos[1], FULL_HASH, FULL_HASH)
+    add_normal_feature(db_session, photos[2], FULL_HASH, LOOSE_HASH)
+    db_session.commit()
+
+    module = load_test_main()
+    picture_service = PictureService(storage, None, FakeVectorStore(), None, Settings())
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                settings=Settings(),
+                services=SimpleNamespace(
+                    similarity=SimpleNamespace(storage=storage),
+                    pictures=picture_service,
+                    storage=storage,
+                ),
+            )
+        )
+    )
+    permissions = {field: False for field in module.PERMISSION_FIELDS}
+    permissions["can_delete_gallery"] = True
+    current = SimpleNamespace(workspace_id=workspace.id, role="member", membership=SimpleNamespace(**permissions))
+
+    def call(payload):
+        token = gallery_api._services_context.set(request.app.state.services)
+        try:
+            return gallery_api.auto_delete_exact_mirror_groups(
+                scan.id,
+                request,
+                payload=payload,
+                db=db_session,
+                current=current,
+            )
+        finally:
+            gallery_api._services_context.reset(token)
+
+    # 越界：不属于任何 ready 簇的图片拒绝删除。
+    with pytest.raises(HTTPException) as unknown_error:
+        call(GallerySimilarityAutoDeleteExecuteRequest(delete_photo_ids=[987654]))
+    assert unknown_error.value.status_code == 422
+
+    # 整簇清空拒绝。
+    with pytest.raises(HTTPException) as empty_error:
+        call(GallerySimilarityAutoDeleteExecuteRequest(delete_photo_ids=[photos[0].id, photos[1].id]))
+    assert empty_error.value.status_code == 422
+
+    # 合法子集：只删簇内指定的图片，散图不受影响。
+    response = call(GallerySimilarityAutoDeleteExecuteRequest(delete_photo_ids=[photos[1].id]))
+
+    assert response.deleted == 1
+    assert response.scan.auto_deleted_count == 1
+    remaining_ids = set(
+        db_session.scalars(select(GalleryPhoto.id).where(GalleryPhoto.workspace_id == workspace.id)).all()
+    )
+    assert remaining_ids == {photos[0].id, photos[2].id}
 
 
 def test_mark_scans_stale_only_for_affected_person_scope(db_session: Session) -> None:

@@ -91,9 +91,13 @@ export async function previewNormalNearDuplicateAutoDelete(scanId: string): Prom
     await authFetch(`/api/gallery/similarity-scans/${scanId}/auto-delete-preview`)
   );
 }
-export async function autoDeleteExactMirrorGroups(scanId: string): Promise<{ deleted: number; scan: GallerySimilarityScan }> {
+export async function autoDeleteExactMirrorGroups(scanId: string, deletePhotoIds?: number[]): Promise<{ deleted: number; scan: GallerySimilarityScan }> {
   return parseResponse<{ deleted: number; scan: GallerySimilarityScan }>(
-    await authFetch(`/api/gallery/similarity-scans/${scanId}/auto-delete-exact-mirrors`, { method: "POST" })
+    await authFetch(`/api/gallery/similarity-scans/${scanId}/auto-delete-exact-mirrors`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ delete_photo_ids: deletePhotoIds ?? [] })
+    })
   );
 }
 export async function getLatestGallerySimilarityScan(personId: number | null, includeCrossType: boolean, scanType: "normal" | "mirror" = "normal"): Promise<GallerySimilarityScan | null> {

@@ -46,10 +46,15 @@ class GallerySimilarityAutoDeleteResponse(BaseModel):
     scan: GallerySimilarityScanRead
 
 
+class GallerySimilarityAutoDeleteExecuteRequest(BaseModel):
+    delete_photo_ids: list[int] = []
+
+
 class GallerySimilarityAutoDeletePreviewMember(BaseModel):
     photo_id: int
     filename: str
     thumbnail_url: str
+    original_url: str
     size_bytes: int | None
     quality_score: float
     retained: bool

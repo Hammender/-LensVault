@@ -2748,6 +2748,20 @@
         "title": "GalleryPhotoTagCreate",
         "type": "object"
       },
+      "GallerySimilarityAutoDeleteExecuteRequest": {
+        "properties": {
+          "delete_photo_ids": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Delete Photo Ids",
+            "type": "array"
+          }
+        },
+        "title": "GallerySimilarityAutoDeleteExecuteRequest",
+        "type": "object"
+      },
       "GallerySimilarityAutoDeletePreviewCluster": {
         "properties": {
           "delete_photo_ids": {
@@ -2800,6 +2814,10 @@
             "title": "Filename",
             "type": "string"
           },
+          "original_url": {
+            "title": "Original Url",
+            "type": "string"
+          },
           "photo_id": {
             "title": "Photo Id",
             "type": "integer"
@@ -2832,6 +2850,7 @@
           "photo_id",
           "filename",
           "thumbnail_url",
+          "original_url",
           "size_bytes",
           "quality_score",
           "retained"
@@ -12922,6 +12941,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/GallerySimilarityAutoDeleteExecuteRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

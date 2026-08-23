@@ -61,6 +61,7 @@ export type GallerySimilarityAutoDeletePreviewMember = {
   photo_id: number;
   filename: string;
   thumbnail_url: string;
+  original_url: string;
   size_bytes: number | null;
   quality_score: number;
   retained: boolean;

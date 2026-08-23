@@ -8,7 +8,7 @@ import logging
 from typing import Literal
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import func
 from fastapi.responses import StreamingResponse
 from PIL import Image
@@ -25,6 +25,7 @@ from app.mappers.gallery import gallery_photo_to_detail as _gallery_photo_to_det
 from app.mappers.people import person_to_read
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityGroup, GallerySimilarityGroupMember, GallerySimilarityGroupPair, GallerySimilarityScan, Person, PersonTag, SamplePhoto, Tag, Task
 from app.schemas import (
+    GallerySimilarityAutoDeleteExecuteRequest,
     GallerySimilarityAutoDeleteResponse,
     GallerySimilarityAutoDeletePreviewCluster,
     GallerySimilarityAutoDeletePreviewMember,
@@ -47,6 +48,7 @@ from app.schemas import (
     TaskRead,
 )
 from app.services.similarity import (
+    AutoDeleteClusterPlan,
     build_normal_near_duplicate_auto_delete_plan,
     derive_group_auto_clusters,
     load_similarity_scan_overview,
@@ -560,6 +562,27 @@ def create_gallery_similarity_scan(
     return _gallery_similarity_scan_read(db, scan)
 
 
+def _resolve_normal_auto_delete_photo_ids(
+    plans: list[AutoDeleteClusterPlan],
+    requested_ids: list[int],
+) -> list[int]:
+    """校验显式提交的删除清单：只能删 ready 簇成员，且每簇至少留一张。"""
+    deletable_members: set[int] = set()
+    ready_cluster_members: list[tuple[int, ...]] = []
+    for plan in plans:
+        if plan.skip_reason is not None:
+            continue
+        ready_cluster_members.append(plan.member_ids)
+        deletable_members.update(plan.member_ids)
+    unknown = [photo_id for photo_id in requested_ids if photo_id not in deletable_members]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"以下图片不属于可自动删除的簇：{unknown}")
+    for members in ready_cluster_members:
+        if all(photo_id in requested_ids for photo_id in members):
+            raise HTTPException(status_code=422, detail="每个相同簇至少需要保留一张图片")
+    return requested_ids
+
+
 @router.post(
     "/api/gallery/similarity-scans/{scan_id}/auto-delete-exact-mirrors",
     response_model=GallerySimilarityAutoDeleteResponse,
@@ -567,6 +590,7 @@ def create_gallery_similarity_scan(
 def auto_delete_exact_mirror_groups(
     scan_id: str,
     request: Request,
+    payload: GallerySimilarityAutoDeleteExecuteRequest | None = Body(default=None),
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> GallerySimilarityAutoDeleteResponse:
@@ -579,15 +603,26 @@ def auto_delete_exact_mirror_groups(
     if scan.status != "completed" or scan.is_stale:
         raise HTTPException(status_code=409, detail="仅可整理未过期的已完成扫描结果")
     if scan.scan_type == "mirror":
+        if payload is not None and payload.delete_photo_ids:
+            raise HTTPException(status_code=422, detail="镜像整理不支持自定义删除清单")
         photo_ids = select_exact_mirror_auto_delete_photo_ids(db, scan)
     else:
         scanner = request.app.state.services.similarity
-        photo_ids = select_normal_near_duplicate_auto_delete_photo_ids(
+        plans = build_normal_near_duplicate_auto_delete_plan(
             db,
             scan,
             scanner.storage,
             request.app.state.settings,
         )
+        requested_ids = list(dict.fromkeys(payload.delete_photo_ids)) if payload is not None else []
+        if requested_ids:
+            photo_ids = _resolve_normal_auto_delete_photo_ids(plans, requested_ids)
+        else:
+            photo_ids = [
+                photo_id
+                for plan in plans
+                for photo_id in plan.delete_photo_ids
+            ]
     photos = db.scalars(
         select(GalleryPhoto).where(
             GalleryPhoto.workspace_id == current.workspace_id,
@@ -688,6 +723,7 @@ def preview_normal_near_duplicate_auto_delete(
                     photo_id=photo_id,
                     filename=photo.filename,
                     thumbnail_url=f"/api/gallery/photos/{photo.id}/thumbnail?v={photo.sha256}",
+                    original_url=f"/api/gallery/photos/{photo.id}/original?v={photo.sha256}",
                     size_bytes=photo.size_bytes,
                     quality_score=quality_by_photo.get(photo_id, 0.0),
                     retained=photo_id == plan.retained_photo_id,
