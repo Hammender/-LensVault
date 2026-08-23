@@ -46,6 +46,29 @@ class GallerySimilarityAutoDeleteResponse(BaseModel):
     scan: GallerySimilarityScanRead
 
 
+class GallerySimilarityAutoDeletePreviewMember(BaseModel):
+    photo_id: int
+    filename: str
+    thumbnail_url: str
+    size_bytes: int | None
+    quality_score: float
+    retained: bool
+
+
+class GallerySimilarityAutoDeletePreviewCluster(BaseModel):
+    status: Literal["ready", "skipped_overlap", "skipped_no_retention"]
+    retained_photo_id: int | None
+    delete_photo_ids: list[int]
+    members: list[GallerySimilarityAutoDeletePreviewMember]
+
+
+class GallerySimilarityAutoDeletePreviewResponse(BaseModel):
+    scan_id: str
+    deletable_count: int
+    skipped_cluster_count: int
+    clusters: list[GallerySimilarityAutoDeletePreviewCluster]
+
+
 class GallerySimilarityMemberRead(BaseModel):
     photo: GalleryPhotoListItem
     score_to_representative: float
@@ -53,6 +76,14 @@ class GallerySimilarityMemberRead(BaseModel):
     face_quality_score: float | None
     quality_score: float
     recommended_keep: bool
+    auto_cluster_index: int | None = None
+
+
+class GallerySimilarityClusterRead(BaseModel):
+    index: int
+    member_photo_ids: list[int]
+    min_pair_score: float
+    average_pair_score: float
 
 
 class GallerySimilarityGroupRead(BaseModel):
@@ -66,6 +97,7 @@ class GallerySimilarityGroupRead(BaseModel):
     recommendation_status: Literal["recommended", "close_quality", "unavailable"]
     people: list[PersonRead]
     members: list[GallerySimilarityMemberRead]
+    clusters: list[GallerySimilarityClusterRead] = []
 
 
 class GallerySimilarityGroupUpdate(BaseModel):

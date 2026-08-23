@@ -9,6 +9,7 @@ from app.api.acquisition import router as acquisition_router
 from app.api.gallery import (
     imports_router as gallery_imports_router,
     list_gallery_similarity_groups,
+    preview_normal_near_duplicate_auto_delete,
     router as gallery_router,
     update_gallery_similarity_group,
 )

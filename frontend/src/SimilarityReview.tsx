@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Images, RefreshCw, ScanSearch, Trash2, X } from "lucide-react";
+import { CheckCircle2, Images, Layers, RefreshCw, ScanSearch, Trash2, X } from "lucide-react";
 
 import {
   autoDeleteExactMirrorGroups,
@@ -8,6 +8,7 @@ import {
   getGallerySimilarityScanOverview,
   getTask,
   listGallerySimilarityGroups,
+  previewNormalNearDuplicateAutoDelete,
   updateGallerySimilarityGroup
 } from "./api";
 import PhotoLightbox from "./PhotoLightbox";
@@ -16,7 +17,14 @@ import SearchableSelect from "./SearchableSelect";
 import { filterPersonMatches, matchesPersonSearch } from "./personPicker";
 import { chooseRecoveredScan, findScanForScope } from "./similarityScanState";
 import { findPreviewAfterCurrentDelete, getSimilarityLightboxShortcut } from "./similarityReviewKeyboard";
-import type { GallerySimilarityGroup, GallerySimilarityScan, Person } from "./types";
+import type {
+  GallerySimilarityAutoDeletePreview,
+  GallerySimilarityCluster,
+  GallerySimilarityGroup,
+  GallerySimilarityMember,
+  GallerySimilarityScan,
+  Person
+} from "./types";
 import { formatBytes, formatDate, withImageWidth } from "./utils";
 
 type SimilarityReviewProps = {
@@ -27,13 +35,38 @@ type SimilarityReviewProps = {
 
 const pageSize = 12;
 
+type SimilarityGroupSection = {
+  key: string;
+  cluster: GallerySimilarityCluster | null;
+  members: GallerySimilarityMember[];
+};
+
+function buildGroupSections(group: GallerySimilarityGroup): SimilarityGroupSection[] | null {
+  if (group.clusters.length === 0) return null;
+  const membersById = new Map(group.members.map((member) => [member.photo.id, member]));
+  const sections: SimilarityGroupSection[] = group.clusters
+    .slice()
+    .sort((a, b) => b.member_photo_ids.length - a.member_photo_ids.length || b.min_pair_score - a.min_pair_score)
+    .map((cluster) => {
+      const members = cluster.member_photo_ids
+        .map((photoId) => membersById.get(photoId))
+        .filter((member): member is GallerySimilarityMember => Boolean(member));
+      members.sort(
+        (a, b) => Number(b.recommended_keep) - Number(a.recommended_keep) || b.quality_score - a.quality_score
+      );
+      return { key: `cluster-${cluster.index}`, cluster, members };
+    });
+  const scattered = group.members.filter((member) => member.auto_cluster_index === null);
+  if (scattered.length > 0) sections.push({ key: "scattered", cluster: null, members: scattered });
+  return sections;
+}
+
 export default function SimilarityReview({ persons, canEdit, canDelete }: SimilarityReviewProps) {
   const confirm = useConfirm();
   const [personId, setPersonId] = useState<number | null>(null);
   const [personSearch, setPersonSearch] = useState("全部人物");
   const [includeCrossType, setIncludeCrossType] = useState(false);
   const [scanType, setScanType] = useState<"normal" | "mirror">("normal");
-  const [autoDeleteExactMirror, setAutoDeleteExactMirror] = useState(false);
   const [tier, setTier] = useState<"near_duplicate" | "same_scene">("near_duplicate");
   const [activeScan, setActiveScan] = useState<GallerySimilarityScan | null>(null);
   const [resultScan, setResultScan] = useState<GallerySimilarityScan | null>(null);
@@ -47,12 +80,19 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
   const [deletingGroupIds, setDeletingGroupIds] = useState<number[]>([]);
   const [dismissingGroupIds, setDismissingGroupIds] = useState<number[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [autoDeletePreview, setAutoDeletePreview] = useState<GallerySimilarityAutoDeletePreview | null>(null);
 
   const previewGroup = preview ? groups.find((group) => group.id === preview.groupId) ?? null : null;
+  const previewOrderedMembers = useMemo(() => {
+    if (!previewGroup) return [] as GallerySimilarityMember[];
+    const sections = buildGroupSections(previewGroup);
+    if (!sections) return previewGroup.members;
+    return sections.flatMap((section) => section.members);
+  }, [previewGroup]);
   const previewIndex = previewGroup && preview
-    ? previewGroup.members.findIndex((member) => member.photo.id === preview.photoId)
+    ? previewOrderedMembers.findIndex((member) => member.photo.id === preview.photoId)
     : -1;
-  const previewMember = previewGroup && previewIndex >= 0 ? previewGroup.members[previewIndex] : null;
+  const previewMember = previewGroup && previewIndex >= 0 ? previewOrderedMembers[previewIndex] : null;
   const previewSelectedCount = previewGroup
     ? previewGroup.members.filter((member) => selectedIds.includes(member.photo.id)).length
     : 0;
@@ -236,12 +276,9 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     const matchMode = includeCrossType
       ? "允许普通图库与图文图库跨类型匹配"
       : "普通图库与图文图库分别匹配";
-    const autoDeleteMessage = scanType === "mirror" && autoDeleteExactMirror
-      ? "\n\n扫描结束后会自动整理相似度为 100% 的镜像组：优先保留系统建议图片，否则保留唯一体积最大的图片，并永久删除其余图片。"
-      : "";
     const confirmed = await confirm({
       title: "开始相似图片扫描",
-      message: `确认开始${scanType === "mirror" ? "镜像相似" : "普通相似"}图片扫描吗？\n\n扫描人物：${personLabel(personId)}\n匹配方式：${matchMode}\n\n扫描耗时较长，完成前会继续保留当前成功结果。${autoDeleteMessage}`,
+      message: `确认开始${scanType === "mirror" ? "镜像相似" : "普通相似"}图片扫描吗？\n\n扫描人物：${personLabel(personId)}\n匹配方式：${matchMode}\n\n扫描耗时较长，完成前会继续保留当前成功结果。`,
       confirmLabel: "开始扫描"
     });
     if (!confirmed) return;
@@ -252,13 +289,25 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       const created = await createGallerySimilarityScan({
         person_id: personId,
         include_cross_type: includeCrossType,
-        scan_type: scanType,
-        auto_delete_exact_mirror: scanType === "mirror" && autoDeleteExactMirror
+        scan_type: scanType
       });
       setActiveScan(created);
       setSelectedIds([]);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "发起扫描失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openAutoDeletePreview() {
+    if (!resultScan) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      setAutoDeletePreview(await previewNormalNearDuplicateAutoDelete(resultScan.id));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "读取自动整理预览失败");
     } finally {
       setBusy(false);
     }
@@ -277,6 +326,28 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       setResultScan(response.scan);
       setScanHistory((current) => current.map((scan) => scan.id === response.scan.id ? response.scan : scan));
       setNotice(`已自动整理删除 ${response.deleted} 张图片，累计自动删除 ${response.scan.auto_deleted_count} 张。`);
+      await loadGroups(response.scan, 0);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "自动整理失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function executeAutoDeleteFromPreview() {
+    if (!resultScan || !autoDeletePreview || !await confirm({
+      title: "确认自动整理",
+      message: `将按预览方案永久删除 ${autoDeletePreview.deletable_count} 张图片，原图也会被删除，此操作不可撤销。`,
+      confirmLabel: "执行删除",
+      tone: "danger"
+    })) return;
+    setBusy(true);
+    try {
+      const response = await autoDeleteExactMirrorGroups(resultScan.id);
+      setAutoDeletePreview(null);
+      setResultScan(response.scan);
+      setScanHistory((current) => current.map((scan) => scan.id === response.scan.id ? response.scan : scan));
+      setNotice(`已按预览方案删除 ${response.deleted} 张图片，累计自动删除 ${response.scan.auto_deleted_count} 张。`);
       await loadGroups(response.scan, 0);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "自动整理失败");
@@ -397,17 +468,6 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
           />
           <span>允许普通图库与图文图库跨类型匹配</span>
         </label>
-        {scanType === "mirror" && (
-          <label className="similarity-switch">
-            <input
-              type="checkbox"
-              checked={autoDeleteExactMirror}
-              disabled={busy || !canDelete}
-              onChange={(event) => setAutoDeleteExactMirror(event.target.checked)}
-            />
-            <span>扫描后自动整理 100% 镜像组</span>
-          </label>
-        )}
         <button disabled={busy || deletingGroupIds.length > 0 || !canEdit || Boolean(activeScan)} onClick={() => void startScan()}>
           <RefreshCw size={16} /> {targetResult ? "重新扫描" : "开始扫描"}
         </button>
@@ -447,13 +507,22 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
             <span>{resultScan.scan_type === "mirror" ? "镜像相似" : "普通相似"} · {personLabel(resultScan.person_id)} · {resultScan.include_cross_type ? "跨类型" : "分类型"} · 完成于 {formatDate(resultScan.completed_at || resultScan.created_at)}</span>
           </div>
           <small>{resultScan.photo_count} 张图片 · {resultScan.candidate_pair_count} 个候选对 · {resultScan.group_count} 个相似组</small>
-          {resultScan.scan_type === "mirror" && !resultScan.is_stale && (
+          {!resultScan.is_stale && resultScan.scan_type === "mirror" && (
             <button
               className="danger-button similarity-auto-delete-button"
               disabled={!canDelete || busy || Boolean(activeScan)}
               onClick={() => void autoDeleteCurrentExactMirrorGroups()}
             >
               <Trash2 size={15} /> 自动整理 100% 镜像组
+            </button>
+          )}
+          {!resultScan.is_stale && resultScan.scan_type === "normal" && (
+            <button
+              className="similarity-auto-delete-button"
+              disabled={!canDelete || busy || Boolean(activeScan)}
+              onClick={() => void openAutoDeletePreview()}
+            >
+              <Layers size={15} /> 预览自动整理
             </button>
           )}
           {resultScan.auto_deleted_count > 0 && <small>累计自动删除 {resultScan.auto_deleted_count} 张图片</small>}
@@ -471,64 +540,100 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
           </button>
         </div>
 
-        {groups.map((group) => (
-          <article className="panel similarity-group" key={group.id}>
-            <header>
-              <div className="similarity-group-title">
-                <strong>第 {group.ordinal} 组</strong>
-                <span>{group.people.map((person) => person.display_name).join("、")}</span>
+        {groups.map((group) => {
+          const sections = buildGroupSections(group);
+          const renderMemberCard = (member: GallerySimilarityMember) => (
+            <article
+              className={`similarity-member ${member.recommended_keep ? "recommended" : ""} ${selectedIds.includes(member.photo.id) ? "selected" : ""}`}
+              key={member.photo.id}
+            >
+              <button
+                type="button"
+                className="similarity-image-button"
+                onClick={() => setPreview({ groupId: group.id, photoId: member.photo.id })}
+                aria-label={`大图查看 ${member.photo.filename}`}
+              >
+                <img src={withImageWidth(member.photo.thumbnail_url, 560)} alt={member.photo.filename} loading="lazy" />
+              </button>
+              <span className="similarity-member-type">{member.photo.is_rich_text ? "图文" : "普通"}</span>
+              {member.recommended_keep && <span className="keep-badge"><CheckCircle2 size={14} /> 建议保留</span>}
+              <div className="similarity-member-facts">
+                <label className="similarity-delete-choice">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(member.photo.id)}
+                    disabled={!canDelete || deletingGroupIds.includes(group.id)}
+                    onChange={() => toggleSelected(member.photo.id)}
+                  />
+                  <span>选择删除</span>
+                </label>
+                <span>相似 {(member.score_to_representative * 100).toFixed(1)}%</span>
+                <span>综合 {member.quality_score.toFixed(1)} · 整体 {member.overall_quality_score.toFixed(1)}{member.face_quality_score !== null ? ` · 人脸 ${member.face_quality_score.toFixed(1)}` : ""}</span>
+                <span>文件大小 {formatBytes(member.photo.size_bytes)}</span>
               </div>
-              <small>最低相似度 {(group.min_score * 100).toFixed(1)}%</small>
-              <small>{group.recommendation_status === "close_quality" ? "质量接近，未强制推荐" : group.face_quality_enabled ? "整体 55% + 人脸 45%" : "仅按整体质量"}</small>
-              <div className="similarity-group-actions">
-                <button
-                  className="danger-button"
-                  disabled={!canDelete || busy || deletingGroupIds.includes(group.id) || !group.members.some((member) => selectedIds.includes(member.photo.id))}
-                  onClick={() => void deleteGroupSelected(group)}
-                >
-                  <Trash2 size={15} /> {deletingGroupIds.includes(group.id) ? "正在删除" : "删除图片"}
-                </button>
-                <button
-                  className="ghost-button"
-                  disabled={!canEdit || deletingGroupIds.includes(group.id) || dismissingGroupIds.includes(group.id)}
-                  onClick={() => void dismissGroup(group)}
-                >
-                  {dismissingGroupIds.includes(group.id) ? "正在隐藏" : "暂不处理"}
-                </button>
-              </div>
-            </header>
-            <div className="similarity-member-grid">
-              {group.members.map((member) => (
-                <article className={`similarity-member ${member.recommended_keep ? "recommended" : ""} ${selectedIds.includes(member.photo.id) ? "selected" : ""}`} key={member.photo.id}>
+            </article>
+          );
+          return (
+            <article className="panel similarity-group" key={group.id}>
+              <header>
+                <div className="similarity-group-title">
+                  <strong>第 {group.ordinal} 组</strong>
+                  <span>{group.people.map((person) => person.display_name).join("、")}</span>
+                </div>
+                <small>最低相似度 {(group.min_score * 100).toFixed(1)}%</small>
+                <small>{group.recommendation_status === "close_quality" ? "质量接近，未强制推荐" : group.face_quality_enabled ? "整体 55% + 人脸 45%" : "仅按整体质量"}</small>
+                <div className="similarity-group-actions">
                   <button
-                    type="button"
-                    className="similarity-image-button"
-                    onClick={() => setPreview({ groupId: group.id, photoId: member.photo.id })}
-                    aria-label={`大图查看 ${member.photo.filename}`}
+                    className="danger-button"
+                    disabled={!canDelete || busy || deletingGroupIds.includes(group.id) || !group.members.some((member) => selectedIds.includes(member.photo.id))}
+                    onClick={() => void deleteGroupSelected(group)}
                   >
-                    <img src={withImageWidth(member.photo.thumbnail_url, 560)} alt={member.photo.filename} loading="lazy" />
+                    <Trash2 size={15} /> {deletingGroupIds.includes(group.id) ? "正在删除" : "删除图片"}
                   </button>
-                  <span className="similarity-member-type">{member.photo.is_rich_text ? "图文" : "普通"}</span>
-                  {member.recommended_keep && <span className="keep-badge"><CheckCircle2 size={14} /> 建议保留</span>}
-                  <div className="similarity-member-facts">
-                    <label className="similarity-delete-choice">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.includes(member.photo.id)}
-                        disabled={!canDelete || deletingGroupIds.includes(group.id)}
-                        onChange={() => toggleSelected(member.photo.id)}
-                      />
-                      <span>选择删除</span>
-                    </label>
-                    <span>相似 {(member.score_to_representative * 100).toFixed(1)}%</span>
-                    <span>综合 {member.quality_score.toFixed(1)} · 整体 {member.overall_quality_score.toFixed(1)}{member.face_quality_score !== null ? ` · 人脸 ${member.face_quality_score.toFixed(1)}` : ""}</span>
-                    <span>文件大小 {formatBytes(member.photo.size_bytes)}</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </article>
-        ))}
+                  <button
+                    className="ghost-button"
+                    disabled={!canEdit || deletingGroupIds.includes(group.id) || dismissingGroupIds.includes(group.id)}
+                    onClick={() => void dismissGroup(group)}
+                  >
+                    {dismissingGroupIds.includes(group.id) ? "正在隐藏" : "暂不处理"}
+                  </button>
+                </div>
+              </header>
+              {!sections && (
+                <div className="similarity-member-grid">{group.members.map(renderMemberCard)}</div>
+              )}
+              {sections && sections.length === 0 && (
+                <div className="similarity-member-grid">{group.members.map(renderMemberCard)}</div>
+              )}
+              {sections && sections.length > 0 && (
+                <div className="similarity-cluster-list">
+                  {sections.map((section) =>
+                    section.cluster ? (
+                      <section className="similarity-cluster-block" key={section.key}>
+                        <header className="similarity-cluster-head">
+                          <span className="similarity-cluster-badge">
+                            <Layers size={13} aria-hidden="true" /> 几乎完全相同 · {section.members.length} 张
+                          </span>
+                          <small>
+                            簇内相似度最低 {(section.cluster.min_pair_score * 100).toFixed(1)}% · 平均 {(section.cluster.average_pair_score * 100).toFixed(1)}%
+                          </small>
+                        </header>
+                        <div className="similarity-member-grid">{section.members.map(renderMemberCard)}</div>
+                      </section>
+                    ) : (
+                      <section className="similarity-scatter-block" key={section.key}>
+                        <header className="similarity-cluster-head">
+                          <span className="similarity-scatter-label">其他相似图片（未构成相同簇）</span>
+                        </header>
+                        <div className="similarity-member-grid">{section.members.map(renderMemberCard)}</div>
+                      </section>
+                    )
+                  )}
+                </div>
+              )}
+            </article>
+          );
+        })}
         {!busy && resultScan && groups.length === 0 && (
           <div className="panel empty-card"><Images size={30} /> 当前档位没有相似图片组。</div>
         )}
@@ -546,14 +651,14 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
           shellClassName="similarity-review-lightbox"
           busy={deletingGroupIds.includes(previewGroup.id) || dismissingGroupIds.includes(previewGroup.id)}
           canGoPrevious={previewIndex > 0}
-          canGoNext={previewIndex < previewGroup.members.length - 1}
+          canGoNext={previewIndex < previewOrderedMembers.length - 1}
           onClose={() => setPreview(null)}
           onPrevious={() => {
-            const previous = previewGroup.members[previewIndex - 1];
+            const previous = previewOrderedMembers[previewIndex - 1];
             if (previous) setPreview({ groupId: previewGroup.id, photoId: previous.photo.id });
           }}
           onNext={() => {
-            const next = previewGroup.members[previewIndex + 1];
+            const next = previewOrderedMembers[previewIndex + 1];
             if (next) setPreview({ groupId: previewGroup.id, photoId: next.photo.id });
           }}
           onKeyDown={(event) => {
@@ -570,12 +675,12 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
             <>
               <div className="lightbox-meta-head">
                 <span>第 {previewGroup.ordinal} 组</span>
-                <strong>{previewIndex + 1} / {previewGroup.members.length}</strong>
+                <strong>{previewIndex + 1} / {previewOrderedMembers.length}</strong>
               </div>
               <div className="lightbox-meta-section similarity-review-strip-section">
                 <span>组内图片</span>
                 <div className="similarity-review-strip">
-                  {previewGroup.members.map((member, index) => {
+                  {previewOrderedMembers.map((member, index) => {
                     const isCurrent = member.photo.id === previewMember.photo.id;
                     const isSelected = selectedIds.includes(member.photo.id);
                     return (
@@ -584,11 +689,14 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                         className={`${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""}`.trim()}
                         key={member.photo.id}
                         onClick={() => setPreview({ groupId: previewGroup.id, photoId: member.photo.id })}
-                        aria-label={`查看第 ${index + 1} 张${isSelected ? "，已标记删除" : ""}`}
+                        aria-label={`查看第 ${index + 1} 张${isSelected ? "，已标记删除" : ""}${member.auto_cluster_index !== null ? `，属于相同簇 ${member.auto_cluster_index}` : "，散图"}`}
                         aria-current={isCurrent ? "true" : undefined}
                       >
                         <img src={withImageWidth(member.photo.thumbnail_url, 160)} alt="" />
                         <small>{index + 1}</small>
+                        {member.auto_cluster_index !== null
+                          ? <span className="strip-cluster-badge">簇 {member.auto_cluster_index}</span>
+                          : <span className="strip-cluster-badge scattered">散</span>}
                         {isSelected && <CheckCircle2 size={16} aria-hidden="true" />}
                       </button>
                     );
@@ -674,6 +782,85 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
         >
           <img className="lightbox-image" src={previewMember.photo.original_url} alt={previewMember.photo.filename} />
         </PhotoLightbox>
+      )}
+      {autoDeletePreview && (
+        <div className="modal-backdrop similarity-preview-backdrop" onClick={() => setAutoDeletePreview(null)}>
+          <section
+            className="panel similarity-preview-modal"
+            role="dialog"
+            aria-label="自动整理预览"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="similarity-preview-head">
+              <div className="similarity-preview-title">
+                <strong>自动整理预览</strong>
+                <span>
+                  {autoDeletePreview.deletable_count > 0
+                    ? `将永久删除 ${autoDeletePreview.deletable_count} 张几乎完全相同的图片，每簇保留一张`
+                    : "没有可自动删除的图片"}
+                </span>
+              </div>
+              <button type="button" className="ghost-button" onClick={() => setAutoDeletePreview(null)}>
+                <X size={15} /> 关闭
+              </button>
+            </header>
+            {autoDeletePreview.skipped_cluster_count > 0 && (
+              <p className="similarity-preview-skip">
+                有 {autoDeletePreview.skipped_cluster_count} 个簇因跨组重叠或无法确定唯一保留图而跳过，不会删除。
+              </p>
+            )}
+            <div className="similarity-preview-clusters">
+              {autoDeletePreview.clusters.map((cluster, index) => (
+                <section
+                  className={`similarity-preview-cluster ${cluster.status === "ready" ? "" : "skipped"}`.trim()}
+                  key={`${cluster.retained_photo_id ?? "none"}-${index}`}
+                >
+                  <header>
+                    <strong>相同簇 {index + 1}</strong>
+                    {cluster.status === "ready" && <span>删除 {cluster.delete_photo_ids.length} 张</span>}
+                    {cluster.status === "skipped_overlap" && <span>跨组重叠，已跳过</span>}
+                    {cluster.status === "skipped_no_retention" && <span>无法确定唯一保留图，已跳过</span>}
+                  </header>
+                  <div className="similarity-preview-strip">
+                    {cluster.members.map((member) => (
+                      <figure
+                        className={member.retained ? "retained" : "drop"}
+                        key={member.photo_id}
+                      >
+                        <img src={member.thumbnail_url} alt={member.filename} loading="lazy" />
+                        <figcaption>
+                          <span className={member.retained ? "badge-keep" : "badge-drop"}>
+                            {member.retained ? "保留" : "删除"}
+                          </span>
+                          <small>
+                            质量 {member.quality_score.toFixed(1)}
+                            {member.size_bytes !== null ? ` · ${formatBytes(member.size_bytes)}` : ""}
+                          </small>
+                        </figcaption>
+                      </figure>
+                    ))}
+                  </div>
+                </section>
+              ))}
+              {autoDeletePreview.clusters.length === 0 && (
+                <p className="similarity-preview-empty">当前结果中没有发现几乎完全相同的图片簇。</p>
+              )}
+            </div>
+            <footer className="modal-actions">
+              <button type="button" className="ghost-button" onClick={() => setAutoDeletePreview(null)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                disabled={busy || !canDelete || autoDeletePreview.deletable_count === 0}
+                onClick={() => void executeAutoDeleteFromPreview()}
+              >
+                <Trash2 size={15} /> 确认删除（{autoDeletePreview.deletable_count} 张）
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
     </main>
   );

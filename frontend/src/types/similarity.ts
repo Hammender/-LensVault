@@ -33,6 +33,14 @@ export type GallerySimilarityMember = {
   face_quality_score: number | null;
   quality_score: number;
   recommended_keep: boolean;
+  auto_cluster_index: number | null;
+};
+
+export type GallerySimilarityCluster = {
+  index: number;
+  member_photo_ids: number[];
+  min_pair_score: number;
+  average_pair_score: number;
 };
 
 export type GallerySimilarityGroup = {
@@ -46,6 +54,30 @@ export type GallerySimilarityGroup = {
   recommendation_status: "recommended" | "close_quality" | "unavailable";
   people: Person[];
   members: GallerySimilarityMember[];
+  clusters: GallerySimilarityCluster[];
+};
+
+export type GallerySimilarityAutoDeletePreviewMember = {
+  photo_id: number;
+  filename: string;
+  thumbnail_url: string;
+  size_bytes: number | null;
+  quality_score: number;
+  retained: boolean;
+};
+
+export type GallerySimilarityAutoDeletePreviewCluster = {
+  status: "ready" | "skipped_overlap" | "skipped_no_retention";
+  retained_photo_id: number | null;
+  delete_photo_ids: number[];
+  members: GallerySimilarityAutoDeletePreviewMember[];
+};
+
+export type GallerySimilarityAutoDeletePreview = {
+  scan_id: string;
+  deletable_count: number;
+  skipped_cluster_count: number;
+  clusters: GallerySimilarityAutoDeletePreviewCluster[];
 };
 
 export type PaginatedGallerySimilarityGroups = {

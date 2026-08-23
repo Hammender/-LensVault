@@ -23,9 +23,13 @@ from app.dependencies.context import CurrentContext, require_context, require_pe
 from app.http.media import stream_storage_object
 from app.mappers.gallery import gallery_photo_to_detail as _gallery_photo_to_detail, gallery_photo_to_list_item as _gallery_photo_to_list_item
 from app.mappers.people import person_to_read
-from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityGroup, GallerySimilarityScan, Person, PersonTag, SamplePhoto, Tag, Task
+from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityGroup, GallerySimilarityGroupMember, GallerySimilarityGroupPair, GallerySimilarityScan, Person, PersonTag, SamplePhoto, Tag, Task
 from app.schemas import (
     GallerySimilarityAutoDeleteResponse,
+    GallerySimilarityAutoDeletePreviewCluster,
+    GallerySimilarityAutoDeletePreviewMember,
+    GallerySimilarityAutoDeletePreviewResponse,
+    GallerySimilarityClusterRead,
     GallerySimilarityGroupRead,
     GallerySimilarityGroupUpdate,
     GallerySimilarityMemberRead,
@@ -42,7 +46,14 @@ from app.schemas import (
     PaginatedGallerySimilarityGroups,
     TaskRead,
 )
-from app.services.similarity import load_similarity_scan_overview, mark_similarity_scans_stale, select_exact_mirror_auto_delete_photo_ids
+from app.services.similarity import (
+    build_normal_near_duplicate_auto_delete_plan,
+    derive_group_auto_clusters,
+    load_similarity_scan_overview,
+    mark_similarity_scans_stale,
+    select_exact_mirror_auto_delete_photo_ids,
+    select_normal_near_duplicate_auto_delete_photo_ids,
+)
 from app.services.tasks import create_task
 from app.services.thumbnails import animated_thumbnail_cache_key, render_gallery_thumbnail
 
@@ -227,7 +238,22 @@ def _gallery_similarity_scan_read(db: Session, scan: GallerySimilarityScan) -> G
     )
 
 
-def _gallery_similarity_group_read(db: Session, group: GallerySimilarityGroup) -> GallerySimilarityGroupRead:
+def _gallery_similarity_group_read(
+    db: Session,
+    group: GallerySimilarityGroup,
+    auto_cluster_threshold: float,
+) -> GallerySimilarityGroupRead:
+    pair_rows = db.scalars(
+        select(GallerySimilarityGroupPair).where(GallerySimilarityGroupPair.group_id == group.id)
+    ).all()
+    clusters = derive_group_auto_clusters(
+        [(row.left_gallery_photo_id, row.right_gallery_photo_id, row.score) for row in pair_rows],
+        auto_cluster_threshold,
+    )
+    cluster_index_by_photo: dict[int, int] = {}
+    for index, cluster in enumerate(clusters, start=1):
+        for photo_id in cluster.member_ids:
+            cluster_index_by_photo[photo_id] = index
     people = db.scalars(select(Person).where(Person.id.in_([link.person_id for link in group.people])).order_by(Person.display_name.asc())).all()
     members: list[GallerySimilarityMemberRead] = []
     for member in sorted(group.members, key=lambda item: (-item.quality_score, item.gallery_photo_id)):
@@ -244,6 +270,7 @@ def _gallery_similarity_group_read(db: Session, group: GallerySimilarityGroup) -
                 face_quality_score=member.face_quality_score,
                 quality_score=member.quality_score,
                 recommended_keep=member.recommended_keep,
+                auto_cluster_index=cluster_index_by_photo.get(member.gallery_photo_id),
             )
         )
     return GallerySimilarityGroupRead(
@@ -257,6 +284,15 @@ def _gallery_similarity_group_read(db: Session, group: GallerySimilarityGroup) -
         recommendation_status=group.recommendation_status,
         people=[person_to_read(db, person) for person in people],
         members=members,
+        clusters=[
+            GallerySimilarityClusterRead(
+                index=index,
+                member_photo_ids=list(cluster.member_ids),
+                min_pair_score=cluster.min_score,
+                average_pair_score=cluster.average_score,
+            )
+            for index, cluster in enumerate(clusters, start=1)
+        ],
     )
 
 
@@ -486,8 +522,6 @@ def create_gallery_similarity_scan(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> GallerySimilarityScanRead:
-    if payload.auto_delete_exact_mirror and payload.scan_type != "mirror":
-        raise HTTPException(status_code=422, detail="自动整理仅支持镜像相似扫描")
     if payload.auto_delete_exact_mirror:
         require_permission(current, "can_delete_gallery")
     if payload.person_id is not None:
@@ -532,6 +566,7 @@ def create_gallery_similarity_scan(
 )
 def auto_delete_exact_mirror_groups(
     scan_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> GallerySimilarityAutoDeleteResponse:
@@ -539,11 +574,20 @@ def auto_delete_exact_mirror_groups(
     scan = db.get(GallerySimilarityScan, scan_id)
     if scan is None or scan.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Similarity scan not found")
-    if scan.scan_type != "mirror":
-        raise HTTPException(status_code=422, detail="自动整理仅支持镜像相似扫描")
+    if scan.scan_type not in ("mirror", "normal"):
+        raise HTTPException(status_code=422, detail="该扫描类型不支持自动整理")
     if scan.status != "completed" or scan.is_stale:
-        raise HTTPException(status_code=409, detail="仅可整理未过期的已完成镜像扫描结果")
-    photo_ids = select_exact_mirror_auto_delete_photo_ids(db, scan)
+        raise HTTPException(status_code=409, detail="仅可整理未过期的已完成扫描结果")
+    if scan.scan_type == "mirror":
+        photo_ids = select_exact_mirror_auto_delete_photo_ids(db, scan)
+    else:
+        scanner = request.app.state.services.similarity
+        photo_ids = select_normal_near_duplicate_auto_delete_photo_ids(
+            db,
+            scan,
+            scanner.storage,
+            request.app.state.settings,
+        )
     photos = db.scalars(
         select(GalleryPhoto).where(
             GalleryPhoto.workspace_id == current.workspace_id,
@@ -557,6 +601,116 @@ def auto_delete_exact_mirror_groups(
     db.commit()
     db.refresh(scan)
     return GallerySimilarityAutoDeleteResponse(deleted=deleted, scan=_gallery_similarity_scan_read(db, scan))
+
+
+@router.get(
+    "/api/gallery/similarity-scans/{scan_id}/auto-delete-preview",
+    response_model=GallerySimilarityAutoDeletePreviewResponse,
+)
+def preview_normal_near_duplicate_auto_delete(
+    scan_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GallerySimilarityAutoDeletePreviewResponse:
+    require_permission(current, "can_delete_gallery")
+    scan = db.get(GallerySimilarityScan, scan_id)
+    if scan is None or scan.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="Similarity scan not found")
+    if scan.scan_type != "normal":
+        raise HTTPException(status_code=422, detail="预览仅支持普通相似扫描")
+    if scan.status != "completed" or scan.is_stale:
+        raise HTTPException(status_code=409, detail="仅可预览未过期的已完成扫描结果")
+    scanner = request.app.state.services.similarity
+    plans = build_normal_near_duplicate_auto_delete_plan(
+        db,
+        scan,
+        scanner.storage,
+        request.app.state.settings,
+    )
+
+    member_photo_ids = sorted({photo_id for plan in plans for photo_id in plan.member_ids})
+    photos = {
+        photo.id: photo
+        for photo in db.scalars(
+            select(GalleryPhoto).where(
+                GalleryPhoto.workspace_id == current.workspace_id,
+                GalleryPhoto.id.in_(member_photo_ids),
+            )
+        ).all()
+    }
+    member_rows = db.scalars(
+        select(GallerySimilarityGroupMember)
+        .join(GallerySimilarityGroup, GallerySimilarityGroupMember.group_id == GallerySimilarityGroup.id)
+        .where(GallerySimilarityGroup.scan_id == scan.id)
+    ).all()
+    quality_by_photo: dict[int, float] = {}
+    overall_by_photo: dict[int, float] = {}
+    face_by_photo: dict[int, float | None] = {}
+    for row in member_rows:
+        quality_by_photo[row.gallery_photo_id] = max(
+            quality_by_photo.get(row.gallery_photo_id, 0.0), row.quality_score
+        )
+        overall_by_photo[row.gallery_photo_id] = max(
+            overall_by_photo.get(row.gallery_photo_id, 0.0), row.overall_quality_score
+        )
+        if row.face_quality_score is not None:
+            face_by_photo[row.gallery_photo_id] = max(
+                face_by_photo.get(row.gallery_photo_id) or 0.0,
+                row.face_quality_score,
+            )
+        elif row.gallery_photo_id not in face_by_photo:
+            face_by_photo[row.gallery_photo_id] = None
+
+    status_by_reason = {
+        None: "ready",
+        "overlap": "skipped_overlap",
+        "no_retention": "skipped_no_retention",
+    }
+    cluster_items: list[GallerySimilarityAutoDeletePreviewCluster] = []
+    deletable_count = 0
+    skipped_cluster_count = 0
+    for plan in plans:
+        preview_members: list[GallerySimilarityAutoDeletePreviewMember] = []
+        ordered_ids = sorted(
+            plan.member_ids,
+            key=lambda photo_id: (
+                photo_id != plan.retained_photo_id,
+                -quality_by_photo.get(photo_id, 0.0),
+            ),
+        )
+        for photo_id in ordered_ids:
+            photo = photos.get(photo_id)
+            if photo is None:
+                continue
+            preview_members.append(
+                GallerySimilarityAutoDeletePreviewMember(
+                    photo_id=photo_id,
+                    filename=photo.filename,
+                    thumbnail_url=f"/api/gallery/photos/{photo.id}/thumbnail?v={photo.sha256}",
+                    size_bytes=photo.size_bytes,
+                    quality_score=quality_by_photo.get(photo_id, 0.0),
+                    retained=photo_id == plan.retained_photo_id,
+                )
+            )
+        if plan.skip_reason is None:
+            deletable_count += len(plan.delete_photo_ids)
+        else:
+            skipped_cluster_count += 1
+        cluster_items.append(
+            GallerySimilarityAutoDeletePreviewCluster(
+                status=status_by_reason[plan.skip_reason],
+                retained_photo_id=plan.retained_photo_id,
+                delete_photo_ids=list(plan.delete_photo_ids),
+                members=preview_members,
+            )
+        )
+    return GallerySimilarityAutoDeletePreviewResponse(
+        scan_id=scan.id,
+        deletable_count=deletable_count,
+        skipped_cluster_count=skipped_cluster_count,
+        clusters=cluster_items,
+    )
 
 
 @router.get("/api/gallery/similarity-scans/latest", response_model=GallerySimilarityScanRead | None)
@@ -592,6 +746,7 @@ def get_gallery_similarity_scan_overview(
 @router.get("/api/gallery/similarity-scans/{scan_id}/groups", response_model=PaginatedGallerySimilarityGroups)
 def list_gallery_similarity_groups(
     scan_id: str,
+    request: Request,
     tier: str = Query(default="near_duplicate", pattern="^(near_duplicate|same_scene)$"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
@@ -605,7 +760,13 @@ def list_gallery_similarity_groups(
     total = db.scalar(select(func.count(GallerySimilarityGroup.id)).where(*condition)) or 0
     groups = db.scalars(select(GallerySimilarityGroup).where(*condition).order_by(GallerySimilarityGroup.ordinal.asc()).offset(offset).limit(limit)).all()
     return PaginatedGallerySimilarityGroups(
-        items=[_gallery_similarity_group_read(db, group) for group in groups], total=total, offset=offset, limit=limit
+        items=[
+            _gallery_similarity_group_read(db, group, request.app.state.settings.gallery_similarity_auto_delete_threshold)
+            for group in groups
+        ],
+        total=total,
+        offset=offset,
+        limit=limit,
     )
 
 
@@ -613,6 +774,7 @@ def list_gallery_similarity_groups(
 def get_gallery_similarity_group(
     scan_id: str,
     group_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> GallerySimilarityGroupRead | None:
@@ -620,7 +782,9 @@ def get_gallery_similarity_group(
     if scan is None or scan.workspace_id != current.workspace_id:
         raise HTTPException(status_code=404, detail="Similarity scan not found")
     group = db.scalar(select(GallerySimilarityGroup).where(GallerySimilarityGroup.id == group_id, GallerySimilarityGroup.scan_id == scan_id))
-    return _gallery_similarity_group_read(db, group) if group is not None else None
+    if group is None:
+        return None
+    return _gallery_similarity_group_read(db, group, request.app.state.settings.gallery_similarity_auto_delete_threshold)
 
 
 @router.patch("/api/gallery/similarity-scans/{scan_id}/groups/{group_id}", response_model=GallerySimilarityGroupRead)
@@ -628,6 +792,7 @@ def update_gallery_similarity_group(
     scan_id: str,
     group_id: int,
     payload: GallerySimilarityGroupUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> GallerySimilarityGroupRead:
@@ -641,7 +806,7 @@ def update_gallery_similarity_group(
     db.add(group)
     db.commit()
     db.refresh(group)
-    return _gallery_similarity_group_read(db, group)
+    return _gallery_similarity_group_read(db, group, request.app.state.settings.gallery_similarity_auto_delete_threshold)
 
 
 @router.get("/api/gallery/photos", response_model=PaginatedGalleryPhotos)

@@ -1,5 +1,6 @@
 import type {
   GalleryPhotoDetail,
+  GallerySimilarityAutoDeletePreview,
   GallerySimilarityGroup,
   GallerySimilarityScan,
   GallerySimilarityScanOverview,
@@ -76,7 +77,6 @@ export async function createGallerySimilarityScan(payload: {
   person_id: number | null;
   include_cross_type: boolean;
   scan_type: "normal" | "mirror";
-  auto_delete_exact_mirror: boolean;
 }): Promise<GallerySimilarityScan> {
   return parseResponse<GallerySimilarityScan>(
     await authFetch("/api/gallery/similarity-scans", {
@@ -84,6 +84,11 @@ export async function createGallerySimilarityScan(payload: {
       headers: jsonHeaders,
       body: JSON.stringify(payload)
     })
+  );
+}
+export async function previewNormalNearDuplicateAutoDelete(scanId: string): Promise<GallerySimilarityAutoDeletePreview> {
+  return parseResponse<GallerySimilarityAutoDeletePreview>(
+    await authFetch(`/api/gallery/similarity-scans/${scanId}/auto-delete-preview`)
   );
 }
 export async function autoDeleteExactMirrorGroups(scanId: string): Promise<{ deleted: number; scan: GallerySimilarityScan }> {

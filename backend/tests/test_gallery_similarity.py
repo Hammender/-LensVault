@@ -19,6 +19,7 @@ from app.models import (
     GallerySimilarityFeature,
     GallerySimilarityGroup,
     GallerySimilarityGroupMember,
+    GallerySimilarityGroupPair,
     GallerySimilarityScan,
     Person,
     Workspace,
@@ -28,6 +29,7 @@ from app.services.similarity import (
     GallerySimilarityScanner,
     SimilarityCandidate,
     assess_primary_face,
+    build_normal_near_duplicate_auto_delete_plan,
     choose_quality_recommendation,
     cleanup_deleted_similarity_photos,
     complete_link_clusters,
@@ -35,10 +37,12 @@ from app.services.similarity import (
     compute_mirrored_perceptual_hashes,
     compute_perceptual_features,
     cosine_similarity,
+    derive_group_auto_clusters,
     hash_similarity,
     load_similarity_scan_overview,
     mark_similarity_scans_stale,
     select_exact_mirror_auto_delete_photo_ids,
+    select_normal_near_duplicate_auto_delete_photo_ids,
 )
 from tests.support.app_loader import load_test_main
 
@@ -439,6 +443,286 @@ def test_exact_mirror_auto_delete_prefers_recommendation_then_unique_largest_fil
     assert deleted_ids == [photos[1].id, photos[2].id, photos[4].id]
 
 
+FULL_HASH = "f" * 16
+LOOSE_HASH = "0ff0" + "f" * 12  # 与全 1 哈希相差 8 位，平均感知相似度约 0.9375，低于自动整理阈值
+
+
+def add_normal_scan(db_session: Session, workspace: Workspace, person: Person) -> GallerySimilarityScan:
+    scan = GallerySimilarityScan(
+        id="scan-normal-auto-delete",
+        workspace_id=workspace.id,
+        person_id=person.id,
+        scan_type="normal",
+        status="completed",
+        feature_version="v1",
+    )
+    db_session.add(scan)
+    db_session.flush()
+    return scan
+
+
+def add_normal_group(
+    db_session: Session,
+    scan: GallerySimilarityScan,
+    ordinal: int,
+    entries: list[tuple[GalleryPhoto, float]],
+) -> GallerySimilarityGroup:
+    group = GallerySimilarityGroup(scan_id=scan.id, ordinal=ordinal, tier="near_duplicate", min_score=1.0, average_score=1.0)
+    db_session.add(group)
+    db_session.flush()
+    for photo, quality_score in entries:
+        db_session.add(
+            GallerySimilarityGroupMember(
+                group_id=group.id,
+                gallery_photo_id=photo.id,
+                score_to_representative=1.0,
+                quality_score=quality_score,
+            )
+        )
+    return group
+
+
+def add_normal_feature(db_session: Session, photo: GalleryPhoto, phash: str, dhash: str) -> None:
+    db_session.add(
+        GallerySimilarityFeature(
+            gallery_photo_id=photo.id,
+            workspace_id=photo.workspace_id,
+            sha256=photo.sha256,
+            feature_version="v1",
+            phash=phash,
+            dhash=dhash,
+            blur_score=0.0,
+            quality_score=70.0,
+        )
+    )
+
+
+def test_normal_auto_delete_targets_identical_cluster_and_keeps_scattered_photo(db_session: Session) -> None:
+    workspace, person, photos = create_scope(db_session, photo_count=5)
+    for photo in photos:
+        photo.size_bytes = 100
+    storage = FakeStorage({photo.object_key: image_bytes((120, 100, 80)) for photo in photos})
+    scan = add_normal_scan(db_session, workspace, person)
+    # 组 1：photo0 与 photo1 指纹完全一致（簇内删到剩一张），photo2 仅松散相似，作为散图保留。
+    add_normal_group(db_session, scan, 1, [(photos[0], 90.0), (photos[1], 70.0), (photos[2], 80.0)])
+    add_normal_feature(db_session, photos[0], FULL_HASH, FULL_HASH)
+    add_normal_feature(db_session, photos[1], FULL_HASH, FULL_HASH)
+    add_normal_feature(db_session, photos[2], FULL_HASH, LOOSE_HASH)
+    # 组 2：两两感知相似度低于阈值，不产生簇。
+    add_normal_group(db_session, scan, 2, [(photos[3], 85.0), (photos[4], 75.0)])
+    add_normal_feature(db_session, photos[3], FULL_HASH, LOOSE_HASH)
+    add_normal_feature(db_session, photos[4], LOOSE_HASH, LOOSE_HASH)
+    db_session.commit()
+
+    deleted_ids = select_normal_near_duplicate_auto_delete_photo_ids(db_session, scan, storage, Settings())
+
+    assert deleted_ids == [photos[1].id]
+
+
+def test_normal_auto_delete_falls_back_to_unique_largest_file_on_close_quality(db_session: Session) -> None:
+    workspace, person, photos = create_scope(db_session, photo_count=2)
+    photos[0].size_bytes = 500
+    photos[1].size_bytes = 900
+    storage = FakeStorage({photo.object_key: image_bytes((120, 100, 80)) for photo in photos})
+    scan = add_normal_scan(db_session, workspace, person)
+    # 质量分差小于阈值，触发 close_quality：回退到保留唯一体积最大者。
+    add_normal_group(db_session, scan, 1, [(photos[0], 80.0), (photos[1], 78.0)])
+    for photo in photos:
+        add_normal_feature(db_session, photo, FULL_HASH, FULL_HASH)
+    db_session.commit()
+
+    deleted_ids = select_normal_near_duplicate_auto_delete_photo_ids(db_session, scan, storage, Settings())
+
+    assert deleted_ids == [photos[0].id]
+
+
+def test_normal_auto_delete_skips_clusters_sharing_a_photo(db_session: Session) -> None:
+    workspace, person, photos = create_scope(db_session, photo_count=3)
+    for photo in photos:
+        photo.size_bytes = 100
+    storage = FakeStorage({photo.object_key: image_bytes((120, 100, 80)) for photo in photos})
+    scan = add_normal_scan(db_session, workspace, person)
+    # 照片 1 同时属于两个组的不同簇（跨组重叠），相关簇全部跳过。
+    add_normal_group(db_session, scan, 1, [(photos[0], 90.0), (photos[1], 70.0)])
+    add_normal_group(db_session, scan, 2, [(photos[1], 70.0), (photos[2], 60.0)])
+    for photo in photos:
+        add_normal_feature(db_session, photo, FULL_HASH, FULL_HASH)
+    db_session.commit()
+
+    deleted_ids = select_normal_near_duplicate_auto_delete_photo_ids(db_session, scan, storage, Settings())
+
+    assert deleted_ids == []
+
+    plans = build_normal_near_duplicate_auto_delete_plan(db_session, scan, storage, Settings())
+    assert [plan.skip_reason for plan in plans] == ["overlap", "overlap"]
+    assert all(plan.retained_photo_id is None and plan.delete_photo_ids == () for plan in plans)
+
+
+def test_derive_group_auto_clusters_threshold_ordering_and_scattered() -> None:
+    clusters = derive_group_auto_clusters(
+        [(1, 2, 0.99), (3, 4, 0.986), (5, 6, 0.985), (7, 8, 0.9849), (9, 9, 0.999)],
+        0.985,
+    )
+
+    assert [(cluster.member_ids, cluster.min_score) for cluster in clusters] == [
+        ((1, 2), 0.99),
+        ((3, 4), 0.986),
+        ((5, 6), 0.985),
+    ]
+
+
+def test_derive_group_auto_clusters_rejects_transitive_chain() -> None:
+    # A~B、B~C 达阈值而 A~C 不达：严格完全连接下 C 不得经由 B 混入同簇。
+    clusters = derive_group_auto_clusters(
+        [(1, 2, 0.99), (2, 3, 0.99), (1, 3, 0.80)],
+        0.985,
+    )
+
+    assert [(cluster.member_ids, cluster.min_score) for cluster in clusters] == [((1, 2), 0.99)]
+
+
+def test_run_scan_persists_intra_group_pair_scores(db_session: Session) -> None:
+    workspace, person, photos = create_scope(db_session, photo_count=3)
+    storage = FakeStorage(
+        {
+            photos[0].object_key: image_bytes((10, 20, 30)),
+            photos[1].object_key: image_bytes((10, 20, 30)),
+            photos[2].object_key: image_bytes((200, 100, 50)),
+        }
+    )
+    settings = Settings(gallery_similarity_vector_dimension=768)
+    scanner = GallerySimilarityScanner(storage, FakeVectorStore(), settings, FakeExtractor())
+    scan = GallerySimilarityScan(
+        id="scan-pair-scores",
+        workspace_id=workspace.id,
+        person_id=person.id,
+        include_cross_type=True,
+        status="running",
+        feature_version=settings.gallery_similarity_model_version,
+    )
+    db_session.add(scan)
+    identical_hash = "f" * 16
+    distinct_hash = "0f0f" * 4  # 与全 1 哈希相差 16 位，感知相似度 0.75，低于近重复阈值
+    for photo, crafted_hash in (
+        (photos[0], identical_hash),
+        (photos[1], identical_hash),
+        (photos[2], distinct_hash),
+    ):
+        db_session.add(
+            GallerySimilarityFeature(
+                gallery_photo_id=photo.id,
+                workspace_id=workspace.id,
+                sha256=photo.sha256,
+                feature_version=settings.gallery_similarity_model_version,
+                quality_version=settings.gallery_similarity_quality_version,
+                phash=crafted_hash,
+                dhash=crafted_hash,
+                mirror_phash=crafted_hash,
+                mirror_dhash=crafted_hash,
+                blur_score=0.0,
+                quality_score=70.0,
+            )
+        )
+    db_session.commit()
+
+    scanner.run_scan(db_session, scan, None)
+    db_session.commit()
+
+    near_groups = db_session.scalars(
+        select(GallerySimilarityGroup).where(
+            GallerySimilarityGroup.scan_id == scan.id,
+            GallerySimilarityGroup.tier == "near_duplicate",
+        )
+    ).all()
+    assert len(near_groups) == 1
+    pair_rows = db_session.scalars(
+        select(GallerySimilarityGroupPair).where(GallerySimilarityGroupPair.group_id == near_groups[0].id)
+    ).all()
+    expected_pair = tuple(sorted((photos[0].id, photos[1].id)))
+    assert {(row.left_gallery_photo_id, row.right_gallery_photo_id): row.score for row in pair_rows} == {
+        expected_pair: pytest.approx(1.0)
+    }
+
+    clusters = derive_group_auto_clusters(
+        [(row.left_gallery_photo_id, row.right_gallery_photo_id, row.score) for row in pair_rows],
+        settings.gallery_similarity_auto_delete_threshold,
+    )
+    assert [cluster.member_ids for cluster in clusters] == [expected_pair]
+
+
+def test_normal_auto_delete_does_not_merge_transitive_pairs(db_session: Session, monkeypatch) -> None:
+    import app.services.similarity as similarity_module
+
+    workspace, person, photos = create_scope(db_session, photo_count=3)
+    for photo in photos:
+        photo.size_bytes = 100
+    storage = FakeStorage({photo.object_key: image_bytes((120, 100, 80)) for photo in photos})
+    scan = add_normal_scan(db_session, workspace, person)
+    add_normal_group(db_session, scan, 1, [(photos[0], 90.0), (photos[1], 70.0), (photos[2], 60.0)])
+    for photo in photos:
+        add_normal_feature(db_session, photo, FULL_HASH, FULL_HASH)
+    db_session.commit()
+
+    scores_by_pair = {
+        tuple(sorted((photos[0].id, photos[1].id))): 0.99,
+        tuple(sorted((photos[1].id, photos[2].id))): 0.99,
+        tuple(sorted((photos[0].id, photos[2].id))): 0.90,
+    }
+
+    def fake_pair_score(left, right, *, load_orb_features):
+        return scores_by_pair[tuple(sorted((left.gallery_photo_id, right.gallery_photo_id)))]
+
+    monkeypatch.setattr(similarity_module, "near_duplicate_pair_score", fake_pair_score)
+
+    plans = build_normal_near_duplicate_auto_delete_plan(db_session, scan, storage, Settings())
+
+    # 只有 {photo0, photo1} 构成簇；photo2 与二者的直接分数不达阈值，不得经由传递混入，也不能被删。
+    assert len(plans) == 1
+    assert plans[0].member_ids == tuple(sorted((photos[0].id, photos[1].id)))
+    assert plans[0].retained_photo_id == photos[0].id
+    assert plans[0].delete_photo_ids == (photos[1].id,)
+    assert select_normal_near_duplicate_auto_delete_photo_ids(db_session, scan, storage, Settings()) == [photos[1].id]
+
+
+def test_preview_normal_auto_delete_endpoint_returns_plan(db_session: Session) -> None:
+    workspace, person, photos = create_scope(db_session, photo_count=2)
+    for photo, size_bytes in zip(photos, [500, 900], strict=True):
+        photo.size_bytes = size_bytes
+    storage = FakeStorage({photo.object_key: image_bytes((120, 100, 80)) for photo in photos})
+    scan = add_normal_scan(db_session, workspace, person)
+    add_normal_group(db_session, scan, 1, [(photos[0], 90.0), (photos[1], 70.0)])
+    for photo in photos:
+        add_normal_feature(db_session, photo, FULL_HASH, FULL_HASH)
+    db_session.commit()
+
+    module = load_test_main()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                settings=Settings(),
+                services=SimpleNamespace(similarity=SimpleNamespace(storage=storage)),
+            )
+        )
+    )
+    permissions = {field: False for field in module.PERMISSION_FIELDS}
+    permissions["can_delete_gallery"] = True
+    current = SimpleNamespace(workspace_id=workspace.id, role="member", membership=SimpleNamespace(**permissions))
+
+    response = module.preview_normal_near_duplicate_auto_delete(scan.id, request, db=db_session, current=current)
+
+    assert response.scan_id == scan.id
+    assert response.deletable_count == 1
+    assert response.skipped_cluster_count == 0
+    assert len(response.clusters) == 1
+    cluster = response.clusters[0]
+    assert cluster.status == "ready"
+    retained = [member for member in cluster.members if member.retained]
+    dropped = [member for member in cluster.members if not member.retained]
+    assert [member.photo_id for member in retained] == [photos[0].id]
+    assert [member.photo_id for member in dropped] == [photos[1].id]
+    assert dropped[0].thumbnail_url.startswith("/api/gallery/photos/")
+
+
 def test_mark_scans_stale_only_for_affected_person_scope(db_session: Session) -> None:
     workspace, person, _ = create_scope(db_session, photo_count=1)
     other = Person(workspace_id=workspace.id, name="person-b", display_name="人物乙")
@@ -568,9 +852,11 @@ def test_dismissed_similarity_group_is_filtered_from_scan_results(db_session: Se
     db_session.add_all([pending_group, dismissed_group])
     db_session.commit()
     current = SimpleNamespace(workspace_id=workspace.id)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(settings=Settings())))
 
     result = module.list_gallery_similarity_groups(
         scan_id=scan.id,
+        request=request,
         tier="near_duplicate",
         offset=0,
         limit=20,
@@ -586,11 +872,13 @@ def test_dismissed_similarity_group_is_filtered_from_scan_results(db_session: Se
         scan_id=scan.id,
         group_id=pending_group.id,
         payload=module.GallerySimilarityGroupUpdate(review_status="dismissed"),
+        request=request,
         db=db_session,
         current=current,
     )
     refreshed = module.list_gallery_similarity_groups(
         scan_id=scan.id,
+        request=request,
         tier="near_duplicate",
         offset=0,
         limit=20,

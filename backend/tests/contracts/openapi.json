@@ -2748,6 +2748,128 @@
         "title": "GalleryPhotoTagCreate",
         "type": "object"
       },
+      "GallerySimilarityAutoDeletePreviewCluster": {
+        "properties": {
+          "delete_photo_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Delete Photo Ids",
+            "type": "array"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/GallerySimilarityAutoDeletePreviewMember"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "retained_photo_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retained Photo Id"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "skipped_overlap",
+              "skipped_no_retention"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "retained_photo_id",
+          "delete_photo_ids",
+          "members"
+        ],
+        "title": "GallerySimilarityAutoDeletePreviewCluster",
+        "type": "object"
+      },
+      "GallerySimilarityAutoDeletePreviewMember": {
+        "properties": {
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "photo_id": {
+            "title": "Photo Id",
+            "type": "integer"
+          },
+          "quality_score": {
+            "title": "Quality Score",
+            "type": "number"
+          },
+          "retained": {
+            "title": "Retained",
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "thumbnail_url": {
+            "title": "Thumbnail Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "photo_id",
+          "filename",
+          "thumbnail_url",
+          "size_bytes",
+          "quality_score",
+          "retained"
+        ],
+        "title": "GallerySimilarityAutoDeletePreviewMember",
+        "type": "object"
+      },
+      "GallerySimilarityAutoDeletePreviewResponse": {
+        "properties": {
+          "clusters": {
+            "items": {
+              "$ref": "#/components/schemas/GallerySimilarityAutoDeletePreviewCluster"
+            },
+            "title": "Clusters",
+            "type": "array"
+          },
+          "deletable_count": {
+            "title": "Deletable Count",
+            "type": "integer"
+          },
+          "scan_id": {
+            "title": "Scan Id",
+            "type": "string"
+          },
+          "skipped_cluster_count": {
+            "title": "Skipped Cluster Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scan_id",
+          "deletable_count",
+          "skipped_cluster_count",
+          "clusters"
+        ],
+        "title": "GallerySimilarityAutoDeletePreviewResponse",
+        "type": "object"
+      },
       "GallerySimilarityAutoDeleteResponse": {
         "properties": {
           "deleted": {
@@ -2765,11 +2887,50 @@
         "title": "GallerySimilarityAutoDeleteResponse",
         "type": "object"
       },
+      "GallerySimilarityClusterRead": {
+        "properties": {
+          "average_pair_score": {
+            "title": "Average Pair Score",
+            "type": "number"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "member_photo_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Member Photo Ids",
+            "type": "array"
+          },
+          "min_pair_score": {
+            "title": "Min Pair Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "index",
+          "member_photo_ids",
+          "min_pair_score",
+          "average_pair_score"
+        ],
+        "title": "GallerySimilarityClusterRead",
+        "type": "object"
+      },
       "GallerySimilarityGroupRead": {
         "properties": {
           "average_score": {
             "title": "Average Score",
             "type": "number"
+          },
+          "clusters": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/GallerySimilarityClusterRead"
+            },
+            "title": "Clusters",
+            "type": "array"
           },
           "face_quality_enabled": {
             "title": "Face Quality Enabled",
@@ -2857,6 +3018,17 @@
       },
       "GallerySimilarityMemberRead": {
         "properties": {
+          "auto_cluster_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Cluster Index"
+          },
           "face_quality_score": {
             "anyOf": [
               {
@@ -12773,6 +12945,108 @@
           }
         },
         "summary": "Auto Delete Exact Mirror Groups"
+      }
+    },
+    "/api/gallery/similarity-scans/{scan_id}/auto-delete-preview": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scan_id",
+            "required": true,
+            "schema": {
+              "title": "Scan Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GallerySimilarityAutoDeletePreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Normal Near Duplicate Auto Delete"
       }
     },
     "/api/gallery/similarity-scans/{scan_id}/groups": {

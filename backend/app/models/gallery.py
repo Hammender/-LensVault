@@ -163,6 +163,9 @@ class GallerySimilarityGroup(Base):
     people: Mapped[list[GallerySimilarityGroupPerson]] = relationship(
         back_populates="group", cascade="all, delete-orphan"
     )
+    pairs: Mapped[list[GallerySimilarityGroupPair]] = relationship(
+        back_populates="group", cascade="all, delete-orphan"
+    )
 
 
 class GallerySimilarityGroupMember(Base):
@@ -186,6 +189,32 @@ class GallerySimilarityGroupMember(Base):
 
     group: Mapped[GallerySimilarityGroup] = relationship(back_populates="members")
     gallery_photo: Mapped[GalleryPhoto] = relationship(back_populates="similarity_memberships")
+
+
+class GallerySimilarityGroupPair(Base):
+    __tablename__ = "gallery_similarity_group_pairs"
+    __table_args__ = (
+        UniqueConstraint(
+            "group_id",
+            "left_gallery_photo_id",
+            "right_gallery_photo_id",
+            name="uq_gallery_similarity_group_pair",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("gallery_similarity_groups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    left_gallery_photo_id: Mapped[int] = mapped_column(
+        ForeignKey("gallery_photos.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    right_gallery_photo_id: Mapped[int] = mapped_column(
+        ForeignKey("gallery_photos.id", ondelete="CASCADE"), nullable=False
+    )
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+
+    group: Mapped[GallerySimilarityGroup] = relationship(back_populates="pairs")
 
 
 class GallerySimilarityGroupPerson(Base):

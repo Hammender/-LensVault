@@ -1508,6 +1508,29 @@ CREATE TABLE gallery_similarity_group_members (
 CREATE INDEX ix_gallery_similarity_group_members_gallery_photo_id ON gallery_similarity_group_members (gallery_photo_id);
 CREATE INDEX ix_gallery_similarity_group_members_group_id ON gallery_similarity_group_members (group_id);
 
+-- 表名：gallery_similarity_group_pairs
+-- 表说明：相似整理组内成员两两相似度得分，用于簇展示与自动整理预案
+-- 字段说明：
+--   id：主键标识
+--   group_id：所属相似图片分组标识
+--   left_gallery_photo_id：配对中图片标识较小一方的图库图片标识
+--   right_gallery_photo_id：配对中图片标识较大一方的图库图片标识
+--   score：两张图片的相似度得分
+CREATE TABLE gallery_similarity_group_pairs (
+	id INTEGER NOT NULL, 
+	group_id INTEGER NOT NULL, 
+	left_gallery_photo_id INTEGER NOT NULL, 
+	right_gallery_photo_id INTEGER NOT NULL, 
+	score FLOAT NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_gallery_similarity_group_pair UNIQUE (group_id, left_gallery_photo_id, right_gallery_photo_id), 
+	FOREIGN KEY(group_id) REFERENCES gallery_similarity_groups (id) ON DELETE CASCADE, 
+	FOREIGN KEY(left_gallery_photo_id) REFERENCES gallery_photos (id) ON DELETE CASCADE, 
+	FOREIGN KEY(right_gallery_photo_id) REFERENCES gallery_photos (id) ON DELETE CASCADE
+);
+CREATE INDEX ix_gallery_similarity_group_pairs_group_id ON gallery_similarity_group_pairs (group_id);
+CREATE INDEX ix_gallery_similarity_group_pairs_left_gallery_photo_id ON gallery_similarity_group_pairs (left_gallery_photo_id);
+
 -- 表名：gallery_similarity_group_people
 -- 表说明：图库相似图片分组关联的人物
 -- 字段说明：

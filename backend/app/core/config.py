@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     gallery_similarity_scene_threshold: float = 0.88
     gallery_similarity_quality_version: str = "technical-quality-v2"
     gallery_similarity_quality_min_margin: float = 3.0
+    gallery_similarity_auto_delete_threshold: float = 0.985
 
     acquisition_download_workers: int = 8
     acquisition_download_timeout_seconds: int = 30

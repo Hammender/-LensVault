@@ -19,6 +19,7 @@ from app.models import (
     GallerySimilarityFeature,
     GallerySimilarityGroup,
     GallerySimilarityGroupMember,
+    GallerySimilarityGroupPair,
     GallerySimilarityGroupPerson,
     GallerySimilarityScan,
     Person,
@@ -361,6 +362,30 @@ def orb_feature_similarity(left: OrbFeatures, right: OrbFeatures) -> float:
 
 def orb_similarity(left_payload: bytes, right_payload: bytes) -> float:
     return orb_feature_similarity(compute_orb_features(left_payload), compute_orb_features(right_payload))
+
+
+def near_duplicate_pair_score(
+    left: GallerySimilarityFeature,
+    right: GallerySimilarityFeature,
+    *,
+    load_orb_features: Any,
+    mirrored: bool = False,
+) -> float:
+    """计算一对图片的近重复分数，扫描与自动整理共用同一打分口径。"""
+    right_phash = right.mirror_phash if mirrored else right.phash
+    right_dhash = right.mirror_dhash if mirrored else right.dhash
+    if not right_phash or not right_dhash:
+        return 0.0
+    perceptual = (
+        hash_similarity(left.phash, right_phash) + hash_similarity(left.dhash, right_dhash)
+    ) / 2
+    if perceptual < 0.82:
+        return perceptual
+    local_score = orb_feature_similarity(
+        load_orb_features(left.gallery_photo_id, False),
+        load_orb_features(right.gallery_photo_id, mirrored),
+    )
+    return max(perceptual, min(1.0, 0.85 + local_score * 0.15))
 
 
 def cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
@@ -742,22 +767,15 @@ class GallerySimilarityScanner:
             return feature
 
         def near_score(left_id: int, right_id: int, *, mirrored: bool = False) -> float:
-            left = features[left_id]
-            right = features[right_id]
-            right_phash = right.mirror_phash if mirrored else right.phash
-            right_dhash = right.mirror_dhash if mirrored else right.dhash
-            if not right_phash or not right_dhash:
-                return 0.0
-            perceptual = (
-                hash_similarity(left.phash, right_phash) + hash_similarity(left.dhash, right_dhash)
-            ) / 2
-            if perceptual < 0.82:
-                return perceptual
-            local_score = orb_feature_similarity(
-                get_orb_features(left_id),
-                get_orb_features(right_id, mirrored=mirrored),
+            def orb_loader(photo_id: int, use_mirrored: bool) -> OrbFeatures:
+                return get_orb_features(photo_id, mirrored=use_mirrored)
+
+            return near_duplicate_pair_score(
+                features[left_id],
+                features[right_id],
+                load_orb_features=orb_loader,
+                mirrored=mirrored,
             )
-            return max(perceptual, min(1.0, 0.85 + local_score * 0.15))
 
         for index, pair in enumerate(unique_pairs):
             left_id, right_id = pair
@@ -930,6 +948,20 @@ class GallerySimilarityScanner:
                 )
             for person_id in live_group_person_ids:
                 db.add(GallerySimilarityGroupPerson(group_id=group.id, person_id=person_id))
+            ordered_member_ids = tuple(sorted(live_member_ids))
+            for left_index, left_id in enumerate(ordered_member_ids):
+                for right_id in ordered_member_ids[left_index + 1 :]:
+                    pair_score = score_map.get((left_id, right_id))
+                    if pair_score is None:
+                        continue
+                    db.add(
+                        GallerySimilarityGroupPair(
+                            group_id=group.id,
+                            left_gallery_photo_id=left_id,
+                            right_gallery_photo_id=right_id,
+                            score=pair_score,
+                        )
+                    )
             published_group_count += 1
         scan.group_count = published_group_count
         db.add(scan)
@@ -999,6 +1031,192 @@ def select_exact_mirror_auto_delete_photo_ids(db: Session, scan: GallerySimilari
             retained_photo_id = largest[0].gallery_photo_id
         photo_ids.extend(member.gallery_photo_id for member in group.members if member.gallery_photo_id != retained_photo_id)
     return photo_ids
+
+
+def derive_group_auto_clusters(
+    pair_scores: Iterable[tuple[int, int, float]], threshold: float
+) -> list[SimilarityCluster]:
+    """按自动整理阈值推导组内的“几乎完全相同簇”。
+
+    采用严格完全连接：簇内每一对图片的两两分数都必须达到阈值，
+    避免传递链（A~B、B~C 达标而 A~C 不达标）把明显不同的图混入同一簇。
+    返回结果按规模降序、最低分降序排列，未进入任何簇的散图不出现在结果中。
+    """
+    candidates = [
+        SimilarityCandidate(left_id, right_id, score)
+        for left_id, right_id, score in pair_scores
+        if left_id != right_id and score >= threshold
+    ]
+    member_ids = {
+        photo_id
+        for candidate in candidates
+        for photo_id in (candidate.left_id, candidate.right_id)
+    }
+    clusters = complete_link_clusters(sorted(member_ids), candidates, threshold)
+    return sorted(clusters, key=lambda item: (-len(item.member_ids), -item.min_score))
+
+
+@dataclass(frozen=True)
+class AutoDeleteClusterPlan:
+    """单个“几乎完全相同簇”的自动整理预案。"""
+
+    member_ids: tuple[int, ...]
+    retained_photo_id: int | None
+    delete_photo_ids: tuple[int, ...]
+    skip_reason: str | None
+
+
+def build_normal_near_duplicate_auto_delete_plan(
+    db: Session,
+    scan: GallerySimilarityScan,
+    storage: MinioStorage,
+    settings: Settings,
+) -> list[AutoDeleteClusterPlan]:
+    """构建普通相似扫描近重复组的自动整理预案，不执行删除。"""
+    if scan.scan_type != "normal":
+        return []
+    groups = [
+        group
+        for group in db.scalars(
+            select(GallerySimilarityGroup)
+            .where(
+                GallerySimilarityGroup.scan_id == scan.id,
+                GallerySimilarityGroup.tier == "near_duplicate",
+                GallerySimilarityGroup.review_status == "pending",
+            )
+            .order_by(GallerySimilarityGroup.ordinal.asc())
+        ).all()
+        if len(group.members) >= 2
+    ]
+    if not groups:
+        return []
+
+    threshold = max(0.0, min(1.0, float(settings.gallery_similarity_auto_delete_threshold)))
+    member_ids = sorted({member.gallery_photo_id for group in groups for member in group.members})
+    photos = {
+        photo.id: photo
+        for photo in db.scalars(
+            select(GalleryPhoto).where(
+                GalleryPhoto.workspace_id == scan.workspace_id,
+                GalleryPhoto.id.in_(member_ids),
+            )
+        ).all()
+    }
+    features = {
+        feature.gallery_photo_id: feature
+        for feature in db.scalars(
+            select(GallerySimilarityFeature).where(
+                GallerySimilarityFeature.gallery_photo_id.in_(member_ids)
+            )
+        ).all()
+    }
+    if not photos or not features:
+        return []
+
+    orb_cache: OrderedDict[tuple[int, bool], OrbFeatures] = OrderedDict()
+
+    def get_orb_features(photo_id: int, *, mirrored: bool = False) -> OrbFeatures:
+        cache_key = (photo_id, mirrored)
+        cached = orb_cache.pop(cache_key, None)
+        if cached is not None:
+            orb_cache[cache_key] = cached
+            return cached
+        feature = compute_orb_features(
+            storage.get_bytes(photos[photo_id].object_key),
+            mirrored=mirrored,
+        )
+        orb_cache[cache_key] = feature
+        if len(orb_cache) > 256:
+            orb_cache.popitem(last=False)
+        return feature
+
+    def orb_loader(photo_id: int, use_mirrored: bool) -> OrbFeatures:
+        return get_orb_features(photo_id, mirrored=use_mirrored)
+
+    def pair_score(left_id: int, right_id: int) -> float:
+        left_feature = features.get(left_id)
+        right_feature = features.get(right_id)
+        if left_feature is None or right_feature is None:
+            return 0.0
+        try:
+            return near_duplicate_pair_score(left_feature, right_feature, load_orb_features=orb_loader)
+        except Exception:
+            return 0.0
+
+    # 每个组内独立做高阈值子聚类：严格完全连接——簇内每一对分数都须达阈值，避免传递链误成簇。
+    cluster_to_group: dict[tuple[int, ...], GallerySimilarityGroup] = {}
+    for group in groups:
+        group_member_ids = sorted({member.gallery_photo_id for member in group.members})
+        candidates: list[SimilarityCandidate] = []
+        for left_index, left_id in enumerate(group_member_ids):
+            for right_id in group_member_ids[left_index + 1 :]:
+                if left_id not in photos or right_id not in photos:
+                    continue
+                score = pair_score(left_id, right_id)
+                if score >= threshold:
+                    candidates.append(SimilarityCandidate(left_id, right_id, score))
+        for cluster in complete_link_clusters(group_member_ids, candidates, threshold):
+            if cluster.member_ids not in cluster_to_group:
+                cluster_to_group[cluster.member_ids] = group
+    if not cluster_to_group:
+        return []
+
+    # 护栏：同一张图片出现在多个簇（跨组重叠）时，相关簇全部跳过。
+    cluster_ids = list(cluster_to_group)
+    overlap_photo_ids = {
+        photo_id
+        for photo_id in member_ids
+        if sum(photo_id in cluster for cluster in cluster_ids) > 1
+    }
+    minimum_margin = float(settings.gallery_similarity_quality_min_margin)
+    plans: list[AutoDeleteClusterPlan] = []
+    for cluster in cluster_ids:
+        if any(photo_id in overlap_photo_ids for photo_id in cluster):
+            plans.append(AutoDeleteClusterPlan(cluster, None, (), "overlap"))
+            continue
+        group = cluster_to_group[cluster]
+        quality_scores = {
+            member.gallery_photo_id: member.quality_score
+            for member in group.members
+            if member.gallery_photo_id in cluster
+        }
+        recommendation = choose_quality_recommendation(quality_scores, minimum_margin)
+        retained_photo_id: int | None = None
+        if recommendation.status == "recommended" and recommendation.recommended_id is not None:
+            retained_photo_id = int(recommendation.recommended_id)
+        else:
+            sizes = [photos[photo_id].size_bytes for photo_id in cluster]
+            if all(size is not None for size in sizes):
+                largest_size = max(size for size in sizes if size is not None)
+                largest = [photo_id for photo_id, size in zip(cluster, sizes, strict=True) if size == largest_size]
+                if len(largest) == 1:
+                    retained_photo_id = largest[0]
+        if retained_photo_id is None:
+            plans.append(AutoDeleteClusterPlan(cluster, None, (), "no_retention"))
+            continue
+        plans.append(
+            AutoDeleteClusterPlan(
+                cluster,
+                retained_photo_id,
+                tuple(photo_id for photo_id in cluster if photo_id != retained_photo_id),
+                None,
+            )
+        )
+    return plans
+
+
+def select_normal_near_duplicate_auto_delete_photo_ids(
+    db: Session,
+    scan: GallerySimilarityScan,
+    storage: MinioStorage,
+    settings: Settings,
+) -> list[int]:
+    """返回普通相似扫描中可按近重复自动整理规则删除的图片标识，不执行删除。"""
+    return [
+        photo_id
+        for plan in build_normal_near_duplicate_auto_delete_plan(db, scan, storage, settings)
+        for photo_id in plan.delete_photo_ids
+    ]
 
 
 def cleanup_deleted_similarity_photos(

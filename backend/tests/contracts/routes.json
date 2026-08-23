@@ -522,6 +522,12 @@
     ]
   },
   {
+    "path": "/api/gallery/similarity-scans/{scan_id}/auto-delete-preview",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/gallery/similarity-scans/latest",
     "methods": [
       "GET"
