@@ -837,12 +837,19 @@ input:focus, select:focus, textarea:focus {
   bottom: 8px;
   left: 8px;
   display: grid;
+  grid-template-rows: 42px minmax(0, 1fr);
+  align-content: start;
   gap: 10px;
   min-height: 0;
   padding: 16px;
   border: 1px solid var(--panel-border);
   background: var(--bg-strong);
   box-shadow: 4px 4px 0 var(--panel-border);
+}
+
+.gallery-filter-accordion-content > .search-input {
+  align-self: start;
+  height: 42px;
 }
 
 .gallery-filter-results {
