@@ -13,6 +13,8 @@ import {
   ImagePlus,
   Info,
   LogOut,
+  Pin,
+  PinOff,
   RotateCcw,
   Search,
   ScanSearch,
@@ -189,8 +191,9 @@ const videoPageSize = 24;
 const systemUnknownPersonName = "未知人物";
 const compactGalleryMediaQuery = "(max-width: 1600px)";
 
-type GalleryDrawer = "filter" | "detail" | null;
+type GalleryDrawer = "detail" | null;
 type GalleryFilterSection = "include-people" | "include-tags" | "exclude-people" | "exclude-tags";
+type GalleryDetailTab = "people" | "tags" | "faces" | "rich-text";
 
 type MainAppProps = {
   authSession: AuthSession;
@@ -225,6 +228,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const [galleryDrawer, setGalleryDrawer] = useState<GalleryDrawer>(null);
   const [galleryCompact, setGalleryCompact] = useState(() => window.matchMedia(compactGalleryMediaQuery).matches);
   const [activeGalleryFilterSection, setActiveGalleryFilterSection] = useState<GalleryFilterSection | null>("include-people");
+  const [galleryFiltersExpanded, setGalleryFiltersExpanded] = useState(true);
+  const [galleryDetailPinned, setGalleryDetailPinned] = useState(false);
+  const [activeGalleryDetailTab, setActiveGalleryDetailTab] = useState<GalleryDetailTab>("people");
   const [excludePersonSearch, setExcludePersonSearch] = useState("");
   const [excludeTagSearch, setExcludeTagSearch] = useState("");
   const [manualPersonId, setManualPersonId] = useState("");
@@ -295,10 +301,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const [jumpPageInput, setJumpPageInput] = useState("");
   const [highlightedSampleId, setHighlightedSampleId] = useState<number | null>(null);
   const peopleMainRef = useRef<HTMLElement | null>(null);
-  const galleryFilterRef = useRef<HTMLElement | null>(null);
   const galleryDetailRef = useRef<HTMLElement | null>(null);
-  const galleryFilterTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const galleryFilterCloseRef = useRef<HTMLButtonElement | null>(null);
   const galleryDetailCloseRef = useRef<HTMLButtonElement | null>(null);
   const galleryDrawerReturnFocusRef = useRef<HTMLElement | null>(null);
 
@@ -434,14 +437,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }
 
   function openGalleryDrawer(nextDrawer: Exclude<GalleryDrawer, null>) {
-    if (!window.matchMedia(compactGalleryMediaQuery).matches) {
-      return;
-    }
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && activeElement !== document.body) {
       galleryDrawerReturnFocusRef.current = activeElement;
-    } else {
-      galleryDrawerReturnFocusRef.current = galleryFilterTriggerRef.current;
     }
     setGalleryDrawer(nextDrawer);
   }
@@ -456,8 +454,6 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       galleryDrawerReturnFocusRef.current = null;
       if (returnTarget?.isConnected) {
         returnTarget.focus();
-      } else {
-        galleryFilterTriggerRef.current?.focus();
       }
     });
   }
@@ -466,8 +462,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     const mediaQuery = window.matchMedia(compactGalleryMediaQuery);
     const handleChange = () => {
       setGalleryCompact(mediaQuery.matches);
-      if (!mediaQuery.matches) {
-        setGalleryDrawer(null);
+      if (mediaQuery.matches) {
+        setGalleryDetailPinned(false);
       }
     };
     handleChange();
@@ -478,6 +474,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   useEffect(() => {
     if (page !== "gallery") {
       setGalleryDrawer(null);
+      setGalleryDetailPinned(false);
     }
   }, [page]);
 
@@ -486,6 +483,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     setGallerySelectionMode(false);
     setGalleryExportModalOpen(false);
     setGalleryExportStartPhotoId(null);
+    setGalleryDetailPinned(false);
   }, [
     authSession.workspace.id,
     setGalleryExportModalOpen,
@@ -495,7 +493,6 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   ]);
 
   useEffect(() => {
-    galleryFilterRef.current?.toggleAttribute("inert", galleryCompact && galleryDrawer !== "filter");
     galleryDetailRef.current?.toggleAttribute("inert", galleryCompact && galleryDrawer !== "detail");
   }, [galleryCompact, galleryDrawer, page]);
 
@@ -505,8 +502,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     }
 
     const previousOverflow = document.body.style.overflow;
-    const panel = galleryDrawer === "filter" ? galleryFilterRef.current : galleryDetailRef.current;
-    const closeButton = galleryDrawer === "filter" ? galleryFilterCloseRef.current : galleryDetailCloseRef.current;
+    const panel = galleryDetailRef.current;
+    const closeButton = galleryDetailCloseRef.current;
     document.body.style.overflow = "hidden";
     window.requestAnimationFrame(() => closeButton?.focus());
 
@@ -605,7 +602,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }
 
   function toggleGalleryFilterSection(section: GalleryFilterSection) {
-    setActiveGalleryFilterSection((current) => current === section ? null : section);
+    setActiveGalleryFilterSection(section);
   }
 
   function handleToggleExcludePerson(personId: number) {
@@ -940,6 +937,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     try {
       const detail = await getGalleryPhoto(photoId);
       setSelectedPhoto(detail);
+      setActiveGalleryDetailTab((current) => current === "rich-text" && !detail.is_rich_text ? "people" : current);
       setRichTextDraft(detail.rich_text ?? "");
       setManualPersonId("");
       setManualPersonSearch("");
@@ -955,6 +953,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }
 
   function openGalleryLightbox(photoId: number) {
+    closeGalleryDrawer(false);
+    setGalleryDetailPinned(false);
     setLightboxPhotoId(photoId);
   }
 
@@ -974,11 +974,6 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     const photoId = lightboxPhoto.id;
     closeGalleryLightbox();
     await openGalleryPhoto(photoId);
-    if (!window.matchMedia(compactGalleryMediaQuery).matches) {
-      window.setTimeout(() => {
-        galleryDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 0);
-    }
   }
 
   async function handleCreatePerson() {
@@ -2346,9 +2341,6 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     setPageState("gallery");
     setRoute("gallery");
     await openGalleryPhoto(photoId);
-    if (!window.matchMedia(compactGalleryMediaQuery).matches) {
-      window.setTimeout(() => galleryDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
-    }
   }
 
   async function handleDeletePhotoPerson(personId: number) {
@@ -2704,33 +2696,26 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
   const GalleryPageComponent = () => {
     return (
-        <main className="page-grid gallery-page">
+        <main className={`page-grid gallery-page${galleryDetailPinned && galleryDrawer === "detail" ? " detail-pinned" : ""}`}>
           <section
-            id="gallery-filter-drawer"
-            ref={galleryFilterRef}
-            className={`panel filter-panel gallery-drawer gallery-filter-drawer${galleryDrawer === "filter" ? " is-open" : ""}`}
-            role={galleryCompact ? "dialog" : undefined}
-            aria-modal={galleryCompact ? true : undefined}
-            aria-hidden={galleryCompact ? galleryDrawer !== "filter" : undefined}
+            className="panel gallery-filter-bar"
             aria-labelledby="gallery-filter-title"
-            tabIndex={-1}
           >
-            <div className="section-head">
+            <div className="gallery-filter-bar-head">
               <div>
                 <p className="eyebrow">筛选器</p>
                 <h2 id="gallery-filter-title">人物 + 自定义标签</h2>
               </div>
-              <div className="gallery-drawer-head-actions">
+              <div className="gallery-filter-bar-actions">
                 <span>组内 OR，组间 AND</span>
                 <button
-                  ref={galleryFilterCloseRef}
-                  className="gallery-drawer-close"
                   type="button"
-                  onClick={() => closeGalleryDrawer()}
-                  aria-label="关闭筛选器"
-                  title="关闭筛选器"
+                  onClick={() => setGalleryFiltersExpanded((current) => !current)}
+                  aria-expanded={galleryFiltersExpanded}
+                  aria-controls="gallery-filter-workbench"
                 >
-                  <X size={18} aria-hidden="true" />
+                  <SlidersHorizontal size={17} aria-hidden="true" />
+                  {galleryFiltersExpanded ? "收起筛选" : "展开筛选"}
                 </button>
               </div>
             </div>
@@ -2752,7 +2737,10 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                       key={section}
                       className={`gallery-filter-summary-tab${activeGalleryFilterSection === section ? " active" : ""}${count > 0 ? " has-filters" : ""}`}
                       type="button"
-                      onClick={() => setActiveGalleryFilterSection(section)}
+                      onClick={() => {
+                        setActiveGalleryFilterSection(section);
+                        setGalleryFiltersExpanded(true);
+                      }}
                     >
                       {label} <b>{count}</b>
                     </button>
@@ -2769,11 +2757,13 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
               </div>
             </div>
 
-            <div className="gallery-filter-accordions">
+            {galleryFiltersExpanded && <div className="gallery-filter-accordions" id="gallery-filter-workbench" role="tablist" aria-label="筛选条件分类">
               <section className={`gallery-filter-accordion${activeGalleryFilterSection === "include-people" ? " is-open" : ""}`}>
                 <button
                   className="gallery-filter-accordion-trigger"
                   type="button"
+                  role="tab"
+                  aria-selected={activeGalleryFilterSection === "include-people"}
                   onClick={() => toggleGalleryFilterSection("include-people")}
                   aria-expanded={activeGalleryFilterSection === "include-people"}
                   aria-controls="gallery-filter-include-people"
@@ -2846,6 +2836,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <button
                   className="gallery-filter-accordion-trigger"
                   type="button"
+                  role="tab"
+                  aria-selected={activeGalleryFilterSection === "include-tags"}
                   onClick={() => toggleGalleryFilterSection("include-tags")}
                   aria-expanded={activeGalleryFilterSection === "include-tags"}
                   aria-controls="gallery-filter-include-tags"
@@ -2886,6 +2878,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <button
                   className="gallery-filter-accordion-trigger"
                   type="button"
+                  role="tab"
+                  aria-selected={activeGalleryFilterSection === "exclude-people"}
                   onClick={() => toggleGalleryFilterSection("exclude-people")}
                   aria-expanded={activeGalleryFilterSection === "exclude-people"}
                   aria-controls="gallery-filter-exclude-people"
@@ -2950,6 +2944,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <button
                   className="gallery-filter-accordion-trigger"
                   type="button"
+                  role="tab"
+                  aria-selected={activeGalleryFilterSection === "exclude-tags"}
                   onClick={() => toggleGalleryFilterSection("exclude-tags")}
                   aria-expanded={activeGalleryFilterSection === "exclude-tags"}
                   aria-controls="gallery-filter-exclude-tags"
@@ -2985,7 +2981,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   </div>
                 )}
               </section>
-            </div>
+            </div>}
           </section>
 
           <section className="panel gallery-panel">
@@ -2995,61 +2991,35 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <h2>按条件浏览图片</h2>
               </div>
               <div className="micro-row section-actions">
-                <button
-                  ref={galleryFilterTriggerRef}
-                  className="gallery-drawer-trigger"
-                  type="button"
-                  onClick={() => openGalleryDrawer("filter")}
-                  aria-controls="gallery-filter-drawer"
-                  aria-expanded={galleryDrawer === "filter"}
-                >
-                  <SlidersHorizontal size={17} aria-hidden="true" />
-                  筛选
-                  {galleryFilterCount > 0 && <strong className="gallery-filter-count">{galleryFilterCount}</strong>}
-                </button>
                 <span>{galleryTotal} 张结果</span>
-                <button disabled={busy} onClick={() => toggleGallerySelectionMode()}>
-                  {gallerySelectionMode ? "取消选择" : "选择图片"}
-                </button>
-                {gallerySelectionMode && (
+                {gallerySelectionMode ? (
                   <>
+                    <button disabled={busy} onClick={() => toggleGallerySelectionMode()}>取消选择</button>
                     <button disabled={busy || galleryPhotos.length === 0} onClick={toggleCurrentGalleryPageSelection}>
                       {isGalleryPageSelected(selectedGalleryPhotoIds, galleryPhotos.map((photo) => photo.id))
                         ? "取消本页"
                         : "选中本页"}
                     </button>
-                    <button
-                      disabled={busy || selectedGalleryPhotoIds.length === 0}
-                      onClick={openSelectedGalleryExportModal}
-                    >
+                    <button disabled={busy || selectedGalleryPhotoIds.length === 0} onClick={openSelectedGalleryExportModal}>
                       导出选中（{selectedGalleryPhotoIds.length}）
                     </button>
-                    <button
-                      disabled={busy || selectedGalleryPhotoIds.length !== 1}
-                      onClick={() => openGalleryExportFromPhoto(selectedGalleryPhotoIds[0])}
-                    >
+                    <button disabled={busy || selectedGalleryPhotoIds.length !== 1} onClick={() => openGalleryExportFromPhoto(selectedGalleryPhotoIds[0])}>
                       从此图开始导出
                     </button>
-                    <button
-                      disabled={busy || selectedGalleryPhotoIds.length === 0}
-                      onClick={() => setSelectedGalleryPhotoIds([])}
-                    >
+                    <button disabled={busy || selectedGalleryPhotoIds.length === 0} onClick={() => setSelectedGalleryPhotoIds([])}>
                       清空选择
                     </button>
+                    <button disabled={busy || selectedGalleryPhotoIds.length === 0} onClick={() => void handleDeleteSelectedGalleryPhotos()}>
+                      删除选中（{selectedGalleryPhotoIds.length}）
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button disabled={busy} onClick={() => toggleGallerySelectionMode()}>选择图片</button>
+                    <button disabled={busy} onClick={openGalleryExportModal}>导出展示图</button>
+                    <button disabled={busy} onClick={handlePickGalleryImportFile}>导入展示图</button>
                   </>
                 )}
-                <button disabled={busy} onClick={openGalleryExportModal}>
-                  导出展示图
-                </button>
-                <button disabled={busy} onClick={handlePickGalleryImportFile}>
-                  导入展示图
-                </button>
-                <button
-                  disabled={busy || !gallerySelectionMode || selectedGalleryPhotoIds.length === 0}
-                  onClick={() => void handleDeleteSelectedGalleryPhotos()}
-                >
-                  删除选中（{selectedGalleryPhotoIds.length}）
-                </button>
                 <input
                   ref={galleryImportFileRef}
                   type="file"
@@ -3144,8 +3114,10 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                       event.stopPropagation();
                       void openGalleryPhoto(photo.id);
                     }}
+                    aria-label={`查看图片 #${photo.id} 的详情`}
+                    title="查看详情"
                   >
-                    详情
+                    <Info size={17} aria-hidden="true" />
                   </button>
                   {gallerySelectionMode && (
                     <label className="corner-check">
@@ -3199,14 +3171,14 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
           <aside
             id="gallery-detail-drawer"
             ref={galleryDetailRef}
-            className={`panel detail-panel gallery-drawer gallery-detail-drawer${galleryDrawer === "detail" ? " is-open" : ""}`}
+            className={`panel detail-panel gallery-detail-inspector${galleryDrawer === "detail" ? " is-open" : ""}${galleryDetailPinned ? " is-pinned" : ""}`}
             role={galleryCompact ? "dialog" : undefined}
             aria-modal={galleryCompact ? true : undefined}
             aria-hidden={galleryCompact ? galleryDrawer !== "detail" : undefined}
             aria-labelledby="gallery-detail-title"
             tabIndex={-1}
           >
-            <div className="section-head">
+            <div className="section-head detail-inspector-head">
               <div>
                 <p className="eyebrow">详情</p>
                 <h2 id="gallery-detail-title">单张图修正</h2>
@@ -3219,9 +3191,20 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 <button disabled={busy || !selectedPhoto} onClick={() => void handleDeleteCurrentPhoto()}>
                   删除当前图
                 </button>
+                {!galleryCompact && (
+                  <button
+                    className="detail-pin-button"
+                    type="button"
+                    onClick={() => setGalleryDetailPinned((current) => !current)}
+                    aria-pressed={galleryDetailPinned}
+                    title={galleryDetailPinned ? "取消固定详情" : "固定详情栏"}
+                  >
+                    {galleryDetailPinned ? <PinOff size={17} aria-hidden="true" /> : <Pin size={17} aria-hidden="true" />}
+                  </button>
+                )}
                 <button
                   ref={galleryDetailCloseRef}
-                  className="gallery-drawer-close"
+                  className="detail-inspector-close"
                   type="button"
                   onClick={() => closeGalleryDrawer()}
                   aria-label="关闭图片详情"
@@ -3237,7 +3220,6 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   <img className="detail-image" src={selectedPhoto.original_url} alt="原图预览" />
                 </a>
                 <div className="detail-copy">
-                  <h3>图片详情</h3>
                   <p>{formatPhotoDate(selectedPhoto.taken_at, selectedPhoto.created_at)}</p>
                   <p className="detail-photo-id">图片编号 #{selectedPhoto.id}</p>
                   <p>
@@ -3245,7 +3227,14 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   </p>
                 </div>
 
-                <div className="editor-block">
+                <div className="detail-tab-list" role="tablist" aria-label="图片详情分类">
+                  <button className={activeGalleryDetailTab === "people" ? "active" : ""} type="button" role="tab" aria-selected={activeGalleryDetailTab === "people"} onClick={() => setActiveGalleryDetailTab("people")}>人物</button>
+                  <button className={activeGalleryDetailTab === "tags" ? "active" : ""} type="button" role="tab" aria-selected={activeGalleryDetailTab === "tags"} onClick={() => setActiveGalleryDetailTab("tags")}>标签</button>
+                  <button className={activeGalleryDetailTab === "faces" ? "active" : ""} type="button" role="tab" aria-selected={activeGalleryDetailTab === "faces"} onClick={() => setActiveGalleryDetailTab("faces")}>人脸 {selectedPhoto.faces.length}</button>
+                  {selectedPhoto.is_rich_text && <button className={activeGalleryDetailTab === "rich-text" ? "active" : ""} type="button" role="tab" aria-selected={activeGalleryDetailTab === "rich-text"} onClick={() => setActiveGalleryDetailTab("rich-text")}>图文</button>}
+                </div>
+
+                {activeGalleryDetailTab === "people" && <div className="editor-block detail-tab-panel" role="tabpanel">
                   <label>人物标签</label>
                   <div className="micro-row wrap">
                     {selectedPhoto.persons.map((person) => (
@@ -3312,9 +3301,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   <p className="tip">
                     单脸图片添加人物会同步纠正人脸绑定；多人图片只添加图片级人物标签。标签添加后，可在人物名称旁单独加入样本库或撤销。
                   </p>
-                </div>
+                </div>}
 
-                <div className="editor-block">
+                {activeGalleryDetailTab === "tags" && <div className="editor-block detail-tab-panel" role="tabpanel">
                   <label>普通标签</label>
                   <div className="micro-row wrap">
                     {selectedPhotoTags.map((tag) => (
@@ -3371,10 +3360,10 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                       </button>
                     </div>
                   </div>
-                </div>
+                </div>}
 
-                {selectedPhoto.is_rich_text && (
-                  <div className="editor-block">
+                {selectedPhoto.is_rich_text && activeGalleryDetailTab === "rich-text" && (
+                  <div className="editor-block detail-tab-panel" role="tabpanel">
                     <label>图文文本（可手动编辑）</label>
                     <textarea
                       className="rich-text-editor"
@@ -3391,7 +3380,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   </div>
                 )}
 
-                <div className="face-list">
+                {activeGalleryDetailTab === "faces" && <div className="face-list detail-tab-panel" role="tabpanel">
                   {selectedPhoto.faces.map((face) => (
                     <article className="face-card" key={face.id}>
                       <header className="face-card-head">
@@ -3439,18 +3428,18 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                       )}
                     </article>
                   ))}
-                </div>
+                </div>}
               </>
             ) : (
               <div className="empty-card">从图库卡片打开详情后，这里会显示识别结果和修正操作。</div>
             )}
           </aside>
-          {galleryCompact && galleryDrawer && (
+          {galleryDrawer === "detail" && !galleryDetailPinned && (
             <button
-              className="gallery-drawer-backdrop"
+              className="gallery-drawer-backdrop gallery-detail-backdrop"
               type="button"
               onClick={() => closeGalleryDrawer()}
-              aria-label="关闭图库侧栏"
+              aria-label="关闭图片详情"
             />
           )}
         </main>
