@@ -4,6 +4,7 @@ import {
   deselectGalleryPage,
   isGalleryPageSelected,
   selectGalleryPage,
+  selectGalleryPhotoRange,
   toggleGalleryPhotoSelection
 } from "../src/gallerySelection";
 
@@ -25,5 +26,20 @@ describe("图库跨页选择", () => {
     expect(isGalleryPageSelected([1, 2, 21], [1, 2])).toBe(true);
     expect(isGalleryPageSelected([1, 21], [1, 2])).toBe(false);
     expect(isGalleryPageSelected([], [])).toBe(false);
+  });
+
+  it("Shift 范围连选：正向、反向与空起点处理", () => {
+    const pageIds = [10, 11, 12, 13, 14, 15];
+    // 无起点时直接选中目标
+    expect(selectGalleryPhotoRange([], pageIds, null, 12)).toEqual([12]);
+
+    // 正向连选 10 到 13
+    expect(selectGalleryPhotoRange([10], pageIds, 10, 13)).toEqual([10, 11, 12, 13]);
+
+    // 反向连选 14 到 11
+    expect(selectGalleryPhotoRange([14, 99], pageIds, 14, 11)).toEqual([14, 99, 11, 12, 13]);
+
+    // 起点不在当前页时直接选中目标
+    expect(selectGalleryPhotoRange([99], pageIds, 99, 12)).toEqual([99, 12]);
   });
 });

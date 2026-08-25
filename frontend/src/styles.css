@@ -770,6 +770,77 @@ input:focus, select:focus, textarea:focus {
   background: transparent;
 }
 
+.gallery-active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(53, 37, 29, 0.2);
+}
+
+.gallery-active-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
+  background: var(--bg-strong);
+  color: var(--text);
+  box-shadow: 1px 1px 0 var(--panel-border);
+  cursor: pointer;
+  transition: all 0.15s ease-out;
+}
+
+.gallery-active-filter-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 2px 2px 0 var(--panel-border);
+}
+
+.gallery-active-filter-chip .chip-prefix {
+  font-weight: 800;
+  font-size: 0.82rem;
+}
+
+.gallery-active-filter-chip.include-chip .chip-prefix {
+  color: var(--accent);
+}
+
+.gallery-active-filter-chip.include-chip.unknown,
+.gallery-active-filter-chip.include-chip.unknown .chip-prefix {
+  color: var(--unknown);
+}
+
+.gallery-active-filter-chip.include-chip.unknown {
+  border-color: var(--unknown);
+  background: var(--unknown-soft);
+}
+
+.gallery-active-filter-chip.exclude-chip {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: var(--accent-strong);
+}
+
+.gallery-active-filter-chip.exclude-chip .chip-prefix {
+  color: var(--accent-strong);
+}
+
+.gallery-active-filter-chip .chip-remove-icon {
+  opacity: 0.6;
+  margin-left: 2px;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.gallery-active-filter-chip:hover .chip-remove-icon {
+  opacity: 1;
+  transform: scale(1.15);
+}
+
 .gallery-filter-accordions {
   position: relative;
   display: grid;
@@ -1076,8 +1147,6 @@ input:focus, select:focus, textarea:focus {
   object-fit: cover;
   object-position: center;
   border-bottom: 2px solid var(--panel-border);
-  filter: grayscale(15%) contrast(1.1);
-  transition: filter 0.3s;
 }
 
 .photo-card > img {
@@ -1091,10 +1160,6 @@ input:focus, select:focus, textarea:focus {
 
 .sample-card img {
   height: 400px;
-}
-
-.photo-card:hover img {
-  filter: grayscale(0%) contrast(1);
 }
 
 .rich-card { padding: 0; }

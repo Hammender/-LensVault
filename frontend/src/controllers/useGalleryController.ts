@@ -16,6 +16,7 @@ export function useGalleryController({ persons, tags }: UseGalleryControllerOpti
   const [galleryOffset, setGalleryOffset] = useState(0);
   const [gallerySelectionMode, setGallerySelectionMode] = useState(false);
   const [selectedGalleryPhotoIds, setSelectedGalleryPhotoIds] = useState<number[]>([]);
+  const [lastSelectedGalleryPhotoId, setLastSelectedGalleryPhotoId] = useState<number | null>(null);
   const [galleryExportModalOpen, setGalleryExportModalOpen] = useState(false);
   const [galleryExportScope, setGalleryExportScope] = useState<GalleryExportScope>("filtered");
   const [galleryExportPersonIds, setGalleryExportPersonIds] = useState<number[]>([]);
@@ -83,6 +84,8 @@ export function useGalleryController({ persons, tags }: UseGalleryControllerOpti
     setGallerySelectionMode,
     selectedGalleryPhotoIds,
     setSelectedGalleryPhotoIds,
+    lastSelectedGalleryPhotoId,
+    setLastSelectedGalleryPhotoId,
     galleryExportModalOpen,
     setGalleryExportModalOpen,
     galleryExportScope,

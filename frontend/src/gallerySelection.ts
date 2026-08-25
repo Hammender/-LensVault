@@ -16,3 +16,20 @@ export function deselectGalleryPage(selectedIds: number[], pageIds: number[]): n
 export function isGalleryPageSelected(selectedIds: number[], pageIds: number[]): boolean {
   return pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id));
 }
+
+export function selectGalleryPhotoRange(
+  selectedIds: number[],
+  pageIds: number[],
+  fromId: number | null,
+  targetId: number
+): number[] {
+  if (fromId === null || !pageIds.includes(fromId) || !pageIds.includes(targetId)) {
+    return Array.from(new Set([...selectedIds, targetId]));
+  }
+  const fromIndex = pageIds.indexOf(fromId);
+  const targetIndex = pageIds.indexOf(targetId);
+  const minIndex = Math.min(fromIndex, targetIndex);
+  const maxIndex = Math.max(fromIndex, targetIndex);
+  const rangeIds = pageIds.slice(minIndex, maxIndex + 1);
+  return Array.from(new Set([...selectedIds, ...rangeIds]));
+}

@@ -179,6 +179,7 @@ import {
   deselectGalleryPage,
   isGalleryPageSelected,
   selectGalleryPage,
+  selectGalleryPhotoRange,
   toggleGalleryPhotoSelection
 } from "./gallerySelection";
 
@@ -213,6 +214,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const {
     galleryPhotos, setGalleryPhotos, galleryTotal, setGalleryTotal, galleryOffset, setGalleryOffset,
     gallerySelectionMode, setGallerySelectionMode, selectedGalleryPhotoIds, setSelectedGalleryPhotoIds,
+    lastSelectedGalleryPhotoId, setLastSelectedGalleryPhotoId,
     galleryExportModalOpen, setGalleryExportModalOpen, galleryExportScope, setGalleryExportScope,
     galleryExportPersonIds, setGalleryExportPersonIds, galleryExportTagIds, setGalleryExportTagIds,
     galleryExportExcludePersonIds, setGalleryExportExcludePersonIds,
@@ -2469,9 +2471,48 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     setGallerySelectionMode((current) => {
       if (current) {
         setSelectedGalleryPhotoIds([]);
+        setLastSelectedGalleryPhotoId(null);
       }
       return !current;
     });
+  }
+
+  function handleGalleryCardClick(photoId: number, shiftKey: boolean) {
+    const pageIds = galleryPhotos.map((photo) => photo.id);
+    if (shiftKey) {
+      if (!gallerySelectionMode) {
+        setGallerySelectionMode(true);
+      }
+      setSelectedGalleryPhotoIds((current) =>
+        selectGalleryPhotoRange(current, pageIds, lastSelectedGalleryPhotoId, photoId)
+      );
+      setLastSelectedGalleryPhotoId(photoId);
+      return;
+    }
+
+    if (gallerySelectionMode) {
+      setSelectedGalleryPhotoIds((current) => toggleGalleryPhotoSelection(current, photoId));
+      setLastSelectedGalleryPhotoId(photoId);
+      return;
+    }
+
+    openGalleryLightbox(photoId);
+  }
+
+  function handleGalleryCheckboxClick(photoId: number, shiftKey: boolean) {
+    const pageIds = galleryPhotos.map((photo) => photo.id);
+    if (shiftKey) {
+      if (!gallerySelectionMode) {
+        setGallerySelectionMode(true);
+      }
+      setSelectedGalleryPhotoIds((current) =>
+        selectGalleryPhotoRange(current, pageIds, lastSelectedGalleryPhotoId, photoId)
+      );
+      setLastSelectedGalleryPhotoId(photoId);
+    } else {
+      setSelectedGalleryPhotoIds((current) => toggleGalleryPhotoSelection(current, photoId));
+      setLastSelectedGalleryPhotoId(photoId);
+    }
   }
 
   function toggleCurrentGalleryPageSelection() {
@@ -2755,6 +2796,79 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   清除全部
                 </button>
               </div>
+
+              {galleryFilterCount > 0 && (
+                <div className="gallery-active-filters" aria-label="已生效筛选条件列表">
+                  {selectedPersonIds.map((id) => {
+                    const person = persons.find((p) => p.id === id);
+                    if (!person) return null;
+                    return (
+                      <button
+                        key={`inc-p-${id}`}
+                        type="button"
+                        className={`gallery-active-filter-chip include-chip${person.is_unknown ? " unknown" : ""}`}
+                        onClick={() => handleTogglePersonFilter(id)}
+                        title={`点击移除人物筛选：${person.display_name}`}
+                      >
+                        <span className="chip-prefix">+</span>
+                        <span className="chip-label">{person.display_name}</span>
+                        <X size={13} className="chip-remove-icon" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                  {selectedTagIds.map((id) => {
+                    const tag = tags.find((t) => t.id === id);
+                    if (!tag) return null;
+                    return (
+                      <button
+                        key={`inc-t-${id}`}
+                        type="button"
+                        className="gallery-active-filter-chip include-chip tag-chip"
+                        onClick={() => handleToggleTagFilter(id)}
+                        title={`点击移除标签筛选：#${tag.name}`}
+                      >
+                        <span className="chip-prefix">+</span>
+                        <span className="chip-label">#{tag.name}</span>
+                        <X size={13} className="chip-remove-icon" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                  {excludePersonIds.map((id) => {
+                    const person = persons.find((p) => p.id === id);
+                    if (!person) return null;
+                    return (
+                      <button
+                        key={`exc-p-${id}`}
+                        type="button"
+                        className={`gallery-active-filter-chip exclude-chip${person.is_unknown ? " unknown" : ""}`}
+                        onClick={() => handleToggleExcludePerson(id)}
+                        title={`点击移除排除人物：${person.display_name}`}
+                      >
+                        <span className="chip-prefix">-</span>
+                        <span className="chip-label">{person.display_name}</span>
+                        <X size={13} className="chip-remove-icon" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                  {excludeTagIds.map((id) => {
+                    const tag = tags.find((t) => t.id === id);
+                    if (!tag) return null;
+                    return (
+                      <button
+                        key={`exc-t-${id}`}
+                        type="button"
+                        className="gallery-active-filter-chip exclude-chip tag-chip"
+                        onClick={() => handleToggleExcludeTag(id)}
+                        title={`点击移除排除标签：#${tag.name}`}
+                      >
+                        <span className="chip-prefix">-</span>
+                        <span className="chip-label">#{tag.name}</span>
+                        <X size={13} className="chip-remove-icon" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {galleryFiltersExpanded && <div className="gallery-filter-accordions" id="gallery-filter-workbench" role="tablist" aria-label="筛选条件分类">
@@ -3006,7 +3120,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     <button disabled={busy || selectedGalleryPhotoIds.length !== 1} onClick={() => openGalleryExportFromPhoto(selectedGalleryPhotoIds[0])}>
                       从此图开始导出
                     </button>
-                    <button disabled={busy || selectedGalleryPhotoIds.length === 0} onClick={() => setSelectedGalleryPhotoIds([])}>
+                    <button disabled={busy || selectedGalleryPhotoIds.length === 0} onClick={() => { setSelectedGalleryPhotoIds([]); setLastSelectedGalleryPhotoId(null); }}>
                       清空选择
                     </button>
                     <button disabled={busy || selectedGalleryPhotoIds.length === 0} onClick={() => void handleDeleteSelectedGalleryPhotos()}>
@@ -3057,12 +3171,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   <article key={photo.id} className={wrapClass}>
                     <button
                       className={`${photo.is_rich_text ? "photo-card rich-card" : "photo-card"}${selectedGalleryPhotoIds.includes(photo.id) ? " selected" : ""}`}
-                      onClick={() => {
-                        if (gallerySelectionMode) {
-                          setSelectedGalleryPhotoIds((current) => toggleGalleryPhotoSelection(current, photo.id));
-                        } else {
-                          openGalleryLightbox(photo.id);
-                        }
+                      onClick={(event) => {
+                        handleGalleryCardClick(photo.id, event.shiftKey);
                       }}
                     >
                     {photo.is_rich_text ? (
@@ -3120,11 +3230,22 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     <Info size={17} aria-hidden="true" />
                   </button>
                   {gallerySelectionMode && (
-                    <label className="corner-check">
+                    <label
+                      className="corner-check"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                      }}
+                    >
                       <input
                         type="checkbox"
                         checked={selectedGalleryPhotoIds.includes(photo.id)}
-                        onChange={() => setSelectedGalleryPhotoIds((current) => toggleGalleryPhotoSelection(current, photo.id))}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                        }}
+                        onChange={(event) => {
+                          const nativeEvent = event.nativeEvent as MouseEvent;
+                          handleGalleryCheckboxClick(photo.id, Boolean(nativeEvent?.shiftKey));
+                        }}
                       />
                     </label>
                   )}
