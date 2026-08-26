@@ -40,16 +40,36 @@ def gallery_photo_to_list_item(photo: GalleryPhoto) -> GalleryPhotoListItem:
     )
 
 
-def gallery_photo_to_detail(photo: GalleryPhoto) -> GalleryPhotoDetail:
+def gallery_photo_to_detail(
+    photo: GalleryPhoto,
+    display_size: tuple[int, int] | None = None,
+) -> GalleryPhotoDetail:
     item = gallery_photo_to_list_item(photo)
+    promoted_by_face = {
+        sample.source_gallery_face_id: sample.id
+        for sample in getattr(photo, "promoted_samples", [])
+        if sample.status == "ready" and sample.source_gallery_face_id is not None
+    }
+    ordered_faces = sorted(
+        photo.faces,
+        key=lambda face: (float(face.bbox_top), float(face.bbox_left), face.id),
+    )
     faces = [
         FaceRead(
             id=face.id,
+            face_index=index,
             bbox_left=face.bbox_left,
             bbox_top=face.bbox_top,
             bbox_right=face.bbox_right,
             bbox_bottom=face.bbox_bottom,
             matched_person_id=face.matched_person_id,
+            matched_person_name=face.matched_person.display_name if face.matched_person else None,
+            matched_person_is_unknown=bool(face.matched_person and face.matched_person.is_unknown),
+            binding_source=(
+                "unknown" if face.matched_person and face.matched_person.is_unknown
+                else "manual" if face.predicted_person_id != face.matched_person_id
+                else "auto"
+            ),
             predicted_person_id=face.predicted_person_id,
             predicted_person_name=face.predicted_person.display_name if face.predicted_person else None,
             match_score=face.match_score,
@@ -71,12 +91,15 @@ def gallery_photo_to_detail(photo: GalleryPhoto) -> GalleryPhotoDetail:
             pose_yaw=face.pose_yaw,
             needs_review=face.needs_review,
             vector_collection=face.vector_collection,
+            promoted_sample_id=promoted_by_face.get(face.id),
         )
-        for face in photo.faces
+        for index, face in enumerate(ordered_faces, start=1)
     ]
     return GalleryPhotoDetail(
         **item.model_dump(),
         faces=faces,
+        display_width=display_size[0] if display_size else photo.width,
+        display_height=display_size[1] if display_size else photo.height,
         created_at=photo.created_at,
         content_type=photo.content_type,
         recognition_summary=getattr(photo, "recognition_summary", None),

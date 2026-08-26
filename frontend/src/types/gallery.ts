@@ -21,11 +21,15 @@ export type GalleryTag = {
 
 export type Face = {
   id: number;
+  face_index: number;
   bbox_left: number;
   bbox_top: number;
   bbox_right: number;
   bbox_bottom: number;
   matched_person_id: number | null;
+  matched_person_name: string | null;
+  matched_person_is_unknown: boolean;
+  binding_source: "auto" | "manual" | "unknown";
   predicted_person_id: number | null;
   predicted_person_name: string | null;
   match_score: number | null;
@@ -47,6 +51,7 @@ export type Face = {
   pose_yaw: number | null;
   needs_review: boolean;
   vector_collection: string | null;
+  promoted_sample_id: number | null;
 };
 
 export type GalleryPhotoListItem = {
@@ -68,6 +73,8 @@ export type GalleryPhotoListItem = {
 
 export type GalleryPhotoDetail = GalleryPhotoListItem & {
   faces: Face[];
+  display_width: number | null;
+  display_height: number | null;
   created_at: string;
   content_type: string | null;
   recognition_summary: {

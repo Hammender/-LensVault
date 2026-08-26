@@ -21,11 +21,15 @@ class GalleryTagRead(BaseModel):
 
 class FaceRead(BaseModel):
     id: int
+    face_index: int
     bbox_left: float
     bbox_top: float
     bbox_right: float
     bbox_bottom: float
     matched_person_id: int | None
+    matched_person_name: str | None = None
+    matched_person_is_unknown: bool = False
+    binding_source: Literal["auto", "manual", "unknown"] = "auto"
     predicted_person_id: int | None = None
     predicted_person_name: str | None = None
     match_score: float | None
@@ -47,6 +51,15 @@ class FaceRead(BaseModel):
     pose_yaw: float | None = None
     needs_review: bool
     vector_collection: str | None
+    promoted_sample_id: int | None = None
+
+
+class GalleryFaceSampleCreate(BaseModel):
+    pass
+
+
+class GalleryFacePersonBindRequest(BaseModel):
+    person_id: int = Field(gt=0)
 
 
 class GalleryPhotoListItem(BaseModel):
@@ -68,6 +81,8 @@ class GalleryPhotoListItem(BaseModel):
 
 class GalleryPhotoDetail(GalleryPhotoListItem):
     faces: list[FaceRead]
+    display_width: int | None = None
+    display_height: int | None = None
     created_at: datetime
     content_type: str | None
     recognition_summary: dict[str, int] | None = None

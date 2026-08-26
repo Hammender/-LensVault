@@ -42,7 +42,10 @@ export default function SearchableSelect({
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
   const blurTimer = useRef<number | null>(null);
+  const pointerInsideTimer = useRef<number | null>(null);
+  const pointerInside = useRef(false);
   const optionKey = options.map((option) => option.value).join("|");
   const listId = `${id}-options`;
 
@@ -56,7 +59,18 @@ export default function SearchableSelect({
 
   useEffect(() => () => {
     if (blurTimer.current !== null) window.clearTimeout(blurTimer.current);
+    if (pointerInsideTimer.current !== null) window.clearTimeout(pointerInsideTimer.current);
   }, []);
+
+  function markPointerInside() {
+    pointerInside.current = true;
+    if (pointerInsideTimer.current !== null) window.clearTimeout(pointerInsideTimer.current);
+    // Native scrollbar interaction can blur the input before the pointer is released.
+    pointerInsideTimer.current = window.setTimeout(() => {
+      pointerInside.current = false;
+      pointerInsideTimer.current = null;
+    }, 300);
+  }
 
   function openPicker() {
     if (disabled) return;
@@ -68,6 +82,11 @@ export default function SearchableSelect({
   function closePicker(cancelled: boolean) {
     setOpen(false);
     setActiveIndex(-1);
+    pointerInside.current = false;
+    if (pointerInsideTimer.current !== null) {
+      window.clearTimeout(pointerInsideTimer.current);
+      pointerInsideTimer.current = null;
+    }
     if (cancelled) onCancel?.();
   }
 
@@ -77,7 +96,7 @@ export default function SearchableSelect({
   }
 
   return (
-    <div className="searchable-picker">
+    <div className="searchable-picker" ref={pickerRef}>
       <Search size={16} aria-hidden="true" />
       <input
         id={id}
@@ -92,8 +111,13 @@ export default function SearchableSelect({
         placeholder={placeholder}
         onFocus={openPicker}
         onClick={openPicker}
-        onBlur={() => {
-          blurTimer.current = window.setTimeout(() => closePicker(true), 120);
+        onBlur={(event) => {
+          const relatedTarget = event.relatedTarget as Node | null;
+          blurTimer.current = window.setTimeout(() => {
+            const focusStayedInside = relatedTarget && pickerRef.current?.contains(relatedTarget);
+            if (pointerInside.current || focusStayedInside) return;
+            closePicker(true);
+          }, 120);
         }}
         onChange={(event) => {
           onQueryChange(event.target.value);
@@ -122,7 +146,7 @@ export default function SearchableSelect({
         }}
       />
       {open && (
-        <div className="searchable-picker-options" id={listId} role="listbox">
+        <div className="searchable-picker-options" id={listId} role="listbox" onPointerDownCapture={markPointerInside}>
           {options.length > 0 ? options.map((option, index) => (
             <button
               id={`${listId}-${index}`}

@@ -22,6 +22,7 @@ export type SamplePhoto = {
   quality_warnings: string | null;
   source_type: string;
   source_gallery_photo_id: number | null;
+  source_gallery_face_id: number | null;
   thumbnail_url: string;
   original_url: string;
   created_at: string;

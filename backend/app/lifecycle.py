@@ -101,6 +101,7 @@ def ensure_face_recognition_columns(engine: Engine) -> None:
             "quality_warnings": "ALTER TABLE sample_photos ADD COLUMN quality_warnings TEXT",
             "source_type": "ALTER TABLE sample_photos ADD COLUMN source_type VARCHAR(32) NOT NULL DEFAULT 'upload'",
             "source_gallery_photo_id": "ALTER TABLE sample_photos ADD COLUMN source_gallery_photo_id INTEGER",
+            "source_gallery_face_id": "ALTER TABLE sample_photos ADD COLUMN source_gallery_face_id INTEGER",
         },
         "face_records": {
             "predicted_person_id": "ALTER TABLE face_records ADD COLUMN predicted_person_id INTEGER",
@@ -138,6 +139,9 @@ def ensure_face_recognition_columns(engine: Engine) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_sample_person_source_gallery "
                 "ON sample_photos (person_id, source_gallery_photo_id)"
             )
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_sample_photos_source_gallery_face_id ON sample_photos (source_gallery_face_id)")
         )
 
 

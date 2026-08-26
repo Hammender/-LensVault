@@ -67,8 +67,8 @@ export {
   deleteGalleryPhoto, deleteGalleryPhotoPerson, deleteGalleryPhotoTag, downloadGalleryExport, getGalleryExportUrl,
   getGalleryPhoto, getGallerySimilarityGroup, getGallerySimilarityScanOverview, getLatestGallerySimilarityScan,
   getTask, importGalleryExportZip, importGalleryPhotos, importGalleryRichPhotos, listGalleryPhotos,
-  listGallerySimilarityGroups, previewNormalNearDuplicateAutoDelete, promoteGalleryPhotoPersonSample, reRecognizeGalleryPhoto,
-  reRecognizeUnknownGalleryPhotos, undoGalleryPhotoPersonSample, updateGalleryPhotoRichText,
+  bindGalleryFacePerson, listGallerySimilarityGroups, previewNormalNearDuplicateAutoDelete, promoteGalleryFaceSample, promoteGalleryPhotoPersonSample, reRecognizeGalleryPhoto,
+  reRecognizeUnknownGalleryPhotos, unbindGalleryFacePerson, undoGalleryPhotoPersonSample, updateGalleryPhotoRichText,
   updateGallerySimilarityGroup
 } from "./api/gallery";
 

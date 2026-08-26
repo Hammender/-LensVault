@@ -130,6 +130,21 @@ export async function listGallerySimilarityGroups(
 export async function getGallerySimilarityGroup(scanId: string, groupId: number): Promise<GallerySimilarityGroup | null> { return parseResponse<GallerySimilarityGroup | null>(await authFetch(`/api/gallery/similarity-scans/${scanId}/groups/${groupId}`)); }
 export async function updateGallerySimilarityGroup(scanId: string, groupId: number, reviewStatus: "pending" | "dismissed"): Promise<GallerySimilarityGroup> { return parseResponse<GallerySimilarityGroup>(await authFetch(`/api/gallery/similarity-scans/${scanId}/groups/${groupId}`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ review_status: reviewStatus }) })); }
 export async function promoteGalleryPhotoPersonSample(photoId: number, personId: number): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/persons/${personId}/sample`, { method: "POST" })); }
+export async function bindGalleryFacePerson(photoId: number, faceId: number, personId: number): Promise<GalleryPhotoDetail> {
+  return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/faces/${faceId}/person`, {
+    method: "PATCH",
+    headers: jsonHeaders,
+    body: JSON.stringify({ person_id: personId })
+  }));
+}
+export async function unbindGalleryFacePerson(photoId: number, faceId: number): Promise<GalleryPhotoDetail> {
+  return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/faces/${faceId}/person`, { method: "DELETE" }));
+}
+export async function promoteGalleryFaceSample(photoId: number, faceId: number): Promise<GalleryPhotoDetail> {
+  return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/faces/${faceId}/sample`, {
+    method: "POST"
+  }));
+}
 export async function undoGalleryPhotoPersonSample(photoId: number, personId: number): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/persons/${personId}/sample`, { method: "DELETE" })); }
 export async function deleteGalleryPhotoPerson(photoId: number, personId: number): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/persons/${personId}`, { method: "DELETE" })); }
 export async function addGalleryPhotoTag(photoId: number, payload: { tagId?: number; name?: string }): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/tags`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload.tagId ? { tag_id: payload.tagId } : { name: payload.name }) })); }

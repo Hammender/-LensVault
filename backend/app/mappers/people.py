@@ -20,6 +20,7 @@ def sample_photo_to_read(photo: SamplePhoto) -> SamplePhotoRead:
         quality_warnings=photo.quality_warnings,
         source_type=photo.source_type,
         source_gallery_photo_id=photo.source_gallery_photo_id,
+        source_gallery_face_id=photo.source_gallery_face_id,
         thumbnail_url=f"/api/persons/{photo.person_id}/samples/{photo.id}/thumbnail",
         original_url=f"/api/persons/{photo.person_id}/samples/{photo.id}/original",
         created_at=photo.created_at,

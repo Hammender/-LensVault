@@ -60,6 +60,7 @@ class SamplePhoto(Base):
     source_gallery_photo_id: Mapped[int | None] = mapped_column(
         ForeignKey("gallery_photos.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    source_gallery_face_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
     person: Mapped[Person] = relationship(back_populates="sample_photos")

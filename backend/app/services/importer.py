@@ -556,6 +556,7 @@ class PictureService:
         uploads: list[tuple[str, bytes, str | None]],
         *,
         source_gallery_photo_id: int | None = None,
+        source_gallery_face_id: int | None = None,
         prepared_faces: list[list[DetectedFace] | None] | None = None,
     ) -> list[SamplePhoto]:
         if person.is_unknown:
@@ -610,6 +611,7 @@ class PictureService:
                 status="processing",
                 source_type="gallery_face" if source_gallery_photo_id is not None else "upload",
                 source_gallery_photo_id=source_gallery_photo_id,
+                source_gallery_face_id=source_gallery_face_id,
             )
             db.add(sample)
             db.flush()
@@ -1137,6 +1139,7 @@ class PictureService:
             person,
             [(f"gallery-{photo.id}-face.jpg", crop_payload, "image/jpeg")],
             source_gallery_photo_id=photo.id,
+            source_gallery_face_id=face.id,
             prepared_faces=[detected_faces],
         )
         if not samples:

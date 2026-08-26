@@ -95,6 +95,7 @@ import {
   addPersonSamples,
   batchDeleteGalleryPhotos,
   batchDeletePersons,
+  bindGalleryFacePerson,
   bindPersonTag,
   cancelVideoUpload,
   completeVideoUpload,
@@ -138,7 +139,9 @@ import {
   replaceVideoCover,
   optimizeVideoPlayback,
   promoteGalleryPhotoPersonSample,
+  promoteGalleryFaceSample,
   undoGalleryPhotoPersonSample,
+  unbindGalleryFacePerson,
   reRecognizeGalleryPhoto,
   reRecognizeUnknownGalleryPhotos,
   clearUnknownGalleryPersonTags,
@@ -233,6 +236,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const [galleryFiltersExpanded, setGalleryFiltersExpanded] = useState(true);
   const [galleryDetailPinned, setGalleryDetailPinned] = useState(false);
   const [activeGalleryDetailTab, setActiveGalleryDetailTab] = useState<GalleryDetailTab>("people");
+  const [selectedFaceId, setSelectedFaceId] = useState<number | null>(null);
   const [excludePersonSearch, setExcludePersonSearch] = useState("");
   const [excludeTagSearch, setExcludeTagSearch] = useState("");
   const [manualPersonId, setManualPersonId] = useState("");
@@ -948,6 +952,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       setManualTagSearch("");
       setManualTagNotice(null);
       setManualTagName("");
+      setSelectedFaceId(null);
       openGalleryDrawer("detail");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载图片详情失败。");
@@ -2322,6 +2327,54 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     }
   }
 
+  async function handleBindFace(faceId: number, personId: number) {
+    if (!selectedPhoto) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await bindGalleryFacePerson(selectedPhoto.id, faceId, personId);
+      setSelectedPhoto(detail);
+      setSelectedFaceId(faceId);
+      setManualPersonId("");
+      setManualPersonSearch("");
+      setManualPersonNotice(null);
+      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "绑定人物失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePromoteFace(faceId: number) {
+    if (!selectedPhoto) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await promoteGalleryFaceSample(selectedPhoto.id, faceId);
+      setSelectedPhoto(detail);
+      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加入样本库失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUnbindFace(faceId: number) {
+    if (!selectedPhoto || !await confirm({ title: "解除人脸绑定", message: "确定将这张脸恢复为待确认状态吗？", confirmLabel: "解除绑定", tone: "danger" })) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setSelectedPhoto(await unbindGalleryFacePerson(selectedPhoto.id, faceId));
+      await Promise.all([refreshPeople(), refreshGallery(galleryOffset, selectedPersonIds, selectedTagIds)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "解除绑定失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleUndoPromotePhotoPerson(personId: number) {
     if (!selectedPhoto || !await confirm({ title: "撤销人物样本", message: "确定撤销这个图库人脸样本吗？图库图片和人物标签会保留。", confirmLabel: "撤销", tone: "danger" })) {
       return;
@@ -3338,7 +3391,38 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
             {selectedPhoto ? (
               <>
                 <a className="detail-image-wrap" href={selectedPhoto.original_url} target="_blank" rel="noreferrer">
-                  <img className="detail-image" src={selectedPhoto.original_url} alt="原图预览" />
+                  <span className="detail-image-stage">
+                    <img className="detail-image" src={selectedPhoto.original_url} alt="原图预览" />
+                    {selectedPhoto.display_width && selectedPhoto.display_height && selectedPhoto.faces.map((face) => (
+                    <span
+                      key={`face-box-${face.id}`}
+                      className={`detail-face-box${selectedFaceId === face.id ? " selected" : ""}`}
+                      style={{
+                        left: `${(face.bbox_left / selectedPhoto.display_width!) * 100}%`,
+                        top: `${(face.bbox_top / selectedPhoto.display_height!) * 100}%`,
+                        width: `${((face.bbox_right - face.bbox_left) / selectedPhoto.display_width!) * 100}%`,
+                        height: `${((face.bbox_bottom - face.bbox_top) / selectedPhoto.display_height!) * 100}%`
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setSelectedFaceId(face.id);
+                        setActiveGalleryDetailTab("faces");
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedFaceId(face.id);
+                          setActiveGalleryDetailTab("faces");
+                        }
+                      }}
+                    >
+                      <b>人脸 {face.face_index}</b>
+                    </span>
+                    ))}
+                  </span>
                 </a>
                 <div className="detail-copy">
                   <p>{formatPhotoDate(selectedPhoto.taken_at, selectedPhoto.created_at)}</p>
@@ -3356,7 +3440,28 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 </div>
 
                 {activeGalleryDetailTab === "people" && <div className="editor-block detail-tab-panel" role="tabpanel">
-                  <label>人物标签</label>
+                  <label>{selectedPhoto.faces.length > 1 ? "人物绑定总览" : "人物标签"}</label>
+                  {selectedPhoto.faces.length > 1 && (
+                    <div className="face-binding-overview">
+                      {selectedPhoto.faces.map((face) => (
+                        <div key={face.id} className="face-binding-row">
+                          <button type="button" className="face-binding-row-main" onClick={() => { setSelectedFaceId(face.id); setActiveGalleryDetailTab("faces"); }}>
+                            <strong>人脸 {face.face_index}</strong>
+                            <span className={face.matched_person_is_unknown || face.matched_person_id === null ? "pending-binding" : undefined}>
+                              {face.matched_person_is_unknown ? "待绑定" : face.matched_person_name ?? "待绑定"}
+                            </span>
+                            <small>{face.binding_source === "manual" ? "人工确认" : face.binding_source === "unknown" ? "未知人物" : "自动识别"}</small>
+                          </button>
+                          {face.matched_person_id !== null && (
+                            <button className="ghost-button face-binding-remove" type="button" disabled={busy} onClick={() => void handleDeletePhotoPerson(face.matched_person_id!)}>
+                              移除绑定
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {selectedPhoto.faces.length <= 1 && <>
                   <div className="micro-row wrap">
                     {selectedPhoto.persons.map((person) => (
                       <span key={person.person_id} className="micro-row">
@@ -3420,8 +3525,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   </div>
                   {manualPersonNotice && <p className="searchable-picker-notice" role="alert">{manualPersonNotice}</p>}
                   <p className="tip">
-                    单脸图片添加人物会同步纠正人脸绑定；多人图片只添加图片级人物标签。标签添加后，可在人物名称旁单独加入样本库或撤销。
+                    单脸图片可在此快速添加人物；多人脸图片请切换到“人脸”页签，为具体人脸绑定人物。
                   </p>
+                  </>}
                 </div>}
 
                 {activeGalleryDetailTab === "tags" && <div className="editor-block detail-tab-panel" role="tabpanel">
@@ -3503,9 +3609,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
                 {activeGalleryDetailTab === "faces" && <div className="face-list detail-tab-panel" role="tabpanel">
                   {selectedPhoto.faces.map((face) => (
-                    <article className="face-card" key={face.id}>
+                    <article className={`face-card${selectedFaceId === face.id ? " selected" : ""}`} key={face.id} onClick={() => setSelectedFaceId(face.id)}>
                       <header className="face-card-head">
-                        <strong>人脸 #{face.id}</strong>
+                        <strong>人脸 {face.face_index} <small>#{face.id}</small></strong>
                         <span className={`face-status${face.needs_review ? " review" : face.matched_person_id === null ? " ignored" : " confirmed"}`}>
                           {galleryFaceStatusLabel(face.needs_review, face.matched_person_id)}
                         </span>
@@ -3532,6 +3638,36 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                               {renderFaceMatchSource(face.second_person_id, face.second_match_source, face.second_sample_photo_id)}
                             </span>
                           </div>
+                        )}
+                      </div>
+                      <div className="face-card-actions" onClick={(event) => event.stopPropagation()}>
+                        <SearchableSelect
+                          id={`face-person-picker-${face.id}`}
+                          value={selectedFaceId === face.id && !face.matched_person_is_unknown ? String(face.matched_person_id ?? "") : ""}
+                          query={selectedFaceId === face.id ? manualPersonSearch : ""}
+                          options={filterPersonMatches(persons.filter((person) => !person.is_unknown), selectedFaceId === face.id ? manualPersonSearch : "").map((person) => ({ value: String(person.id), label: person.display_name }))}
+                          placeholder="绑定人物"
+                          emptyText="没有匹配的人物"
+                          disabled={busy || face.promoted_sample_id !== null}
+                          onQueryChange={(query) => { setSelectedFaceId(face.id); setManualPersonSearch(query); setManualPersonId(""); }}
+                          onSelect={(option) => { setSelectedFaceId(face.id); setManualPersonId(option.value); setManualPersonSearch(option.label); }}
+                          onEnter={() => { if (manualPersonId) void handleBindFace(face.id, Number(manualPersonId)); }}
+                        />
+                        {face.promoted_sample_id !== null ? (
+                          <>
+                            <span className="face-promoted">已加入当前人物样本库</span>
+                            <button className="ghost-button" disabled={busy} onClick={() => void handleUndoPromotePhotoPerson(face.matched_person_id!)}>撤销样本</button>
+                          </>
+                        ) : (
+                          <>
+                            <button disabled={busy || !manualPersonId} onClick={() => void handleBindFace(face.id, Number(manualPersonId))}>绑定此人</button>
+                            {!face.matched_person_is_unknown && face.matched_person_id !== null && (
+                              <button className="ghost-button" disabled={busy} onClick={() => void handlePromoteFace(face.id)}>加入当前人物样本库</button>
+                            )}
+                            {face.matched_person_is_unknown && <span className="tip">先绑定正式人物，再加入样本库</span>}
+                            {face.matched_person_is_unknown && face.matched_person_id !== null && <button className="ghost-button" disabled={busy} onClick={() => void handleDeletePhotoPerson(face.matched_person_id!)}>移除绑定</button>}
+                            {!face.matched_person_is_unknown && face.matched_person_id !== null && <button className="ghost-button" disabled={busy} onClick={() => void handleUnbindFace(face.id)}>解除绑定</button>}
+                          </>
                         )}
                       </div>
                       {(face.match_margin !== null || face.rejection_reason) && (

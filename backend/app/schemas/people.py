@@ -49,6 +49,7 @@ class SamplePhotoRead(BaseModel):
     quality_warnings: str | None = None
     source_type: str = "upload"
     source_gallery_photo_id: int | None = None
+    source_gallery_face_id: int | None = None
     thumbnail_url: str
     original_url: str
     created_at: datetime

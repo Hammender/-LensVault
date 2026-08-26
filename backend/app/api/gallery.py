@@ -11,7 +11,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import func
 from fastapi.responses import StreamingResponse
-from PIL import Image
+from PIL import Image, ImageOps
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -39,6 +39,8 @@ from app.schemas import (
     GallerySimilarityScanRead,
     GalleryPhotoBatchDeleteRequest,
     GalleryPhotoDetail,
+    GalleryFaceSampleCreate,
+    GalleryFacePersonBindRequest,
     GalleryPhotoExportRequest,
     GalleryPhotoPersonTagCreate,
     GalleryPhotoRichTextUpdate,
@@ -930,7 +932,13 @@ def get_gallery_photo(
         tag.person
     for tag_link in photo.tags:
         tag_link.tag
-    return _gallery_photo_to_detail(photo)
+    display_size: tuple[int, int] | None = None
+    try:
+        with Image.open(BytesIO(storage.get_bytes(photo.object_key))) as source:
+            display_size = ImageOps.exif_transpose(source).size
+    except Exception:
+        logger.warning("Failed to resolve gallery display size photo_id=%s", photo.id, exc_info=True)
+    return _gallery_photo_to_detail(photo, display_size)
 
 
 @router.post("/api/gallery/photos/batch-delete")
@@ -1072,6 +1080,110 @@ def promote_gallery_photo_person_sample(
     return get_gallery_photo(photo_id, db, current)
 
 
+@router.post("/api/gallery/photos/{photo_id}/faces/{face_id}/sample", response_model=GalleryPhotoDetail)
+def promote_gallery_face_sample(
+    photo_id: int,
+    face_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    require_permission(current, "can_add_samples")
+    photo = get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    face = db.scalar(
+        select(FaceRecord).where(
+            FaceRecord.id == face_id,
+            FaceRecord.gallery_photo_id == photo.id,
+            FaceRecord.workspace_id == current.workspace_id,
+        )
+    )
+    if face is None:
+        raise HTTPException(status_code=404, detail="指定人脸不存在")
+    person = face.matched_person
+    if person is None or person.is_unknown:
+        raise HTTPException(status_code=409, detail="请先绑定正式人物后再加入样本库")
+    try:
+        picture_service.promote_gallery_face_to_sample(db, photo, face, person)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    mark_similarity_scans_stale(db, current.workspace_id, {person.id})
+    db.commit()
+    return get_gallery_photo(photo_id, db, current)
+
+
+@router.patch("/api/gallery/photos/{photo_id}/faces/{face_id}/person", response_model=GalleryPhotoDetail)
+def bind_gallery_face_person(
+    photo_id: int,
+    face_id: int,
+    payload: GalleryFacePersonBindRequest,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    photo = get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    person = get_workspace_object(db, Person, payload.person_id, current.workspace_id, "Person")
+    if person.is_unknown:
+        raise HTTPException(status_code=400, detail="不能绑定系统未知人物")
+    face = db.scalar(select(FaceRecord).where(FaceRecord.id == face_id, FaceRecord.gallery_photo_id == photo.id))
+    if face is None:
+        raise HTTPException(status_code=404, detail="指定人脸不存在")
+    if db.scalar(select(SamplePhoto).where(SamplePhoto.source_gallery_face_id == face.id, SamplePhoto.status == "ready")) is not None:
+        raise HTTPException(status_code=409, detail="该人脸已经加入样本库，请先撤销样本后再更换绑定")
+    previous_person_id = face.matched_person_id
+    picture_service.move_gallery_face_to_known(db, face, person)
+    if previous_person_id and previous_person_id != person.id:
+        previous_link = db.scalar(select(GalleryPhotoPersonTag).where(
+            GalleryPhotoPersonTag.gallery_photo_id == photo.id,
+            GalleryPhotoPersonTag.person_id == previous_person_id,
+        ))
+        still_bound = db.scalar(select(func.count(FaceRecord.id)).where(
+            FaceRecord.gallery_photo_id == photo.id,
+            FaceRecord.matched_person_id == previous_person_id,
+            FaceRecord.id != face.id,
+        )) or 0
+        if previous_link is not None and previous_link.source in {"auto", "unknown", "face_manual"} and not still_bound:
+            db.delete(previous_link)
+    picture_service.ensure_gallery_person_tag(db, photo.id, person.id, "face_manual")
+    picture_service.apply_person_tags_to_gallery_photo(db, photo.id, person.id)
+    mark_similarity_scans_stale(db, current.workspace_id, {person.id})
+    db.commit()
+    return get_gallery_photo(photo_id, db, current)
+
+
+@router.delete("/api/gallery/photos/{photo_id}/faces/{face_id}/person", response_model=GalleryPhotoDetail)
+def unbind_gallery_face_person(
+    photo_id: int,
+    face_id: int,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> GalleryPhotoDetail:
+    photo = get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+    face = db.scalar(select(FaceRecord).where(FaceRecord.id == face_id, FaceRecord.gallery_photo_id == photo.id))
+    if face is None:
+        raise HTTPException(status_code=404, detail="指定人脸不存在")
+    if db.scalar(select(SamplePhoto).where(SamplePhoto.source_gallery_face_id == face.id, SamplePhoto.status == "ready")) is not None:
+        raise HTTPException(status_code=409, detail="该人脸已经加入样本库，请先撤销样本")
+    previous_person_id = face.matched_person_id
+    unknown = picture_service.get_or_create_unknown_person(db, current.workspace_id)
+    face.matched_person_id = unknown.id
+    face.needs_review = True
+    if previous_person_id:
+        previous_link = db.scalar(select(GalleryPhotoPersonTag).where(
+            GalleryPhotoPersonTag.gallery_photo_id == photo.id,
+            GalleryPhotoPersonTag.person_id == previous_person_id,
+        ))
+        still_bound = db.scalar(select(func.count(FaceRecord.id)).where(
+            FaceRecord.gallery_photo_id == photo.id,
+            FaceRecord.matched_person_id == previous_person_id,
+            FaceRecord.id != face.id,
+        )) or 0
+        if previous_link is not None and previous_link.source in {"auto", "unknown", "face_manual"} and not still_bound:
+            db.delete(previous_link)
+    picture_service.ensure_gallery_person_tag(db, photo.id, unknown.id, "unknown")
+    db.flush()
+    db.commit()
+    return get_gallery_photo(photo_id, db, current)
+
+
 @router.delete("/api/gallery/photos/{photo_id}/persons/{person_id}/sample", response_model=GalleryPhotoDetail)
 def undo_gallery_photo_person_sample(
     photo_id: int,
@@ -1111,6 +1223,26 @@ def delete_gallery_photo_person(
     )
     if link is None:
         raise HTTPException(status_code=404, detail="Person tag not found")
+    linked_faces = db.scalars(
+        select(FaceRecord).where(
+            FaceRecord.gallery_photo_id == photo_id,
+            FaceRecord.matched_person_id == person_id,
+        )
+    ).all()
+    if linked_faces:
+        promoted_face = db.scalar(
+            select(SamplePhoto).where(
+                SamplePhoto.source_gallery_face_id.in_([face.id for face in linked_faces]),
+                SamplePhoto.status == "ready",
+            )
+        )
+        if promoted_face is not None:
+            raise HTTPException(status_code=409, detail="该人物在此图片中的人脸已经加入样本库，请先撤销样本")
+        unknown = picture_service.get_or_create_unknown_person(db, current.workspace_id)
+        for face in linked_faces:
+            face.matched_person_id = unknown.id
+            face.needs_review = True
+        picture_service.ensure_gallery_person_tag(db, photo_id, unknown.id, "unknown")
     if picture_service.is_singleton_unknown_person(person):
         faces = db.scalars(
             select(FaceRecord).where(

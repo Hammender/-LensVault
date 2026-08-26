@@ -1030,6 +1030,7 @@ CREATE INDEX ix_person_tags_tag_id ON person_tags (tag_id);
 --   quality_warnings：图片质量告警，JSON 或文本
 --   source_type：样本来源类型：upload（上传）或 gallery（由图库提升）
 --   source_gallery_photo_id：关联的原始图库图片标识
+--   source_gallery_face_id：关联的原始图库人脸记录标识
 --   created_at：记录创建时间（上海时区无时区值）
 CREATE TABLE sample_photos (
 	id INTEGER NOT NULL, 
@@ -1048,6 +1049,7 @@ CREATE TABLE sample_photos (
 	quality_warnings TEXT, 
 	source_type VARCHAR(32) NOT NULL, 
 	source_gallery_photo_id INTEGER, 
+	source_gallery_face_id INTEGER, 
 	created_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_sample_photos_workspace_sha256 UNIQUE (workspace_id, sha256), 
@@ -1060,6 +1062,7 @@ CREATE TABLE sample_photos (
 CREATE INDEX ix_sample_photos_person_id ON sample_photos (person_id);
 CREATE INDEX ix_sample_photos_quality_status ON sample_photos (quality_status);
 CREATE INDEX ix_sample_photos_sha256 ON sample_photos (sha256);
+CREATE INDEX ix_sample_photos_source_gallery_face_id ON sample_photos (source_gallery_face_id);
 CREATE INDEX ix_sample_photos_source_gallery_photo_id ON sample_photos (source_gallery_photo_id);
 CREATE INDEX ix_sample_photos_source_type ON sample_photos (source_type);
 CREATE INDEX ix_sample_photos_status ON sample_photos (status);
