@@ -355,6 +355,11 @@ input:focus, select:focus, textarea:focus {
 .gallery-page.detail-pinned {
   grid-template-columns: minmax(0, 1fr) clamp(440px, 26vw, 520px);
 }
+
+.gallery-panel {
+  grid-column: 1;
+}
+
 .people-page { grid-template-columns: 320px minmax(0, 1fr); }
 .upload-page {
   grid-template-columns: minmax(0, 1fr) 340px;
@@ -1428,7 +1433,7 @@ input:focus, select:focus, textarea:focus {
   transition-delay: 0s;
 }
 
-.gallery-detail-inspector.is-pinned {
+.gallery-detail-inspector.is-open.is-pinned {
   position: sticky;
   z-index: 1;
   top: 16px;

@@ -452,6 +452,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
   function closeGalleryDrawer(restoreFocus = true) {
     setGalleryDrawer(null);
+    setGalleryDetailPinned(false);
     if (!restoreFocus) {
       return;
     }
@@ -3345,7 +3346,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
           <aside
             id="gallery-detail-drawer"
             ref={galleryDetailRef}
-            className={`panel detail-panel gallery-detail-inspector${galleryDrawer === "detail" ? " is-open" : ""}${galleryDetailPinned ? " is-pinned" : ""}`}
+            className={`panel detail-panel gallery-detail-inspector${galleryDrawer === "detail" ? " is-open" : ""}${galleryDetailPinned && galleryDrawer === "detail" ? " is-pinned" : ""}`}
             role={galleryCompact ? "dialog" : undefined}
             aria-modal={galleryCompact ? true : undefined}
             aria-hidden={galleryCompact ? galleryDrawer !== "detail" : undefined}
