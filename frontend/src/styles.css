@@ -2922,7 +2922,7 @@ input:focus, select:focus, textarea:focus {
   height: 4px;
   background: var(--accent);
   transform-origin: left;
-  animation: recognition-notice-life 5s linear forwards;
+  animation: recognition-notice-life 2s linear forwards;
 }
 
 @keyframes recognition-notice-in {

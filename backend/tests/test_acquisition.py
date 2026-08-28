@@ -783,6 +783,55 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertEqual(peak_active, 8)
         self.assertEqual(run.status, "completed")
 
+    def test_process_run_can_be_stopped_via_stop_run(self) -> None:
+        definition = get_script("raindrop-ftxsri-workers-dev")
+        assert definition is not None
+        self.db.add(
+            AcquisitionScript(
+                key=definition.key,
+                name=definition.name,
+                version=definition.version,
+                page_format_key=definition.page_format_key,
+                parameter_schema_json="[]",
+            )
+        )
+        self.db.commit()
+        source = self.service.create_source(
+            self.db,
+            None,
+            "停止测试站点",
+            "https://raindrop.ftxsri.workers.dev",
+        )
+        self.service.bind_script(self.db, source, definition.key)
+        category = self.service.create_category(
+            self.db,
+            source,
+            "停止测试分类",
+            "https://raindrop.ftxsri.workers.dev/collection-1",
+        )
+        run = self.service.start_run(self.db, None, category, definition.key, "incremental", {})
+
+        def enumerate_pages(*_args, **_kwargs):
+            yield RemotePage(1, (RemoteItem("r1", "https://cdn.example.test/1.jpg"),), None)
+            requested = self.service.stop_run(run.id)
+            self.assertTrue(requested)
+            yield RemotePage(2, (RemoteItem("r2", "https://cdn.example.test/2.jpg"),), None)
+
+        with (
+            patch.object(definition.adapter, "enumerate_pages", side_effect=enumerate_pages),
+            patch.object(self.service, "_download_and_analyze", return_value=object()),
+            patch.object(self.service, "_persist_downloaded_remote"),
+        ):
+            self.service.process_run(self.db, run.id)
+
+        self.db.refresh(run)
+        self.assertEqual(run.status, "interrupted")
+        self.assertEqual(run.stop_reason, "requested_end")
+
+    def test_stop_run_returns_false_for_inactive_or_unknown_run(self) -> None:
+        self.assertFalse(self.service.stop_run("no-such-run-id"))
+
+
 
 class AcquisitionQualityTests(unittest.TestCase):
     def test_quality_warnings_do_not_reject_valid_image(self) -> None:

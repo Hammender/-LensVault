@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Archive, Check, CheckCheck, ChevronLeft, ChevronRight, Download, FolderPlus, Images, Link2, LoaderCircle, Pencil, Play, Plus, RotateCcw, ScanSearch, Trash2, X } from "lucide-react";
+import { Archive, Check, CheckCheck, ChevronLeft, ChevronRight, Download, FolderPlus, Images, Link2, LoaderCircle, Pencil, Play, Plus, RotateCcw, ScanSearch, Square, Trash2, X } from "lucide-react";
 
 import {
   acquisitionDownloadUrl,
@@ -26,6 +26,7 @@ import {
   listAcquisitionSourcePage,
   startAcquisitionRun,
   startAcquisitionSimilarityScan,
+  stopAcquisitionRun,
   unbindAcquisitionScript,
   updateAcquisitionCategory,
   updateAcquisitionSource
@@ -1072,6 +1073,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
             <div className="run-actions">
               <div className="run-metrics"><span className={`acquisition-status status-${run.status}`}>{statusLabel(run.status)}</span><small>扫描 {run.total_count} · 跳过 {run.skipped_count} · 忽略 {run.ignored_count}</small><small>下载成功 {run.download_success_count} · 新候选 {run.candidate_count} · 内容重复 {run.content_duplicate_count} · 清晰度重复 {run.resolution_duplicate_count} · 高清替换 {run.resolution_upgrade_count} · 图库重复 {run.gallery_duplicate_count} · 失败 {run.error_count}</small></div>
               <button type="button" className="icon-button" title={loadTitle} aria-label={`${loadTitle} ${run.category_name}`} disabled={!canLoadConfiguration} onClick={() => loadRunConfiguration(run)}><RotateCcw size={16} /></button>
+              {isActive && <button type="button" className="icon-button danger" title="停止采集" aria-label={`停止采集 ${run.category_name}`} disabled={busy} onClick={() => void perform(async () => { await stopAcquisitionRun(run.id); }, "已请求停止采集")}><Square size={16} /></button>}
             </div>
           </article>;
         })}

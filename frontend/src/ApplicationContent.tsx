@@ -652,7 +652,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     if (!recognitionNotice) {
       return;
     }
-    const timer = window.setTimeout(() => setRecognitionNotice(null), 5000);
+    const timer = window.setTimeout(() => setRecognitionNotice(null), 2000);
     return () => window.clearTimeout(timer);
   }, [recognitionNotice]);
 

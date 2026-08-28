@@ -211,6 +211,8 @@ class AcquisitionService:
         self._download_policy = threading.local()
         self.similarity_scanner = similarity_scanner
         self.face_service = face_service
+        self._run_abort_events: dict[str, threading.Event] = {}
+        self._run_abort_lock = threading.Lock()
         self.similarity_extractor = similarity_extractor or (
             similarity_scanner.extractor if similarity_scanner is not None else DinoV2FeatureExtractor(self.settings)
         )
@@ -581,6 +583,15 @@ class AcquisitionService:
             )
         ) is not None
 
+    def stop_run(self, run_id: str) -> bool:
+        """请求停止正在运行的采集任务。返回该任务是否仍在运行并已发出停止信号。"""
+        with self._run_abort_lock:
+            event = self._run_abort_events.get(run_id)
+        if event is None:
+            return False
+        event.set()
+        return True
+
     def process_run(self, db: Session, run_id: str) -> None:
         run = db.get(AcquisitionRun, run_id)
         if run is None:
@@ -634,55 +645,76 @@ class AcquisitionService:
                 workers = min(workers, max(1, definition.max_download_workers))
             limiter = _DownloadStartLimiter(definition.download_start_interval_seconds)
             abort_event = threading.Event()
+            with self._run_abort_lock:
+                self._run_abort_events[run_id] = abort_event
+            try:
+                def download(prepared: PendingRemote) -> DownloadedRemote:
+                    limiter.wait(abort_event)
+                    item_referer = prepared.remote.referer_url or referer
+                    self._download_policy.context = _DownloadPolicyContext(limiter, abort_event)
+                    try:
+                        return self._download_and_analyze(prepared.remote, item_referer)
+                    finally:
+                        del self._download_policy.context
 
-            def download(prepared: PendingRemote) -> DownloadedRemote:
-                limiter.wait(abort_event)
-                item_referer = prepared.remote.referer_url or referer
-                self._download_policy.context = _DownloadPolicyContext(limiter, abort_event)
-                try:
-                    return self._download_and_analyze(prepared.remote, item_referer)
-                finally:
-                    del self._download_policy.context
-
-            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acquisition-download") as executor:
-                for page in definition.adapter.enumerate_pages(
-                    referer,
-                    parameters,
-                    known_external_keys,
-                    run.mode == "incremental",
-                ):
-                    run.scan_end_page = page.page_number
-                    pending = [
-                        prepared
-                        for remote in page.items
-                        if (prepared := self._prepare_remote_item(db, run, source, category, remote)) is not None
-                    ]
-                    futures = {
-                        executor.submit(download, prepared): prepared
-                        for prepared in pending
-                    }
-                    for future in as_completed(futures):
-                        prepared = futures[future]
-                        try:
-                            self._persist_downloaded_remote(db, run.id, prepared, future.result())
-                        except AccessBlockedError as exc:
-                            self._record_remote_failure(db, run.id, prepared, exc)
-                            abort_event.set()
-                            for pending_future in futures:
-                                if pending_future is not future:
-                                    pending_future.cancel()
-                            raise
-                        except Exception as exc:
-                            self._record_remote_failure(db, run.id, prepared, exc)
+                stopped = False
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acquisition-download") as executor:
+                    for page in definition.adapter.enumerate_pages(
+                        referer,
+                        parameters,
+                        known_external_keys,
+                        run.mode == "incremental",
+                    ):
+                        if abort_event.is_set():
+                            stopped = True
+                            break
+                        run.scan_end_page = page.page_number
+                        pending = [
+                            prepared
+                            for remote in page.items
+                            if (prepared := self._prepare_remote_item(db, run, source, category, remote)) is not None
+                        ]
+                        futures = {
+                            executor.submit(download, prepared): prepared
+                            for prepared in pending
+                        }
+                        for future in as_completed(futures):
+                            prepared = futures[future]
+                            try:
+                                self._persist_downloaded_remote(db, run.id, prepared, future.result())
+                            except CancelledError:
+                                abort_event.set()
+                                stopped = True
+                                break
+                            except AccessBlockedError as exc:
+                                self._record_remote_failure(db, run.id, prepared, exc)
+                                abort_event.set()
+                                for pending_future in futures:
+                                    if pending_future is not future:
+                                        pending_future.cancel()
+                                raise
+                            except Exception as exc:
+                                self._record_remote_failure(db, run.id, prepared, exc)
+                        run = db.get(AcquisitionRun, run_id)
+                        if run is None:
+                            return
+                        if page.stop_reason is not None:
+                            run.stop_reason = page.stop_reason
+                            run.reached_collection_end = page.reached_collection_end
+                        db.commit()
+                if stopped:
                     run = db.get(AcquisitionRun, run_id)
                     if run is None:
                         return
-                    if page.stop_reason is not None:
-                        run.stop_reason = page.stop_reason
-                        run.reached_collection_end = page.reached_collection_end
-                    db.commit()
-            run.status = "completed"
-            run.completed_at = shanghai_now()
+                    run.status = "interrupted"
+                    run.stop_reason = "requested_end"
+                    run.completed_at = shanghai_now()
+                else:
+                    run.status = "completed"
+                    run.completed_at = shanghai_now()
+            finally:
+                with self._run_abort_lock:
+                    self._run_abort_events.pop(run_id, None)
         except Exception as exc:
             db.rollback()
             run = db.get(AcquisitionRun, run_id)

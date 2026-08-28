@@ -752,6 +752,23 @@ def start_run(
     return _run_read(run)
 
 
+@router.post("/runs/{run_id}/stop", response_model=AcquisitionRunRead)
+def stop_run(
+    run_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> AcquisitionRunRead:
+    run = db.get(AcquisitionRun, run_id)
+    if run is None or run.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    if run.status not in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="该运行已结束，无法停止")
+    _service(request).stop_run(run.id)
+    db.refresh(run)
+    return _run_read(run)
+
+
 @router.get("/runs", response_model=list[AcquisitionRunRead])
 def list_runs(
     category_id: int | None = None,

@@ -40,6 +40,7 @@ ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
     ("PATCH", "/api/acquisition/categories/{category_id}"): "can_edit_gallery",
     ("DELETE", "/api/acquisition/categories/{category_id}"): "can_edit_gallery",
     ("POST", "/api/acquisition/categories/{category_id}/runs"): "can_add_gallery",
+    ("POST", "/api/acquisition/runs/{run_id}/stop"): "can_add_gallery",
     ("POST", "/api/acquisition/assets/import"): "can_add_gallery",
     ("POST", "/api/acquisition/assets/reject"): "can_delete_gallery",
     ("POST", "/api/acquisition/similarity/scan"): "can_edit_gallery",

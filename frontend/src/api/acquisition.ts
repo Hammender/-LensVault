@@ -122,6 +122,12 @@ export async function listAcquisitionRuns(): Promise<AcquisitionRun[]> {
   return parse<AcquisitionRun[]>(await fetch("/api/acquisition/runs"));
 }
 
+export async function stopAcquisitionRun(runId: string): Promise<AcquisitionRun> {
+  return parse<AcquisitionRun>(await fetch(`/api/acquisition/runs/${runId}/stop`, {
+    method: "POST"
+  }));
+}
+
 export async function listAcquisitionRunPage(offset = 0, limit = 10): Promise<PaginatedAcquisitionRuns> {
   const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
   return parse<PaginatedAcquisitionRuns>(await fetch(`/api/acquisition/runs/page?${params.toString()}`));
