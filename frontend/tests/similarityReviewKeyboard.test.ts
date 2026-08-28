@@ -7,6 +7,10 @@ describe("similarity review lightbox keyboard", () => {
     expect(getSimilarityLightboxShortcut(" ")).toBe("toggle_selection");
     expect(getSimilarityLightboxShortcut("Spacebar")).toBe("toggle_selection");
     expect(getSimilarityLightboxShortcut("Delete")).toBe("delete_current");
+    expect(getSimilarityLightboxShortcut("ArrowUp")).toBe("previous_group");
+    expect(getSimilarityLightboxShortcut("ArrowDown")).toBe("next_group");
+    expect(getSimilarityLightboxShortcut("P")).toBe("dismiss_group");
+    expect(getSimilarityLightboxShortcut("p")).toBe("dismiss_group");
     expect(getSimilarityLightboxShortcut("Enter")).toBeNull();
   });
 

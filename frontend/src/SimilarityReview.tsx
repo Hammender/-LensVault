@@ -194,7 +194,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     if (!targetScan || targetScan.status !== "completed") {
       setGroups([]);
       setTotal(0);
-      return;
+      return null;
     }
     let response = await listGallerySimilarityGroups(targetScan.id, tier, nextOffset, pageSize);
     if (!response.items.length && response.total > 0 && nextOffset >= response.total) {
@@ -210,6 +210,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     } else {
       setPreview(null);
     }
+    return response;
   }, [tier]);
 
   async function restoreOverview(preferredScanId?: string | null, showBusy = true) {
@@ -251,6 +252,50 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       : [...current, photoId]);
   }
 
+  async function navigateGroup(direction: "previous" | "next") {
+    if (!resultScan || !previewGroup || busy) return;
+    const currentIndex = groups.findIndex((group) => group.id === previewGroup.id);
+    if (currentIndex < 0) return;
+    const targetIndex = direction === "previous" ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex >= 0 && targetIndex < groups.length) {
+      const target = groups[targetIndex];
+      const member = target.members[0];
+      if (member) setPreview({ groupId: target.id, photoId: member.photo.id });
+      return;
+    }
+    const nextOffset = direction === "previous" ? offset - pageSize : offset + pageSize;
+    if (nextOffset < 0 || nextOffset >= total) return;
+    const response = await loadGroups(resultScan, nextOffset, false);
+    const target = direction === "previous"
+      ? response?.items[response.items.length - 1]
+      : response?.items[0];
+    const member = target?.members[0];
+    if (target && member) setPreview({ groupId: target.id, photoId: member.photo.id });
+  }
+
+  async function openNextGroupAfterCompletion(groupOrdinal: number) {
+    if (!resultScan) {
+      setPreview(null);
+      return;
+    }
+    const response = await loadGroups(resultScan, offset, false);
+    const target = response?.items.find((group) => group.ordinal > groupOrdinal) ?? null;
+    if (target?.members[0]) {
+      setPreview({ groupId: target.id, photoId: target.members[0].photo.id });
+      return;
+    }
+    const nextOffset = response ? response.offset + pageSize : offset + pageSize;
+    if (response && nextOffset < response.total) {
+      const nextPage = await loadGroups(resultScan, nextOffset, false);
+      const nextGroup = nextPage?.items[0];
+      if (nextGroup?.members[0]) {
+        setPreview({ groupId: nextGroup.id, photoId: nextGroup.members[0].photo.id });
+        return;
+      }
+    }
+    setPreview(null);
+  }
+
   async function dismissGroup(group: GallerySimilarityGroup) {
     if (!resultScan) return;
     setDismissingGroupIds((current) => [...current, group.id]);
@@ -259,7 +304,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       const groupPhotoIds = new Set(group.members.map((member) => member.photo.id));
       setSelectedIds((current) => current.filter((photoId) => !groupPhotoIds.has(photoId)));
       setNotice(`第 ${group.ordinal} 组已设为暂不处理，本次扫描中将不再显示。`);
-      await loadGroups(resultScan, offset, false);
+      await openNextGroupAfterCompletion(group.ordinal);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "暂不处理失败");
     } finally {
@@ -443,6 +488,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       .filter((member) => selectedIds.includes(member.photo.id))
       .map((member) => member.photo.id);
     if (!groupPhotoIds.length) return;
+    const removesGroup = group.members.length - groupPhotoIds.length < 2;
     const confirmed = await confirm({
       title: `删除第 ${group.ordinal} 组图片`,
       message: `确认删除第 ${group.ordinal} 组已选中的 ${groupPhotoIds.length} 张图片吗？\n\n原图也会被删除，此操作不可撤销。`,
@@ -455,7 +501,11 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     try {
       const deleted = await batchDeleteGalleryPhotos(groupPhotoIds);
       setNotice(`已删除第 ${group.ordinal} 组中的 ${deleted} 张图片。`);
-      await refreshGroupsAfterDelete();
+      if (removesGroup) {
+        await openNextGroupAfterCompletion(group.ordinal);
+      } else {
+        await refreshGroupsAfterDelete();
+      }
       await refreshOverviewAfterDelete(resultScan?.id ?? null);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "删除图片失败");
@@ -481,7 +531,11 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       const deleted = await batchDeleteGalleryPhotos([photoId]);
       setSelectedIds((current) => current.filter((id) => id !== photoId));
       setNotice(`已删除图片“${member.photo.filename}”。`);
-      await refreshGroupsAfterDelete(nextPhotoId ? { groupId: group.id, photoId: nextPhotoId } : null, false);
+      if (nextPhotoId && group.members.length - 1 >= 2) {
+        await refreshGroupsAfterDelete({ groupId: group.id, photoId: nextPhotoId }, false);
+      } else {
+        await openNextGroupAfterCompletion(group.ordinal);
+      }
       await refreshOverviewAfterDelete(resultScan?.id ?? null);
       if (!deleted) setNotice("图片未被删除，图库内容可能已经发生变化。");
     } catch (error) {
@@ -736,6 +790,12 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
             } else if (shortcut === "delete_current" && canDelete) {
               event.preventDefault();
               void deleteCurrentPreviewPhoto(previewGroup, previewMember.photo.id);
+            } else if (shortcut === "previous_group" || shortcut === "next_group") {
+              event.preventDefault();
+              void navigateGroup(shortcut === "previous_group" ? "previous" : "next");
+            } else if (shortcut === "dismiss_group" && canEdit) {
+              event.preventDefault();
+              void dismissGroup(previewGroup);
             }
           }}
           meta={(
@@ -815,7 +875,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                   <X size={17} aria-hidden="true" /> 关闭预览
                 </button>
                 <p className="similarity-review-shortcuts">
-                  <kbd>←</kbd><kbd>→</kbd> 切换　<kbd>Space</kbd> 标记　<kbd>Delete</kbd> 删除当前　<kbd>Esc</kbd> 关闭
+                  <kbd>←</kbd><kbd>→</kbd> 组内切换　<kbd>↑</kbd><kbd>↓</kbd> 切换组　<kbd>Space</kbd> 标记　<kbd>Delete</kbd> 删除当前　<kbd>P</kbd> 暂不处理本组　<kbd>Esc</kbd> 关闭
                 </p>
               </div>
               <div className="lightbox-meta-section">
