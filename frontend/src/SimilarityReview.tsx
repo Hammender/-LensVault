@@ -296,7 +296,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
     setPreview(null);
   }
 
-  async function dismissGroup(group: GallerySimilarityGroup) {
+  async function dismissGroup(group: GallerySimilarityGroup, advanceToNext = false) {
     if (!resultScan) return;
     setDismissingGroupIds((current) => [...current, group.id]);
     try {
@@ -304,7 +304,11 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       const groupPhotoIds = new Set(group.members.map((member) => member.photo.id));
       setSelectedIds((current) => current.filter((photoId) => !groupPhotoIds.has(photoId)));
       setNotice(`第 ${group.ordinal} 组已设为暂不处理，本次扫描中将不再显示。`);
-      await openNextGroupAfterCompletion(group.ordinal);
+      if (advanceToNext) {
+        await openNextGroupAfterCompletion(group.ordinal);
+      } else {
+        await loadGroups(resultScan, offset, false);
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "暂不处理失败");
     } finally {
@@ -795,7 +799,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
               void navigateGroup(shortcut === "previous_group" ? "previous" : "next");
             } else if (shortcut === "dismiss_group" && canEdit) {
               event.preventDefault();
-              void dismissGroup(previewGroup);
+              void dismissGroup(previewGroup, true);
             }
           }}
           meta={(
@@ -867,7 +871,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
                   type="button"
                   className="ghost-button"
                   disabled={!canEdit || deletingGroupIds.includes(previewGroup.id) || dismissingGroupIds.includes(previewGroup.id)}
-                  onClick={() => void dismissGroup(previewGroup)}
+                  onClick={() => void dismissGroup(previewGroup, true)}
                 >
                   {dismissingGroupIds.includes(previewGroup.id) ? "正在隐藏" : "暂不处理本组"}
                 </button>

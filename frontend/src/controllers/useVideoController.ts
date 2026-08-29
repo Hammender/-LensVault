@@ -38,6 +38,7 @@ export function useVideoController() {
   const [videoUploadCurrentIndex, setVideoUploadCurrentIndex] = useState(0);
   const [videoUploadTotalCount, setVideoUploadTotalCount] = useState(0);
   const [videoUploadBusy, setVideoUploadBusy] = useState(false);
+  const [videoListRefreshing, setVideoListRefreshing] = useState(false);
   const [videoUploadQueue, setVideoUploadQueue] = useState<VideoUploadQueueItem[]>(() => loadStoredVideoUploadQueue());
   const videoUploadQueueRef = useRef<VideoUploadQueueItem[]>(videoUploadQueue);
   const [newVideoCategoryName, setNewVideoCategoryName] = useState("");
@@ -86,6 +87,7 @@ export function useVideoController() {
     setVideoUploadGenerateSubtitles, videoUploadProgress, setVideoUploadProgress, videoUploadSession,
     setVideoUploadSession, videoUploadCurrentIndex, setVideoUploadCurrentIndex, videoUploadTotalCount,
     setVideoUploadTotalCount, videoUploadBusy, setVideoUploadBusy, videoUploadQueue, setVideoUploadQueue,
+    videoListRefreshing, setVideoListRefreshing,
     videoUploadQueueRef, newVideoCategoryName, setNewVideoCategoryName, newVideoPersonName,
     setNewVideoPersonName, newVideoPersonNote, setNewVideoPersonNote, newVideoPersonAvatar,
     setNewVideoPersonAvatar, isVideoEditModalOpen, setIsVideoEditModalOpen, editVideoTitle,

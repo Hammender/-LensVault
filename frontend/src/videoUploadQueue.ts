@@ -3,7 +3,7 @@ import {
   videoUploadQueueStorageKey
 } from "./utils";
 
-export type VideoUploadQueueStatus = "queued" | "uploading" | "completed" | "failed" | "needs_file";
+export type VideoUploadQueueStatus = "queued" | "uploading" | "finalizing" | "completed" | "failed" | "needs_file";
 
 export type VideoUploadQueueItem = {
   id: string;
@@ -81,7 +81,10 @@ export function normalizeVideoQueueItem(source: Partial<VideoUploadQueueItem>): 
     ? source.totalParts
     : Math.max(1, uploadedParts.length);
   const status: VideoUploadQueueStatus =
-    source.status === "completed" ? "completed" : source.status === "failed" ? "failed" : "needs_file";
+    source.status === "completed" ? "completed"
+      : source.status === "failed" ? "failed"
+        : source.status === "finalizing" || (source.progress ?? 0) >= 100 ? "finalizing"
+          : "needs_file";
   return {
     id: source.id,
     filename: source.filename,
@@ -110,7 +113,7 @@ export function normalizeVideoQueueItem(source: Partial<VideoUploadQueueItem>): 
     status,
     error: status === "needs_file"
       ? "浏览器刷新已中断上传，请重新选择这个原视频文件后继续。"
-      : source.error ?? null,
+      : status === "finalizing" ? null : source.error ?? null,
     completedVideoId: typeof source.completedVideoId === "number" ? source.completedVideoId : null
   };
 }
@@ -162,6 +165,7 @@ export function videoQueueStatusLabel(status: VideoUploadQueueStatus): string {
   const labels: Record<VideoUploadQueueStatus, string> = {
     queued: "待上传",
     uploading: "上传中",
+    finalizing: "正在入库/优化",
     completed: "已完成",
     failed: "失败",
     needs_file: "需重选文件"

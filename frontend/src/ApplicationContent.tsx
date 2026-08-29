@@ -279,6 +279,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     setVideoUploadGenerateSubtitles, videoUploadProgress, setVideoUploadProgress, videoUploadSession,
     setVideoUploadSession, videoUploadCurrentIndex, setVideoUploadCurrentIndex, videoUploadTotalCount,
     setVideoUploadTotalCount, videoUploadBusy, setVideoUploadBusy, videoUploadQueue, setVideoUploadQueue,
+    videoListRefreshing, setVideoListRefreshing,
     videoUploadQueueRef, newVideoCategoryName, setNewVideoCategoryName, newVideoPersonName,
     setNewVideoPersonName, newVideoPersonNote, setNewVideoPersonNote, newVideoPersonAvatar,
     setNewVideoPersonAvatar, isVideoEditModalOpen, setIsVideoEditModalOpen, editVideoTitle,
@@ -710,7 +711,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }, [videoUploadQueue]);
 
   useEffect(() => {
-    if (!videoUploadBusy) {
+    if (!videoUploadBusy || !videoUploadQueue.some((item) => item.status === "uploading")) {
       return undefined;
     }
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -719,7 +720,30 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [videoUploadBusy]);
+  }, [videoUploadBusy, videoUploadQueue]);
+
+  useEffect(() => {
+    let canceled = false;
+    const reconcile = async () => {
+      const candidates = videoUploadQueueRef.current.filter((item) => item.progress >= 100 || item.status === "finalizing");
+      if (candidates.length === 0) return;
+      const ids = await Promise.all(candidates.map(async (item) => {
+        try {
+          const response = await listVideos([], [], item.filename, 0, 100);
+          return response.items.some((video) => video.filename === item.filename) ? item.id : null;
+        } catch {
+          return null;
+        }
+      }));
+      if (canceled) return;
+      const completedIds = new Set(ids.filter((id): id is string => Boolean(id)));
+      if (completedIds.size > 0) {
+        setVideoUploadQueueSynced((current) => current.filter((item) => !completedIds.has(item.id)));
+      }
+    };
+    void reconcile();
+    return () => { canceled = true; };
+  }, []);
 
   useEffect(() => {
     if (page === "videos" && previousPageRef.current !== "videos") {
@@ -2078,6 +2102,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
           setVideoUploadProgress(progress);
           syncWorkingQueueItem(item.id, { uploadedParts, progress });
         }
+        syncWorkingQueueItem(item.id, { status: "finalizing", error: null, progress: 100 });
         session = await getVideoUploadSession(session.id);
         setVideoUploadSession(session);
         const detail = await completeVideoUpload(session.id, {
@@ -2098,8 +2123,20 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
         console.log(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个完成: ${file.name}`);
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : "视频上传失败。";
-        lastError = `"${file.name}" ${message}`;
-        syncWorkingQueueItem(item.id, { status: "failed", error: message });
+        let recovered = false;
+        try {
+          const response = await listVideos([], [], file.name, 0, 100);
+          recovered = response.items.some((video) => video.filename === file.name);
+        } catch {
+          recovered = false;
+        }
+        if (recovered) {
+          syncWorkingQueueItem(item.id, { sessionId: null, progress: 100, status: "completed", error: null });
+          completedCount += 1;
+        } else {
+          lastError = `"${file.name}" ${message}`;
+          syncWorkingQueueItem(item.id, { status: "failed", error: message });
+        }
         console.error(`[批量上传] 第 ${fileIndex + 1}/${totalCount} 个失败: ${file.name}`, cause);
       }
     }
@@ -3986,9 +4023,10 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     const queueFailed = videoUploadQueue.filter((item) => item.status === "failed").length;
     const queueNeedsFile = videoUploadQueue.filter((item) => item.status === "needs_file").length;
     const queueUploading = videoUploadQueue.find((item) => item.status === "uploading");
+    const progressQueue = videoUploadQueue.filter((item) => item.status !== "needs_file" && item.status !== "failed");
     const queueProgress =
-      queueTotal > 0
-        ? Math.round(videoUploadQueue.reduce((sum, item) => sum + item.progress, 0) / queueTotal)
+      progressQueue.length > 0
+        ? Math.round(progressQueue.reduce((sum, item) => sum + item.progress, 0) / progressQueue.length)
         : videoUploadProgress;
     let videoUploadState = "待选择";
     if (queueTotal > 0) {
@@ -4220,9 +4258,10 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     const queueNeedsFileCount = videoUploadQueue.filter((item) => item.status === "needs_file").length;
     const queueFailedCount = videoUploadQueue.filter((item) => item.status === "failed").length;
     const canStartVideoUpload = uploadableQueueCount > 0 && !(videoFiles.length === 1 && !videoTitle.trim());
+    const progressQueue = videoUploadQueue.filter((item) => item.status !== "needs_file" && item.status !== "failed");
     const videoModalProgress =
-      videoUploadQueue.length > 0
-        ? Math.round(videoUploadQueue.reduce((sum, item) => sum + item.progress, 0) / videoUploadQueue.length)
+      progressQueue.length > 0
+        ? Math.round(progressQueue.reduce((sum, item) => sum + item.progress, 0) / progressQueue.length)
         : videoUploadProgress;
 
     return (
@@ -4351,6 +4390,16 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   };
 
   const renderVideosPage = () => {
+    const refreshVideoList = async () => {
+      setVideoListRefreshing(true);
+      try {
+        await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "视频列表刷新失败。");
+      } finally {
+        setVideoListRefreshing(false);
+      }
+    };
     return (
         <main className="bili-videos-page">
           <div className="bili-top-bar">
@@ -4371,6 +4420,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
               </button>
             </div>
             <div className="micro-row wrap compact-actions">
+              <button className="compact-button" disabled={videoListRefreshing} onClick={() => void refreshVideoList()}>
+                {videoListRefreshing ? "刷新中…" : "刷新列表"}
+              </button>
               <button className="compact-button" onClick={() => setIsCategoryManageModalOpen(true)}>管理分区</button>
               <button className="compact-button" onClick={() => setIsVideoPersonManageModalOpen(true)}>管理UP主</button>
             </div>
