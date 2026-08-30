@@ -9,6 +9,7 @@ import {
   Pause,
   Play,
   Subtitles,
+  Trash2,
   Volume1,
   Volume2,
   VolumeX,
@@ -32,6 +33,7 @@ export type VideoLightboxProps = {
   onClose: () => void;
   onChangeIndex: (index: number) => void;
   onEditVideo?: (video: VideoItem) => void;
+  onDeleteVideo?: (video: VideoItem) => Promise<boolean> | boolean | void;
 };
 
 export default function VideoLightbox({
@@ -39,7 +41,8 @@ export default function VideoLightbox({
   currentIndex,
   onClose,
   onChangeIndex,
-  onEditVideo
+  onEditVideo,
+  onDeleteVideo
 }: VideoLightboxProps) {
   const currentVideo = videos[currentIndex];
   const totalVideos = videos.length;
@@ -308,6 +311,16 @@ export default function VideoLightbox({
               >
                 <Edit3 size={15} />
                 <span>编辑</span>
+              </button>
+            )}
+            {onDeleteVideo && (
+              <button
+                className="vlb-action-btn vlb-delete-btn"
+                title="删除视频"
+                onClick={() => void onDeleteVideo(currentVideo)}
+              >
+                <Trash2 size={15} />
+                <span>删除</span>
               </button>
             )}
             <button className="vlb-close-btn" title="关闭 (Esc)" onClick={onClose}>

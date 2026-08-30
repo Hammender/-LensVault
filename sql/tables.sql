@@ -497,7 +497,7 @@ CREATE TABLE video_items (
 	created_at DATETIME NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
-	CONSTRAINT uq_video_items_workspace_filename_size UNIQUE (workspace_id, filename, size_bytes), 
+	CONSTRAINT uq_video_items_workspace_sha256 UNIQUE (workspace_id, sha256), 
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
 	UNIQUE (object_key), 
 	UNIQUE (cover_object_key)

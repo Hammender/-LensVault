@@ -318,6 +318,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const galleryDrawerReturnFocusRef = useRef<HTMLElement | null>(null);
 
   const selectedPersonIsSystemUnknown = isSystemUnknownPerson(selectedPerson);
+  const canDeleteVideos = authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_delete_videos);
 
   const selectedPersonDeleteCount = useMemo(
     () => selectedPersonDeleteIds.filter((id) => !isSystemUnknownPerson(persons.find((person) => person.id === id))).length,
@@ -1722,19 +1723,23 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   }
 
 
-  async function handleDeleteCurrentVideo(): Promise<boolean> {
-    if (!selectedVideo) {
-      return false;
-    }
-    if (!await confirm({ title: "删除视频", message: `确认删除视频「${selectedVideo.title}」吗？`, confirmLabel: "删除", tone: "danger" })) {
+  async function handleDeleteVideoItem(video: { id: number; title: string }): Promise<boolean> {
+    if (!await confirm({
+      title: "删除视频",
+      message: `确认删除视频「${video.title}」吗？删除后文件将被永久移除且不可恢复。`,
+      confirmLabel: "删除",
+      tone: "danger"
+    })) {
       return false;
     }
     setBusy(true);
     setError(null);
     try {
-      await deleteVideo(selectedVideo.id);
-      setSelectedVideo(null);
-      setVideoPlayerUrl("");
+      await deleteVideo(video.id);
+      if (selectedVideo?.id === video.id) {
+        setSelectedVideo(null);
+        setVideoPlayerUrl("");
+      }
       await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter);
       return true;
     } catch (cause) {
@@ -1743,6 +1748,13 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleDeleteCurrentVideo(): Promise<boolean> {
+    if (!selectedVideo) {
+      return false;
+    }
+    return handleDeleteVideoItem(selectedVideo);
   }
 
   async function handleReplaceVideoCover(files: FileList | null) {
@@ -4439,6 +4451,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   };
 
   const renderVideosPage = () => {
+    const canDeleteVideos = authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_delete_videos);
     const shortVideos = videoItems.filter((v) => v.video_type === "short");
     const refreshVideoList = async () => {
       setVideoListRefreshing(true);
@@ -4742,6 +4755,15 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     >
                       <Edit3 size={14} />
                     </button>
+                    {canDeleteVideos && (
+                      <button
+                        className="hover-action-btn delete-btn"
+                        title="删除视频"
+                        onClick={() => void handleDeleteVideoItem(video)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="bili-video-info">
@@ -4785,6 +4807,17 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
               onClose={() => setActiveLightboxIndex(null)}
               onChangeIndex={(idx) => setActiveLightboxIndex(idx)}
               onEditVideo={(vid) => openVideoEditModal(vid)}
+              onDeleteVideo={canDeleteVideos ? async (vid) => {
+                const deleted = await handleDeleteVideoItem(vid);
+                if (deleted) {
+                  if (shortVideos.length <= 1) {
+                    setActiveLightboxIndex(null);
+                  } else if (activeLightboxIndex !== null && activeLightboxIndex >= shortVideos.length - 1) {
+                    setActiveLightboxIndex(Math.max(0, shortVideos.length - 2));
+                  }
+                }
+                return deleted;
+              } : undefined}
             />
           )}
 
@@ -5173,9 +5206,28 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 ))}
               </div>
             </div>
-            <div className="modal-actions">
-              <button className="ghost-button" onClick={() => setIsVideoEditModalOpen(false)}>取消</button>
-              <button disabled={busy} onClick={() => void handleSaveVideoEdit()}>保存</button>
+            <div className="modal-actions modal-actions-split">
+              {canDeleteVideos && (
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={busy}
+                  onClick={() => {
+                    void handleDeleteVideoItem(selectedVideo).then((deleted) => {
+                      if (deleted) {
+                        setIsVideoEditModalOpen(false);
+                      }
+                    });
+                  }}
+                >
+                  <Trash2 size={14} style={{ marginRight: 4, verticalAlign: "middle" }} />
+                  删除视频
+                </button>
+              )}
+              <div className="modal-actions-right">
+                <button className="ghost-button" onClick={() => setIsVideoEditModalOpen(false)}>取消</button>
+                <button disabled={busy} onClick={() => void handleSaveVideoEdit()}>保存</button>
+              </div>
             </div>
           </div>
         </div>

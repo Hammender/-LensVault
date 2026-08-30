@@ -12,7 +12,7 @@ from app.core.timezones import shanghai_now
 class VideoItem(Base):
     __tablename__ = "video_items"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "filename", "size_bytes", name="uq_video_items_workspace_filename_size"),
+        UniqueConstraint("workspace_id", "sha256", name="uq_video_items_workspace_sha256"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

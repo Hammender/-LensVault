@@ -5323,6 +5323,24 @@ time {
   box-shadow: 3px 3px 0 var(--panel-border);
 }
 
+.hover-action-btn.delete-btn:hover {
+  background: #ff4d4f;
+  color: #fff;
+  border-color: #cf1322;
+}
+
+.modal-actions.modal-actions-split {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 /* Video Type Radio Selector in Upload/Edit Modals */
 .video-type-radio-group {
   display: flex;

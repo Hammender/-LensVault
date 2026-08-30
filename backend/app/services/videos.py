@@ -70,15 +70,16 @@ class VideoService:
         content_type = self._normalize_upload_content_type(filename, payload.content_type)
         self._validate_video_file(filename, content_type)
 
-        existing = db.scalar(
-            select(VideoItem).where(
-                VideoItem.workspace_id == workspace_id,
-                VideoItem.filename == filename,
-                VideoItem.size_bytes == payload.size_bytes,
+        if payload.sha256:
+            normalized_sha = payload.sha256.lower()
+            existing_sha = db.scalar(
+                select(VideoItem).where(
+                    VideoItem.workspace_id == workspace_id,
+                    VideoItem.sha256 == normalized_sha,
+                )
             )
-        )
-        if existing is not None:
-            raise ValueError("已存在相同文件名和大小的视频，请勿重复上传")
+            if existing_sha is not None:
+                raise ValueError(f"已存在内容相同的视频（SHA256: {normalized_sha[:8]}...，对应已有视频：《{existing_sha.title}》），请勿重复上传")
 
         part_size = payload.part_size or self.default_part_size
         part_size = min(max(part_size, self.min_part_size), self.max_part_size)
@@ -176,16 +177,6 @@ class VideoService:
         if uploaded_indexes != list(range(session.total_parts)):
             raise ValueError("视频分片尚未上传完整")
 
-        existing = db.scalar(
-            select(VideoItem).where(
-                VideoItem.filename == session.filename,
-                VideoItem.size_bytes == session.size_bytes,
-                VideoItem.workspace_id == session.workspace_id,
-            )
-        )
-        if existing is not None:
-            raise ValueError("已存在相同文件名和大小的视频，请勿重复上传")
-
         final_key = self._build_video_object_key(session.workspace_id, session.filename)
         try:
             logger.info(
@@ -201,11 +192,26 @@ class VideoService:
             else:
                 self.storage.compose_object(final_key, [part.object_key for part in parts])
 
-            if session.sha256:
-                actual_sha256 = self.hash_object(final_key)
-                if actual_sha256 != session.sha256:
-                    self.storage.remove_object(final_key)
-                    raise ValueError("视频 SHA256 校验失败")
+            actual_sha256 = self.hash_object(final_key)
+            if session.sha256 and actual_sha256 != session.sha256:
+                self.storage.remove_object(final_key)
+                raise ValueError("视频 SHA256 校验失败")
+
+            existing_by_sha = db.scalar(
+                select(VideoItem).where(
+                    VideoItem.workspace_id == session.workspace_id,
+                    VideoItem.sha256 == actual_sha256,
+                )
+            )
+            if existing_by_sha is not None:
+                self.storage.remove_object(final_key)
+                temp_keys = [part.object_key for part in parts]
+                for part in parts:
+                    db.delete(part)
+                db.delete(session)
+                db.commit()
+                self.storage.remove_objects(temp_keys)
+                raise ValueError(f"已存在内容相同的视频（对应已有视频：《{existing_by_sha.title}》），请勿重复上传")
 
             probe_info = self._probe_object(final_key, session.filename)
             resolved_video_type = payload.video_type
@@ -221,7 +227,7 @@ class VideoService:
                 description=session.description,
                 filename=session.filename,
                 content_type=session.content_type or "video/mp4",
-                sha256=session.sha256,
+                sha256=actual_sha256,
                 object_key=final_key,
                 size_bytes=session.size_bytes,
                 duration_seconds=probe_info.duration_seconds if probe_info else None,
@@ -393,7 +399,6 @@ class VideoService:
                 return
             video.status = "ready"
             video.faststart_applied = True
-            video.sha256 = sha256
             video.content_type = "video/mp4"
             video.size_bytes = size_bytes
             video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds or video.duration_seconds
@@ -502,7 +507,6 @@ class VideoService:
                 return
             video.status = "ready"
             video.faststart_applied = True
-            video.sha256 = sha256
             video.content_type = "video/mp4"
             video.size_bytes = size_bytes
             video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds or video.duration_seconds
@@ -562,7 +566,7 @@ class VideoService:
             }
 
     def needs_metadata_repair(self, video: VideoItem) -> bool:
-        if video.status == "ready" and (not video.original_video_codec or not video.video_codec):
+        if video.status == "ready" and (not video.original_video_codec or not video.video_codec or not video.sha256):
             return True
         return video.status == "processing_failed" and self._is_size_unique_processing_error(video.processing_error)
 
@@ -577,17 +581,20 @@ class VideoService:
             if video is None or not self.needs_metadata_repair(video):
                 return
             logger.info("视频元数据修复开始：video_id=%s object_key=%s", video.id, video.object_key)
+            if not video.sha256:
+                try:
+                    video.sha256 = self.hash_object(video.object_key)
+                except Exception:
+                    logger.warning("视频元数据修复 SHA256 失败：video_id=%s", video_id)
             probe_info = self._probe_object(video.object_key, video.filename)
-            if probe_info is None:
-                logger.warning("视频元数据修复跳过：video_id=%s 探测失败", video_id)
-                return
-            video.duration_seconds = video.duration_seconds or probe_info.duration_seconds
-            video.width = video.width or probe_info.width
-            video.height = video.height or probe_info.height
-            video.original_video_codec = video.original_video_codec or probe_info.video_codec
-            video.original_audio_codec = video.original_audio_codec or probe_info.audio_codec
-            video.video_codec = video.video_codec or probe_info.video_codec
-            video.audio_codec = video.audio_codec or probe_info.audio_codec
+            if probe_info is not None:
+                video.duration_seconds = video.duration_seconds or probe_info.duration_seconds
+                video.width = video.width or probe_info.width
+                video.height = video.height or probe_info.height
+                video.original_video_codec = video.original_video_codec or probe_info.video_codec
+                video.original_audio_codec = video.original_audio_codec or probe_info.audio_codec
+                video.video_codec = video.video_codec or probe_info.video_codec
+                video.audio_codec = video.audio_codec or probe_info.audio_codec
             if video.status == "processing_failed" and self._is_size_unique_processing_error(video.processing_error):
                 video.status = "ready"
                 video.faststart_applied = True

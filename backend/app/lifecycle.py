@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.timezones import shanghai_now
 from app.db import Base
-from app.models import Workspace
+from app.models import VideoItem, Workspace
 from app.services.container import ServiceContainer
 from app.services.tasks import fail_incomplete_tasks
 from app.services.timezone_migration import mark_timezone_baseline, migrate_system_timestamps
@@ -877,6 +877,18 @@ def initialize_runtime(
                 reconciled_items,
                 expired_exports,
             )
+        videos_missing_sha = db.scalars(select(VideoItem).where(VideoItem.sha256.is_(None))).all()
+        if videos_missing_sha:
+            backfilled_count = 0
+            for video in videos_missing_sha:
+                try:
+                    video.sha256 = services.videos.hash_object(video.object_key)
+                    backfilled_count += 1
+                except Exception:
+                    logger.warning("应用启动：计算视频 SHA256 失败 video_id=%s object_key=%s", video.id, video.object_key)
+            if backfilled_count > 0:
+                db.commit()
+                logger.info("应用启动：已补齐存量视频 SHA256 count=%d", backfilled_count)
     finally:
         db.close()
 
