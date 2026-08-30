@@ -2013,6 +2013,16 @@
             "title": "Bbox Top",
             "type": "number"
           },
+          "binding_source": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "manual",
+              "unknown"
+            ],
+            "title": "Binding Source",
+            "type": "string"
+          },
           "blur_score": {
             "anyOf": [
               {
@@ -2056,6 +2066,10 @@
               }
             ],
             "title": "Embedding Version"
+          },
+          "face_index": {
+            "title": "Face Index",
+            "type": "integer"
           },
           "face_size": {
             "anyOf": [
@@ -2104,6 +2118,22 @@
               }
             ],
             "title": "Matched Person Id"
+          },
+          "matched_person_is_unknown": {
+            "default": false,
+            "title": "Matched Person Is Unknown",
+            "type": "boolean"
+          },
+          "matched_person_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Person Name"
           },
           "needs_review": {
             "title": "Needs Review",
@@ -2167,6 +2197,17 @@
               }
             ],
             "title": "Predicted Sample Photo Id"
+          },
+          "promoted_sample_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted Sample Id"
           },
           "recognition_adapter_id": {
             "anyOf": [
@@ -2263,6 +2304,7 @@
         },
         "required": [
           "id",
+          "face_index",
           "bbox_left",
           "bbox_top",
           "bbox_right",
@@ -2273,6 +2315,20 @@
           "vector_collection"
         ],
         "title": "FaceRead",
+        "type": "object"
+      },
+      "GalleryFacePersonBindRequest": {
+        "properties": {
+          "person_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Person Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person_id"
+        ],
+        "title": "GalleryFacePersonBindRequest",
         "type": "object"
       },
       "GalleryPersonTagRead": {
@@ -2352,6 +2408,28 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "display_height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Height"
+          },
+          "display_width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Width"
           },
           "faces": {
             "items": {
@@ -4030,6 +4108,17 @@
             ],
             "title": "Quality Warnings"
           },
+          "source_gallery_face_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Gallery Face Id"
+          },
           "source_gallery_photo_id": {
             "anyOf": [
               {
@@ -4935,6 +5024,15 @@
             ],
             "title": "Video Codec"
           },
+          "video_type": {
+            "default": "short",
+            "enum": [
+              "short",
+              "long"
+            ],
+            "title": "Video Type",
+            "type": "string"
+          },
           "width": {
             "anyOf": [
               {
@@ -5194,6 +5292,15 @@
             ],
             "title": "Video Codec"
           },
+          "video_type": {
+            "default": "short",
+            "enum": [
+              "short",
+              "long"
+            ],
+            "title": "Video Type",
+            "type": "string"
+          },
           "width": {
             "anyOf": [
               {
@@ -5263,6 +5370,21 @@
               }
             ],
             "title": "Title"
+          },
+          "video_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "short",
+                  "long"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Type"
           }
         },
         "title": "VideoMetadataUpdate",
@@ -5524,6 +5646,21 @@
             },
             "title": "Person Ids",
             "type": "array"
+          },
+          "video_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "short",
+                  "long"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Type"
           }
         },
         "title": "VideoUploadCompleteRequest",
@@ -8509,6 +8646,111 @@
         ]
       }
     },
+    "/api/acquisition/runs/{run_id}/stop": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquisitionRunRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Run",
+        "tags": [
+          "图片采集"
+        ]
+      }
+    },
     "/api/acquisition/scripts": {
       "get": {
         "parameters": [
@@ -11332,6 +11574,347 @@
           }
         },
         "summary": "Get Gallery Animated Thumbnail"
+      }
+    },
+    "/api/gallery/photos/{photo_id}/faces/{face_id}/person": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "photo_id",
+            "required": true,
+            "schema": {
+              "title": "Photo Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "face_id",
+            "required": true,
+            "schema": {
+              "title": "Face Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GalleryPhotoDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unbind Gallery Face Person"
+      },
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "photo_id",
+            "required": true,
+            "schema": {
+              "title": "Photo Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "face_id",
+            "required": true,
+            "schema": {
+              "title": "Face Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GalleryFacePersonBindRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GalleryPhotoDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bind Gallery Face Person"
+      }
+    },
+    "/api/gallery/photos/{photo_id}/faces/{face_id}/sample": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "photo_id",
+            "required": true,
+            "schema": {
+              "title": "Photo Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "face_id",
+            "required": true,
+            "schema": {
+              "title": "Face Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GalleryPhotoDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Promote Gallery Face Sample"
       }
     },
     "/api/gallery/photos/{photo_id}/original": {
@@ -17989,6 +18572,22 @@
                 }
               ],
               "title": "Query"
+            }
+          },
+          {
+            "in": "query",
+            "name": "video_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Video Type"
             }
           },
           {

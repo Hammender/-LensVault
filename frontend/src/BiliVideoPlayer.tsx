@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback, PointerEvent as ReactPointerEvent } from "react";
-import { Maximize, Minimize, Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { Maximize, Minimize, Pause, Play, Volume1, Volume2, VolumeX } from "lucide-react";
 import "./BiliVideoPlayer.css";
 
 function formatTime(seconds: number): string {
@@ -586,13 +586,47 @@ export default function BiliVideoPlayer({ src, poster, subtitles = [] }: BiliVid
                 </div>
               )}
             </div>
-            <button className="bili-icon-btn" onClick={toggleMute} title="静音 (M)">
-              {isMuted || volume === 0 ? (
-                <VolumeX size={24} aria-hidden="true" />
-              ) : (
-                <Volume2 size={24} aria-hidden="true" />
-              )}
-            </button>
+            <div className="bili-volume-wrapper">
+              <button className="bili-icon-btn" onClick={toggleMute} title={isMuted ? "取消静音 (M)" : "静音 (M)"}>
+                {isMuted || volume === 0 ? (
+                  <VolumeX size={24} aria-hidden="true" />
+                ) : volume < 0.5 ? (
+                  <Volume1 size={24} aria-hidden="true" />
+                ) : (
+                  <Volume2 size={24} aria-hidden="true" />
+                )}
+              </button>
+              <div className="bili-volume-slider-box">
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={isMuted ? 0 : volume}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    if (videoRef.current) {
+                      videoRef.current.volume = val;
+                      if (val > 0 && videoRef.current.muted) {
+                        videoRef.current.muted = false;
+                        setIsMuted(false);
+                      }
+                    }
+                    setVolume(val);
+                    if (val === 0) {
+                      setIsMuted(true);
+                    } else {
+                      setIsMuted(false);
+                    }
+                  }}
+                  className="bili-volume-range"
+                  style={{
+                    background: `linear-gradient(to right, var(--primary) ${(isMuted ? 0 : volume) * 100}%, rgba(255, 255, 255, 0.3) ${(isMuted ? 0 : volume) * 100}%)`
+                  }}
+                  title={`音量: ${Math.round((isMuted ? 0 : volume) * 100)}%`}
+                />
+              </div>
+            </div>
             <button className="bili-icon-btn" onClick={toggleFullscreen} title="全屏 (F)">
               {isFullscreen ? (
                 <Minimize size={24} aria-hidden="true" />

@@ -7,6 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.core.timezones import shanghai_now
+
+
 class VideoItem(Base):
     __tablename__ = "video_items"
     __table_args__ = (
@@ -32,6 +34,7 @@ class VideoItem(Base):
     video_codec: Mapped[str | None] = mapped_column(String(64), nullable=True)
     audio_codec: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="uploaded", nullable=False, index=True)
+    video_type: Mapped[str] = mapped_column(String(16), default="short", nullable=False, index=True)
     faststart_applied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     seek_optimized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     seek_optimized_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

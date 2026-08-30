@@ -89,6 +89,7 @@ class VideoItemListItem(BaseModel):
     video_codec: str | None
     audio_codec: str | None
     status: str
+    video_type: Literal["short", "long"] = "short"
     category_tags: list[VideoCategoryTagRead]
     people: list[VideoPersonRead]
     stream_url: str
@@ -119,6 +120,7 @@ class PaginatedVideos(BaseModel):
 class VideoMetadataUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=256)
     description: str | None = None
+    video_type: Literal["short", "long"] | None = None
 
 
 class VideoUploadSessionCreate(BaseModel):
@@ -158,6 +160,7 @@ class VideoUploadCompleteRequest(BaseModel):
     category_tag_names: list[str] = Field(default_factory=list)
     person_ids: list[int] = Field(default_factory=list)
     generate_zh_subtitles: bool = False
+    video_type: Literal["short", "long"] | None = None
 
     @model_validator(mode="after")
     def normalize_names(self) -> "VideoUploadCompleteRequest":

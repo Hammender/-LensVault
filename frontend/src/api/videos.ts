@@ -49,11 +49,12 @@ export async function deleteVideoPerson(personId: number): Promise<void> {
   await parseResponse<{ status: string }>(await authFetch(`/api/video-people/${personId}`, { method: "DELETE" }));
 }
 
-export async function listVideos(categoryTagIds: number[], personIds: number[], query: string, offset: number, limit: number): Promise<PaginatedVideos> {
+export async function listVideos(categoryTagIds: number[], personIds: number[], query: string, offset: number, limit: number, videoType?: "short" | "long" | null): Promise<PaginatedVideos> {
   const url = new URL("/api/videos", window.location.origin);
   categoryTagIds.forEach((id) => url.searchParams.append("category_tag_ids", String(id)));
   personIds.forEach((id) => url.searchParams.append("person_ids", String(id)));
   if (query.trim()) url.searchParams.set("query", query.trim());
+  if (videoType) url.searchParams.set("video_type", videoType);
   url.searchParams.set("offset", String(offset));
   url.searchParams.set("limit", String(limit));
   return parseResponse<PaginatedVideos>(await authFetch(url.pathname + url.search));
@@ -75,9 +76,9 @@ export async function createVideoUploadSession(payload: { title: string; descrip
 
 export async function getVideoUploadSession(sessionId: string): Promise<VideoUploadSession> { return parseResponse<VideoUploadSession>(await authFetch(`/api/videos/upload-sessions/${sessionId}`)); }
 export async function uploadVideoPart(sessionId: string, partIndex: number, blob: Blob, filename: string): Promise<void> { const form = new FormData(); form.append("file", blob, filename); await parseResponse<{ session_id: string }>(await authFetch(`/api/videos/upload-sessions/${sessionId}/parts/${partIndex}`, { method: "PUT", body: form })); }
-export async function completeVideoUpload(sessionId: string, payload: { category_tag_ids: number[]; category_tag_names: string[]; person_ids: number[]; generate_zh_subtitles?: boolean }): Promise<VideoDetail> { return parseResponse<VideoDetail>(await authFetch(`/api/videos/upload-sessions/${sessionId}/complete`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) })); }
+export async function completeVideoUpload(sessionId: string, payload: { category_tag_ids: number[]; category_tag_names: string[]; person_ids: number[]; generate_zh_subtitles?: boolean; video_type?: "short" | "long" | null }): Promise<VideoDetail> { return parseResponse<VideoDetail>(await authFetch(`/api/videos/upload-sessions/${sessionId}/complete`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) })); }
 export async function cancelVideoUpload(sessionId: string): Promise<void> { await parseResponse<{ status: string }>(await authFetch(`/api/videos/upload-sessions/${sessionId}`, { method: "DELETE" })); }
-export async function updateVideo(videoId: number, payload: { title?: string; description?: string | null }): Promise<VideoDetail> { return parseResponse<VideoDetail>(await authFetch(`/api/videos/${videoId}`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify(payload) })); }
+export async function updateVideo(videoId: number, payload: { title?: string; description?: string | null; video_type?: "short" | "long" }): Promise<VideoDetail> { return parseResponse<VideoDetail>(await authFetch(`/api/videos/${videoId}`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify(payload) })); }
 export async function generateVideoSubtitles(videoId: number): Promise<VideoSubtitleTrack> { return parseResponse<VideoSubtitleTrack>(await authFetch(`/api/videos/${videoId}/subtitles/generate`, { method: "POST" })); }
 export async function cancelVideoSubtitles(videoId: number, trackId: number): Promise<VideoSubtitleTrack> { return parseResponse<VideoSubtitleTrack>(await authFetch(`/api/videos/${videoId}/subtitles/${trackId}/cancel`, { method: "POST" })); }
 export async function addVideoCategoryTag(videoId: number, payload: { tagId?: number; name?: string }): Promise<VideoDetail> { return parseResponse<VideoDetail>(await authFetch(`/api/videos/${videoId}/category-tags`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload.tagId ? { tag_id: payload.tagId } : { name: payload.name }) })); }

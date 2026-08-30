@@ -458,6 +458,7 @@ CREATE INDEX ix_video_category_tags_workspace_id ON video_category_tags (workspa
 --   video_codec：处理后视频编码格式
 --   audio_codec：处理后音频编码格式
 --   status：视频处理状态：uploaded、processing、ready 或 processing_failed
+--   video_type：视频大类形态：short（短视频）或 long（长视频）
 --   faststart_applied：是否已优化视频流式播放元数据
 --   seek_optimized：是否已完成视频拖动定位优化
 --   seek_optimized_at：视频拖动定位优化完成时间
@@ -486,6 +487,7 @@ CREATE TABLE video_items (
 	video_codec VARCHAR(64), 
 	audio_codec VARCHAR(64), 
 	status VARCHAR(32) NOT NULL, 
+	video_type VARCHAR(16) NOT NULL, 
 	faststart_applied BOOLEAN NOT NULL, 
 	seek_optimized BOOLEAN NOT NULL, 
 	seek_optimized_at DATETIME, 
@@ -504,6 +506,7 @@ CREATE INDEX ix_video_items_created_at ON video_items (created_at);
 CREATE INDEX ix_video_items_sha256 ON video_items (sha256);
 CREATE INDEX ix_video_items_status ON video_items (status);
 CREATE INDEX ix_video_items_title ON video_items (title);
+CREATE INDEX ix_video_items_video_type ON video_items (video_type);
 CREATE INDEX ix_video_items_workspace_id ON video_items (workspace_id);
 
 -- 表名：video_people

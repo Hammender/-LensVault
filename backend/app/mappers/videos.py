@@ -83,6 +83,7 @@ def video_to_list_item(video: VideoItem) -> VideoItemListItem:
         video_codec=video.video_codec,
         audio_codec=video.audio_codec,
         status=video.status,
+        video_type=video.video_type,
         category_tags=[video_category_to_read(tag) for tag in categories],
         people=[video_person_to_read(person) for person in people],
         stream_url=video_stream_url(video),

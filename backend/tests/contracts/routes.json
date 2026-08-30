@@ -84,6 +84,12 @@
     ]
   },
   {
+    "path": "/api/acquisition/runs/{run_id}/stop",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/acquisition/runs",
     "methods": [
       "GET"
@@ -609,6 +615,24 @@
     "path": "/api/gallery/photos/{photo_id}/persons/{person_id}/sample",
     "methods": [
       "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/faces/{face_id}/sample",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/faces/{face_id}/person",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/gallery/photos/{photo_id}/faces/{face_id}/person",
+    "methods": [
+      "DELETE"
     ]
   },
   {

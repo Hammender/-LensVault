@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Literal
 
 from contextvars import ContextVar
 from datetime import datetime
@@ -417,6 +418,7 @@ def list_videos(
     category_tag_ids: list[int] = Query(default=[]),
     person_ids: list[int] = Query(default=[]),
     query_text: str | None = Query(default=None, alias="query"),
+    video_type: Literal["short", "long"] | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=24, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -424,6 +426,9 @@ def list_videos(
 ) -> PaginatedVideos:
     query = select(VideoItem).where(VideoItem.workspace_id == current.workspace_id).order_by(VideoItem.created_at.desc())
     count_query = select(func.count(VideoItem.id)).where(VideoItem.workspace_id == current.workspace_id)
+    if video_type:
+        query = query.where(VideoItem.video_type == video_type)
+        count_query = count_query.where(VideoItem.video_type == video_type)
     if query_text and query_text.strip():
         keyword = f"%{query_text.strip()}%"
         query = query.where((VideoItem.title.like(keyword)) | (VideoItem.description.like(keyword)) | (VideoItem.filename.like(keyword)))
@@ -622,6 +627,8 @@ def update_video(
         video.title = payload.title.strip()
     if payload.description is not None:
         video.description = payload.description
+    if payload.video_type is not None:
+        video.video_type = payload.video_type
     db.add(video)
     db.commit()
     db.refresh(video)

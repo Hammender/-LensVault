@@ -3,6 +3,8 @@ import { flushSync } from "react-dom";
 import {
   BarChart3,
   ArrowUp,
+  Film,
+  Sparkles,
   Clapperboard,
   Download,
   Edit3,
@@ -42,6 +44,7 @@ import Statistics from "./Statistics";
 import SimilarityReview from "./SimilarityReview";
 import AcquisitionCenter from "./AcquisitionCenter";
 import BiliVideoPlayer from "./BiliVideoPlayer";
+import VideoLightbox from "./VideoLightbox";
 import { useConfirm } from "./ConfirmDialog";
 import { galleryFaceStatusLabel } from "./galleryFaceStatus";
 import { availablePhotoPersons, filterPersonMatches, mergePersonIds, resolveExistingPerson } from "./personPicker";
@@ -269,12 +272,14 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const {
     videoItems, setVideoItems, videoTotal, setVideoTotal, videoOffset, setVideoOffset,
     videoCategoryTags, setVideoCategoryTags, videoPeople, setVideoPeople, selectedVideoCategoryIds,
-    setSelectedVideoCategoryIds, selectedVideoPersonIds, setSelectedVideoPersonIds, videoSearch,
-    setVideoSearch, selectedVideo, setSelectedVideo, selectedVideoCodecRepairVideoId,
+    setSelectedVideoCategoryIds, selectedVideoPersonIds, setSelectedVideoPersonIds,
+    videoTypeFilter, setVideoTypeFilter, activeLightboxIndex, setActiveLightboxIndex,
+    videoSearch, setVideoSearch, selectedVideo, setSelectedVideo, selectedVideoCodecRepairVideoId,
     selectedVideoCodecRepairPolls, videoPlayerUrl, setVideoPlayerUrl, videoPlaybackDiagnostics,
     setVideoPlaybackDiagnostics, videoPlaybackDiagnosticsLoading, setVideoPlaybackDiagnosticsLoading,
     videoFiles, setVideoFiles, videoTitle, setVideoTitle, videoDescription, setVideoDescription,
     videoUploadCategoryIds, setVideoUploadCategoryIds, videoUploadPersonIds, setVideoUploadPersonIds,
+    videoUploadTypeMode, setVideoUploadTypeMode,
     videoUploadNewCategories, setVideoUploadNewCategories, videoUploadGenerateSubtitles,
     setVideoUploadGenerateSubtitles, videoUploadProgress, setVideoUploadProgress, videoUploadSession,
     setVideoUploadSession, videoUploadCurrentIndex, setVideoUploadCurrentIndex, videoUploadTotalCount,
@@ -283,12 +288,12 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     videoUploadQueueRef, newVideoCategoryName, setNewVideoCategoryName, newVideoPersonName,
     setNewVideoPersonName, newVideoPersonNote, setNewVideoPersonNote, newVideoPersonAvatar,
     setNewVideoPersonAvatar, isVideoEditModalOpen, setIsVideoEditModalOpen, editVideoTitle,
-    setEditVideoTitle, editVideoDescription, setEditVideoDescription, editVideoCategoryIds,
-    setEditVideoCategoryIds, editVideoPersonIds, setEditVideoPersonIds, isCategoryManageModalOpen,
-    setIsCategoryManageModalOpen, isVideoPersonManageModalOpen, setIsVideoPersonManageModalOpen,
-    editingCategoryId, setEditingCategoryId, editingCategoryName, setEditingCategoryName,
-    newManageCategoryName, setNewManageCategoryName, editingPersonId, setEditingPersonId,
-    editingPersonName, setEditingPersonName, editingPersonNote, setEditingPersonNote,
+    setEditVideoTitle, editVideoDescription, setEditVideoDescription, editVideoType, setEditVideoType,
+    editVideoCategoryIds, setEditVideoCategoryIds, editVideoPersonIds, setEditVideoPersonIds,
+    isCategoryManageModalOpen, setIsCategoryManageModalOpen, isVideoPersonManageModalOpen,
+    setIsVideoPersonManageModalOpen, editingCategoryId, setEditingCategoryId, editingCategoryName,
+    setEditingCategoryName, newManageCategoryName, setNewManageCategoryName, editingPersonId,
+    setEditingPersonId, editingPersonName, setEditingPersonName, editingPersonNote, setEditingPersonNote,
     editingPersonAvatar, setEditingPersonAvatar, newManagePersonName, setNewManagePersonName,
     newManagePersonNote, setNewManagePersonNote, newManagePersonAvatar, setNewManagePersonAvatar,
     filteredVideoCategoryTags, filteredVideoPeople, selectedVideoCategories, selectedVideoPeople
@@ -392,8 +397,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     categoryIds = selectedVideoCategoryIds,
     personIds = selectedVideoPersonIds,
     query = videoSearch,
+    typeFilter = videoTypeFilter,
   ) {
-    const response = await listVideos(categoryIds, personIds, query, nextOffset, videoPageSize);
+    const response = await listVideos(categoryIds, personIds, query, nextOffset, videoPageSize, typeFilter === "all" ? null : typeFilter);
     setVideoItems(response.items);
     setVideoTotal(response.total);
     setVideoOffset(response.offset);
@@ -698,7 +704,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   useEffect(() => {
     void (async () => {
       try {
-        await Promise.all([refreshVideoTaxonomy(), refreshVideos(0, [], [], "")]);
+        await Promise.all([refreshVideoTaxonomy(), refreshVideos(0, [], [], "", "all")]);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "视频数据初始化失败。");
       }
@@ -747,7 +753,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
   useEffect(() => {
     if (page === "videos" && previousPageRef.current !== "videos") {
-      void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+      void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter);
     }
     previousPageRef.current = page;
   }, [page]);
@@ -1590,7 +1596,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       categoryTagIds: videoUploadCategoryIds,
       categoryTagNames: splitCommaList(videoUploadNewCategories),
       personIds: videoUploadPersonIds,
-      generateZhSubtitles: videoUploadGenerateSubtitles
+      generateZhSubtitles: videoUploadGenerateSubtitles,
+      videoType: videoUploadTypeMode === "auto" ? null : videoUploadTypeMode
     };
   }
 
@@ -1644,7 +1651,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       ? selectedVideoCategoryIds.filter((id) => id !== tagId)
       : [...selectedVideoCategoryIds, tagId];
     setSelectedVideoCategoryIds(next);
-    void refreshVideos(0, next, selectedVideoPersonIds, videoSearch);
+    void refreshVideos(0, next, selectedVideoPersonIds, videoSearch, videoTypeFilter);
   }
 
   function handleToggleVideoFilterPerson(personId: number) {
@@ -1652,7 +1659,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       ? selectedVideoPersonIds.filter((id) => id !== personId)
       : [...selectedVideoPersonIds, personId];
     setSelectedVideoPersonIds(next);
-    void refreshVideos(0, selectedVideoCategoryIds, next, videoSearch);
+    void refreshVideos(0, selectedVideoCategoryIds, next, videoSearch, videoTypeFilter);
   }
 
   function handleToggleVideoUploadCategory(tagId: number) {
@@ -1728,7 +1735,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       await deleteVideo(selectedVideo.id);
       setSelectedVideo(null);
       setVideoPlayerUrl("");
-      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter);
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "删除视频失败。");
@@ -1792,12 +1799,15 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     }
   }
 
-  function openVideoEditModal() {
-    if (!selectedVideo) return;
-    setEditVideoTitle(selectedVideo.title);
-    setEditVideoDescription(selectedVideo.description || "");
-    setEditVideoCategoryIds(selectedVideo.category_tags.map(t => t.id));
-    setEditVideoPersonIds(selectedVideo.people.map(p => p.id));
+  function openVideoEditModal(target?: VideoItem | VideoDetail | null) {
+    const vid = target ?? selectedVideo;
+    if (!vid) return;
+    setSelectedVideo("sha256" in vid ? vid as VideoDetail : { ...vid, sha256: null });
+    setEditVideoTitle(vid.title);
+    setEditVideoDescription(vid.description || "");
+    setEditVideoType(vid.video_type || "short");
+    setEditVideoCategoryIds(vid.category_tags.map(t => t.id));
+    setEditVideoPersonIds(vid.people.map(p => p.id));
     setIsVideoEditModalOpen(true);
   }
 
@@ -1808,7 +1818,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     try {
       await updateVideo(selectedVideo.id, {
         title: editVideoTitle.trim() || selectedVideo.title,
-        description: editVideoDescription.trim() || null
+        description: editVideoDescription.trim() || null,
+        video_type: editVideoType
       });
       const oldCategoryIds = new Set(selectedVideo.category_tags.map(t => t.id));
       const newCategoryIds = new Set(editVideoCategoryIds);
@@ -2109,7 +2120,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
           category_tag_ids: item.categoryTagIds,
           category_tag_names: item.categoryTagNames,
           person_ids: item.personIds,
-          generate_zh_subtitles: item.generateZhSubtitles
+          generate_zh_subtitles: item.generateZhSubtitles,
+          video_type: item.videoType
         });
         syncWorkingQueueItem(item.id, {
           sessionId: null,
@@ -2148,8 +2160,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       setVideoUploadCategoryIds([]);
       setVideoUploadPersonIds([]);
       setVideoUploadNewCategories("");
+      setVideoUploadTypeMode("auto");
       void refreshVideoTaxonomy();
-      void refreshVideos(0, [], [], "");
+      void refreshVideos(0, [], [], "", "all");
       if (videoUploadGenerateSubtitles) {
         void refreshSubtitleServicePanel().catch((cause) => {
           setSubtitleServiceNotice(`状态刷新失败：${cause instanceof Error ? cause.message : "字幕服务状态刷新失败。"}`);
@@ -2262,7 +2275,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
       setSubtitleServiceStatus(await stopSubtitleService(true));
       await refreshSubtitleServicePanel();
       setSubtitleServiceNotice("翻译服务已关闭");
-      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter);
       if (selectedVideo) {
         const detail = await getVideo(selectedVideo.id);
         setSelectedVideo(detail);
@@ -2307,7 +2320,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     try {
       await cancelVideoSubtitles(job.video_id, job.track.id);
       await refreshSubtitleServicePanel();
-      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+      await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter);
       if (selectedVideo?.id === job.video_id) {
         setSelectedVideo(await getVideo(job.video_id));
       }
@@ -4317,6 +4330,42 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
         </div>
 
         <div className="editor-block">
+          <label>视频大类形态</label>
+          <div className="video-type-radio-group">
+            <label className="video-type-radio-item">
+              <input
+                type="radio"
+                name="videoUploadTypeMode"
+                value="auto"
+                checked={videoUploadTypeMode === "auto"}
+                onChange={() => setVideoUploadTypeMode("auto")}
+              />
+              <span><b>自动判定</b>（≤5分钟为短视频，&gt;5分钟为长视频）</span>
+            </label>
+            <label className="video-type-radio-item">
+              <input
+                type="radio"
+                name="videoUploadTypeMode"
+                value="short"
+                checked={videoUploadTypeMode === "short"}
+                onChange={() => setVideoUploadTypeMode("short")}
+              />
+              <span className="radio-label-with-icon"><Sparkles size={14} /> <b>指定为短视频</b></span>
+            </label>
+            <label className="video-type-radio-item">
+              <input
+                type="radio"
+                name="videoUploadTypeMode"
+                value="long"
+                checked={videoUploadTypeMode === "long"}
+                onChange={() => setVideoUploadTypeMode("long")}
+              />
+              <span className="radio-label-with-icon"><Film size={14} /> <b>指定为长视频</b></span>
+            </label>
+          </div>
+        </div>
+
+        <div className="editor-block">
           <label>上传时绑定类别</label>
           <div className="chip-cloud compact">
             {videoCategoryTags.map((tag) => (
@@ -4390,10 +4439,11 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   };
 
   const renderVideosPage = () => {
+    const shortVideos = videoItems.filter((v) => v.video_type === "short");
     const refreshVideoList = async () => {
       setVideoListRefreshing(true);
       try {
-        await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+        await refreshVideos(videoOffset, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "视频列表刷新失败。");
       } finally {
@@ -4410,12 +4460,12 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 onChange={(event) => setVideoSearch(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
-                    void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch);
+                    void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter);
                   }
                 }}
                 placeholder="搜索视频名、简介或文件名"
               />
-              <button disabled={busy} onClick={() => void refreshVideos(0)}>
+              <button disabled={busy} onClick={() => void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter)}>
                 搜索
               </button>
             </div>
@@ -4426,6 +4476,50 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
               <button className="compact-button" onClick={() => setIsCategoryManageModalOpen(true)}>管理分区</button>
               <button className="compact-button" onClick={() => setIsVideoPersonManageModalOpen(true)}>管理UP主</button>
             </div>
+          </div>
+
+          <div className="bili-type-bar">
+            <div className="bili-type-tabs">
+              <button
+                className={videoTypeFilter === "all" ? "bili-type-tab active" : "bili-type-tab"}
+                onClick={() => {
+                  setVideoTypeFilter("all");
+                  void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, "all");
+                }}
+              >
+                全部
+              </button>
+              <button
+                className={videoTypeFilter === "short" ? "bili-type-tab active type-short" : "bili-type-tab type-short"}
+                onClick={() => {
+                  setVideoTypeFilter("short");
+                  void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, "short");
+                }}
+              >
+                <Sparkles size={13} />
+                <span>短视频</span>
+              </button>
+              <button
+                className={videoTypeFilter === "long" ? "bili-type-tab active type-long" : "bili-type-tab type-long"}
+                onClick={() => {
+                  setVideoTypeFilter("long");
+                  void refreshVideos(0, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, "long");
+                }}
+              >
+                <Film size={13} />
+                <span>长视频</span>
+              </button>
+            </div>
+            {shortVideos.length > 0 && (
+              <button
+                className="bili-reel-btn"
+                onClick={() => setActiveLightboxIndex(0)}
+                title="进入 Shots 短视频沉浸放映流"
+              >
+                <Sparkles size={14} />
+                <span>Shots</span>
+              </button>
+            )}
           </div>
 
           <section className="subtitle-service-panel">
@@ -4543,7 +4637,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   className={selectedVideoCategoryIds.length === 0 ? "soft-chip active" : "soft-chip"}
                   onClick={() => {
                     setSelectedVideoCategoryIds([]);
-                    void refreshVideos(0, [], selectedVideoPersonIds, videoSearch);
+                    void refreshVideos(0, [], selectedVideoPersonIds, videoSearch, videoTypeFilter);
                   }}
                 >
                   全部
@@ -4567,7 +4661,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   className={selectedVideoPersonIds.length === 0 ? "video-person-chip active" : "video-person-chip"}
                   onClick={() => {
                     setSelectedVideoPersonIds([]);
-                    void refreshVideos(0, selectedVideoCategoryIds, [], videoSearch);
+                    void refreshVideos(0, selectedVideoCategoryIds, [], videoSearch, videoTypeFilter);
                   }}
                 >
                   <b>全部</b>
@@ -4587,11 +4681,18 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
           </div>
 
           <div className="bili-video-grid">
-            {videoItems.map((video) => (
+            {videoItems.map((video, idx) => (
               <article
                 key={video.id}
-                className="bili-video-card"
-                onClick={() => window.open("#video-play/" + video.id, "_blank")}
+                className={`bili-video-card video-card-type-${video.video_type}`}
+                onClick={() => {
+                  if (video.video_type === "short") {
+                    const sIdx = shortVideos.findIndex((sv) => sv.id === video.id);
+                    setActiveLightboxIndex(sIdx >= 0 ? sIdx : 0);
+                  } else {
+                    window.open("#video-play/" + video.id, "_blank");
+                  }
+                }}
               >
                 <div className="bili-video-cover">
                   {video.cover_url ? (
@@ -4603,6 +4704,45 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   <span className="bili-video-duration">
                     {video.duration_seconds ? formatDurationSeconds(video.duration_seconds) : formatBytes(video.size_bytes)}
                   </span>
+                  <div className="bili-card-hover-overlay" onClick={(e) => e.stopPropagation()}>
+                    {video.video_type === "short" ? (
+                      <>
+                        <button
+                          className="hover-action-btn"
+                          title="Shots 放映"
+                          onClick={() => {
+                            const sIdx = shortVideos.findIndex((sv) => sv.id === video.id);
+                            setActiveLightboxIndex(sIdx >= 0 ? sIdx : 0);
+                          }}
+                        >
+                          <Sparkles size={14} />
+                        </button>
+                        <button
+                          className="hover-action-btn"
+                          title="影院模式播放"
+                          onClick={() => window.open("#video-play/" + video.id, "_blank")}
+                        >
+                          <span style={{ fontSize: "0.75rem", fontWeight: 600 }}>影院</span>
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="hover-action-btn"
+                        title="影院播放"
+                        onClick={() => window.open("#video-play/" + video.id, "_blank")}
+                      >
+                        <Film size={14} />
+                        <span style={{ fontSize: "0.75rem", fontWeight: 600, marginLeft: 2 }}>播放</span>
+                      </button>
+                    )}
+                    <button
+                      className="hover-action-btn"
+                      title="编辑视频信息"
+                      onClick={() => openVideoEditModal(video)}
+                    >
+                      <Edit3 size={14} />
+                    </button>
+                  </div>
                 </div>
                 <div className="bili-video-info">
                   <h3 className="bili-video-title" title={video.title}>{video.title}</h3>
@@ -4616,22 +4756,47 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     {video.people.length === 0 && <span className="muted small-muted">无UP主</span>}
                   </div>
                   <div className="bili-video-meta">
-                    <span>{formatDate(video.created_at)}</span>
+                    <span className={`bili-video-type-tag type-${video.video_type}`}>
+                      {video.video_type === "short" ? (
+                        <>
+                          <Sparkles size={11} />
+                          <span>短视频</span>
+                        </>
+                      ) : (
+                        <>
+                          <Film size={11} />
+                          <span>长视频</span>
+                        </>
+                      )}
+                    </span>
+                    {video.category_tags.map((tag) => (
+                      <span key={tag.id} className="bili-video-tag-pill">#{tag.name}</span>
+                    ))}
                   </div>
                 </div>
               </article>
             ))}
           </div>
 
+          {activeLightboxIndex !== null && shortVideos.length > 0 && (
+            <VideoLightbox
+              videos={shortVideos}
+              currentIndex={activeLightboxIndex}
+              onClose={() => setActiveLightboxIndex(null)}
+              onChangeIndex={(idx) => setActiveLightboxIndex(idx)}
+              onEditVideo={(vid) => openVideoEditModal(vid)}
+            />
+          )}
+
           {videoTotal > 0 && (
             <div className="pagination-row pagination-row-bottom">
-              <button disabled={videoOffset === 0 || busy} onClick={() => void refreshVideos(Math.max(0, videoOffset - videoPageSize))}>
+              <button disabled={videoOffset === 0 || busy} onClick={() => void refreshVideos(Math.max(0, videoOffset - videoPageSize), selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter)}>
                 上一页
               </button>
               <span>
                 {videoOffset + 1} - {Math.min(videoOffset + videoPageSize, videoTotal)} / 共 {videoTotal}
               </span>
-              <button disabled={videoOffset + videoPageSize >= videoTotal || busy} onClick={() => void refreshVideos(videoOffset + videoPageSize)}>
+              <button disabled={videoOffset + videoPageSize >= videoTotal || busy} onClick={() => void refreshVideos(videoOffset + videoPageSize, selectedVideoCategoryIds, selectedVideoPersonIds, videoSearch, videoTypeFilter)}>
                 下一页
               </button>
             </div>
@@ -4945,6 +5110,31 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 onChange={(event) => setEditVideoDescription(event.target.value)}
                 placeholder="视频简介"
               />
+            </div>
+            <div className="editor-block">
+              <label>视频大类形态</label>
+              <div className="video-type-radio-group">
+                <label className="video-type-radio-item">
+                  <input
+                    type="radio"
+                    name="editVideoType"
+                    value="short"
+                    checked={editVideoType === "short"}
+                    onChange={() => setEditVideoType("short")}
+                  />
+                  <span className="radio-label-with-icon"><Sparkles size={14} /> <b>短视频</b></span>
+                </label>
+                <label className="video-type-radio-item">
+                  <input
+                    type="radio"
+                    name="editVideoType"
+                    value="long"
+                    checked={editVideoType === "long"}
+                    onChange={() => setEditVideoType("long")}
+                  />
+                  <span className="radio-label-with-icon"><Film size={14} /> <b>长视频</b></span>
+                </label>
+              </div>
             </div>
             <div className="editor-block">
               <label>分区</label>

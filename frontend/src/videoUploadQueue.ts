@@ -17,6 +17,7 @@ export type VideoUploadQueueItem = {
   categoryTagNames: string[];
   personIds: number[];
   generateZhSubtitles: boolean;
+  videoType: "short" | "long" | null;
   sessionId: string | null;
   partSize: number;
   totalParts: number;
@@ -45,6 +46,7 @@ export function makeVideoQueueItem(
     categoryTagNames: string[];
     personIds: number[];
     generateZhSubtitles: boolean;
+    videoType?: "short" | "long" | null;
   }
 ): VideoUploadQueueItem {
   return {
@@ -59,6 +61,7 @@ export function makeVideoQueueItem(
     categoryTagNames: [...options.categoryTagNames],
     personIds: [...options.personIds],
     generateZhSubtitles: options.generateZhSubtitles,
+    videoType: options.videoType ?? null,
     sessionId: null,
     partSize: videoPartSize,
     totalParts: Math.max(1, Math.ceil(file.size / videoPartSize)),
@@ -103,6 +106,7 @@ export function normalizeVideoQueueItem(source: Partial<VideoUploadQueueItem>): 
       ? source.personIds.filter((id): id is number => Number.isInteger(id))
       : [],
     generateZhSubtitles: Boolean(source.generateZhSubtitles),
+    videoType: source.videoType === "short" || source.videoType === "long" ? source.videoType : null,
     sessionId: source.sessionId ?? null,
     partSize: typeof source.partSize === "number" && source.partSize > 0 ? source.partSize : videoPartSize,
     totalParts,

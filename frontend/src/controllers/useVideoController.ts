@@ -19,7 +19,9 @@ export function useVideoController() {
   const [videoPeople, setVideoPeople] = useState<VideoPerson[]>([]);
   const [selectedVideoCategoryIds, setSelectedVideoCategoryIds] = useState<number[]>([]);
   const [selectedVideoPersonIds, setSelectedVideoPersonIds] = useState<number[]>([]);
+  const [videoTypeFilter, setVideoTypeFilter] = useState<"all" | "short" | "long">("all");
   const [videoSearch, setVideoSearch] = useState("");
+  const [activeLightboxIndex, setActiveLightboxIndex] = useState<number | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<VideoDetail | null>(null);
   const selectedVideoCodecRepairVideoId = useRef<number | null>(null);
   const selectedVideoCodecRepairPolls = useRef(0);
@@ -31,6 +33,7 @@ export function useVideoController() {
   const [videoDescription, setVideoDescription] = useState("");
   const [videoUploadCategoryIds, setVideoUploadCategoryIds] = useState<number[]>([]);
   const [videoUploadPersonIds, setVideoUploadPersonIds] = useState<number[]>([]);
+  const [videoUploadTypeMode, setVideoUploadTypeMode] = useState<"auto" | "short" | "long">("auto");
   const [videoUploadNewCategories, setVideoUploadNewCategories] = useState("");
   const [videoUploadGenerateSubtitles, setVideoUploadGenerateSubtitles] = useState(false);
   const [videoUploadProgress, setVideoUploadProgress] = useState(0);
@@ -48,6 +51,7 @@ export function useVideoController() {
   const [isVideoEditModalOpen, setIsVideoEditModalOpen] = useState(false);
   const [editVideoTitle, setEditVideoTitle] = useState("");
   const [editVideoDescription, setEditVideoDescription] = useState("");
+  const [editVideoType, setEditVideoType] = useState<"short" | "long">("short");
   const [editVideoCategoryIds, setEditVideoCategoryIds] = useState<number[]>([]);
   const [editVideoPersonIds, setEditVideoPersonIds] = useState<number[]>([]);
   const [isCategoryManageModalOpen, setIsCategoryManageModalOpen] = useState(false);
@@ -78,11 +82,13 @@ export function useVideoController() {
     videoItems, setVideoItems, videoTotal, setVideoTotal, videoOffset, setVideoOffset,
     videoCategoryTags, setVideoCategoryTags, videoPeople, setVideoPeople,
     selectedVideoCategoryIds, setSelectedVideoCategoryIds, selectedVideoPersonIds, setSelectedVideoPersonIds,
+    videoTypeFilter, setVideoTypeFilter, activeLightboxIndex, setActiveLightboxIndex,
     videoSearch, setVideoSearch, selectedVideo, setSelectedVideo, selectedVideoCodecRepairVideoId,
     selectedVideoCodecRepairPolls, videoPlayerUrl, setVideoPlayerUrl, videoPlaybackDiagnostics,
     setVideoPlaybackDiagnostics, videoPlaybackDiagnosticsLoading, setVideoPlaybackDiagnosticsLoading,
     videoFiles, setVideoFiles, videoTitle, setVideoTitle, videoDescription, setVideoDescription,
     videoUploadCategoryIds, setVideoUploadCategoryIds, videoUploadPersonIds, setVideoUploadPersonIds,
+    videoUploadTypeMode, setVideoUploadTypeMode,
     videoUploadNewCategories, setVideoUploadNewCategories, videoUploadGenerateSubtitles,
     setVideoUploadGenerateSubtitles, videoUploadProgress, setVideoUploadProgress, videoUploadSession,
     setVideoUploadSession, videoUploadCurrentIndex, setVideoUploadCurrentIndex, videoUploadTotalCount,
@@ -91,8 +97,8 @@ export function useVideoController() {
     videoUploadQueueRef, newVideoCategoryName, setNewVideoCategoryName, newVideoPersonName,
     setNewVideoPersonName, newVideoPersonNote, setNewVideoPersonNote, newVideoPersonAvatar,
     setNewVideoPersonAvatar, isVideoEditModalOpen, setIsVideoEditModalOpen, editVideoTitle,
-    setEditVideoTitle, editVideoDescription, setEditVideoDescription, editVideoCategoryIds,
-    setEditVideoCategoryIds, editVideoPersonIds, setEditVideoPersonIds, isCategoryManageModalOpen,
+    setEditVideoTitle, editVideoDescription, setEditVideoDescription, editVideoType, setEditVideoType,
+    editVideoCategoryIds, setEditVideoCategoryIds, editVideoPersonIds, setEditVideoPersonIds, isCategoryManageModalOpen,
     setIsCategoryManageModalOpen, isVideoPersonManageModalOpen, setIsVideoPersonManageModalOpen,
     editingCategoryId, setEditingCategoryId, editingCategoryName, setEditingCategoryName,
     newManageCategoryName, setNewManageCategoryName, editingPersonId, setEditingPersonId,

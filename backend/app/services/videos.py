@@ -208,6 +208,13 @@ class VideoService:
                     raise ValueError("视频 SHA256 校验失败")
 
             probe_info = self._probe_object(final_key, session.filename)
+            resolved_video_type = payload.video_type
+            if not resolved_video_type:
+                if probe_info and probe_info.duration_seconds is not None:
+                    resolved_video_type = "short" if probe_info.duration_seconds <= 300 else "long"
+                else:
+                    resolved_video_type = "short"
+
             video = VideoItem(
                 workspace_id=session.workspace_id,
                 title=session.title,
@@ -225,6 +232,7 @@ class VideoService:
                 video_codec=probe_info.video_codec if probe_info else None,
                 audio_codec=probe_info.audio_codec if probe_info else None,
                 status="uploaded",
+                video_type=resolved_video_type,
             )
             db.add(video)
             db.flush()

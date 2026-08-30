@@ -93,6 +93,38 @@ def ensure_video_seek_columns(engine: Engine) -> None:
             connection.execute(text(statement))
 
 
+def ensure_video_type_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "video_items" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("video_items")}
+    with engine.begin() as connection:
+        if "video_type" not in columns:
+            connection.execute(text("ALTER TABLE video_items ADD COLUMN video_type VARCHAR(16) NOT NULL DEFAULT 'short'"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_video_items_video_type ON video_items (video_type)"))
+            # 存量数据基于时长初始化；duration_seconds 为 NULL 的记录保留 ALTER TABLE 的默认值 'short'
+            connection.execute(text("UPDATE video_items SET video_type = 'long' WHERE duration_seconds > 300"))
+            connection.execute(text("UPDATE video_items SET video_type = 'short' WHERE duration_seconds <= 300 AND duration_seconds IS NOT NULL"))
+            # 存量数据如果关联了旧的“长视频”或“短视频”标签，优先以此覆盖
+            if "video_category_tags" in inspector.get_table_names() and "video_item_category_tags" in inspector.get_table_names():
+                connection.execute(text("""
+                    UPDATE video_items SET video_type = 'long' 
+                    WHERE id IN (
+                        SELECT vict.video_id FROM video_item_category_tags vict
+                        JOIN video_category_tags vct ON vict.tag_id = vct.id
+                        WHERE vct.name = '长视频'
+                    )
+                """))
+                connection.execute(text("""
+                    UPDATE video_items SET video_type = 'short' 
+                    WHERE id IN (
+                        SELECT vict.video_id FROM video_item_category_tags vict
+                        JOIN video_category_tags vct ON vict.tag_id = vct.id
+                        WHERE vct.name = '短视频'
+                    )
+                """))
+
+
 def ensure_face_recognition_columns(engine: Engine) -> None:
     inspector = inspect(engine)
     additions = {
@@ -785,6 +817,7 @@ def initialize_database(engine: Engine) -> None:
     ensure_workspace_scoped_name_constraints(engine)
     ensure_gallery_photo_type_unique_constraint(engine)
     ensure_video_seek_columns(engine)
+    ensure_video_type_columns(engine)
     ensure_face_recognition_columns(engine)
     ensure_gallery_similarity_group_columns(engine)
     ensure_similarity_scan_columns(engine)

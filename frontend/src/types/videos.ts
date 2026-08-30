@@ -38,6 +38,7 @@ export type VideoItem = {
   content_type: string | null;
   size_bytes: number;
   status: string;
+  video_type: "short" | "long";
   category_tags: VideoCategoryTag[];
   people: VideoPerson[];
   stream_url: string;
