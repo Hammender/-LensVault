@@ -24,6 +24,25 @@ class AcquisitionSource(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
+class TelegramAccount(Base):
+    __tablename__ = "telegram_accounts"
+    __table_args__ = (UniqueConstraint("workspace_id", name="uq_telegram_account_workspace"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    api_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    api_hash_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    session_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_login_state_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phone_masked: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="unconfigured", nullable=False, index=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
+
+
 class AcquisitionScript(Base):
     __tablename__ = "acquisition_scripts"
 
@@ -137,10 +156,13 @@ class AcquisitionAsset(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    media_type: Mapped[str] = mapped_column(String(16), default="image", server_default="image", nullable=False, index=True)
     object_key: Mapped[str | None] = mapped_column(String(512), unique=True, nullable=True)
+    preview_object_key: Mapped[str | None] = mapped_column(String(512), unique=True, nullable=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     blur_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     perceptual_phash: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     perceptual_dhash: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
@@ -177,6 +199,40 @@ class AcquisitionRunItem(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
+
+
+class AcquisitionTelegramMessage(Base):
+    __tablename__ = "acquisition_telegram_messages"
+    __table_args__ = (UniqueConstraint("workspace_id", "channel_id", "message_id", "media_index", name="uq_telegram_message_media"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_item_id: Mapped[int] = mapped_column(ForeignKey("acquisition_source_items.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    channel_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    channel_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    channel_username: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    message_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    media_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    grouped_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    media_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    protected_content: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
+
+
+class AcquisitionTelegramHashtag(Base):
+    __tablename__ = "acquisition_telegram_hashtags"
+    __table_args__ = (UniqueConstraint("telegram_message_id", "tag_normalized", name="uq_telegram_message_hashtag"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_message_id: Mapped[int] = mapped_column(ForeignKey("acquisition_telegram_messages.id", ondelete="CASCADE"), nullable=False, index=True)
+    tag_raw: Mapped[str] = mapped_column(String(256), nullable=False)
+    tag_normalized: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
 
 class AcquisitionImportedPhoto(Base):
@@ -227,10 +283,27 @@ class AcquisitionImportBatchItem(Base):
     status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False, index=True)
     promotion_intent: Mapped[str | None] = mapped_column(String(32), nullable=True)
     gallery_photo_id: Mapped[int | None] = mapped_column(ForeignKey("gallery_photos.id", ondelete="SET NULL"), nullable=True, index=True)
+    video_id: Mapped[int | None] = mapped_column(ForeignKey("video_items.id", ondelete="SET NULL"), nullable=True, index=True)
+    target_type: Mapped[str] = mapped_column(String(16), default="image", nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
+
+
+class AcquisitionImportedVideo(Base):
+    __tablename__ = "acquisition_imported_videos"
+    __table_args__ = (UniqueConstraint("run_id", "asset_id", name="uq_acquisition_imported_run_video"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("acquisition_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("acquisition_assets.id", ondelete="RESTRICT"), nullable=False, index=True)
+    video_id: Mapped[int | None] = mapped_column(ForeignKey("video_items.id", ondelete="SET NULL"), nullable=True, index=True)
+    video_id_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+    filename_snapshot: Mapped[str] = mapped_column(String(512), nullable=False)
+    sha256_snapshot: Mapped[str] = mapped_column(String(64), nullable=False)
+    category_path_snapshot: Mapped[str] = mapped_column(String(1024), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
 
 class AcquisitionSimilarityCandidate(Base):

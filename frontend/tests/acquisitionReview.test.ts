@@ -19,6 +19,7 @@ import {
   getAcquisitionPreviewUrl,
   getAcquisitionLightboxShortcut,
   getAcquisitionPagination,
+  getNextAcquisitionSnapshotIndex,
   hasSelectedAllAcquisitionAssets,
   isAcquisitionPageFillValid,
   isAcquisitionImportBatchActive,
@@ -76,6 +77,14 @@ describe("acquisition review pagination", () => {
     await listAcquisitionAssetIds("pending_review");
 
     expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets/ids?status=pending_review");
+  });
+
+  it("requests only previewable images when opening a stable large-preview session", async () => {
+    const fetch = installWindow();
+
+    await listAcquisitionAssetIds("pending_review", true);
+
+    expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets/ids?status=pending_review&previewable=true");
   });
 
   it("calculates seven pages and the final range for 377 assets", () => {
@@ -179,6 +188,15 @@ describe("acquisition review selection and rejection", () => {
       { preview_url: "/previous" },
       { preview_url: null }
     ], 1)).toBe(0);
+  });
+
+  it("keeps navigation on the opening snapshot when live list entries change", () => {
+    const snapshot = ["asset-3", "asset-2", "asset-1"];
+    const unavailable = new Set<string>(["asset-2"]);
+
+    expect(getNextAcquisitionSnapshotIndex(snapshot, 0, 1, unavailable)).toBe(2);
+    expect(getNextAcquisitionSnapshotIndex(snapshot, 2, -1, unavailable)).toBe(0);
+    expect(getNextAcquisitionSnapshotIndex(snapshot, 0, -1, unavailable)).toBe(-1);
   });
 
   it("keeps the next item selected when rejecting inside the current page", () => {

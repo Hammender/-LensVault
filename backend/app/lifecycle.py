@@ -374,6 +374,9 @@ def ensure_acquisition_schema(engine: Engine) -> None:
             "stop_reason": "ALTER TABLE acquisition_runs ADD COLUMN stop_reason VARCHAR(32)",
         },
         "acquisition_assets": {
+            "media_type": "ALTER TABLE acquisition_assets ADD COLUMN media_type VARCHAR(16) NOT NULL DEFAULT 'image'",
+            "preview_object_key": "ALTER TABLE acquisition_assets ADD COLUMN preview_object_key VARCHAR(512)",
+            "duration_seconds": "ALTER TABLE acquisition_assets ADD COLUMN duration_seconds FLOAT",
             "perceptual_phash": "ALTER TABLE acquisition_assets ADD COLUMN perceptual_phash VARCHAR(32)",
             "perceptual_dhash": "ALTER TABLE acquisition_assets ADD COLUMN perceptual_dhash VARCHAR(32)",
             "quality_score": "ALTER TABLE acquisition_assets ADD COLUMN quality_score FLOAT",
@@ -388,6 +391,10 @@ def ensure_acquisition_schema(engine: Engine) -> None:
         },
         "acquisition_import_batches": {
             "is_rich_text": "ALTER TABLE acquisition_import_batches ADD COLUMN is_rich_text BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "acquisition_import_batch_items": {
+            "video_id": "ALTER TABLE acquisition_import_batch_items ADD COLUMN video_id INTEGER",
+            "target_type": "ALTER TABLE acquisition_import_batch_items ADD COLUMN target_type VARCHAR(16) NOT NULL DEFAULT 'image'",
         },
         "acquisition_source_items": {
             "script_key": "ALTER TABLE acquisition_source_items ADD COLUMN script_key VARCHAR(128)",
@@ -412,6 +419,7 @@ def ensure_acquisition_schema(engine: Engine) -> None:
                     connection.execute(text(statement))
 
         if "acquisition_assets" in tables:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_acquisition_assets_media_type ON acquisition_assets (media_type)"))
             connection.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_acquisition_assets_perceptual_phash "
@@ -433,6 +441,11 @@ def ensure_acquisition_schema(engine: Engine) -> None:
             connection.execute(
                 text("UPDATE acquisition_assets SET status = 'pending_review' WHERE status = 'deferred'")
             )
+
+        if "acquisition_import_batch_items" in tables:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_acquisition_import_batch_items_video_id ON acquisition_import_batch_items (video_id)"))
+
+        Base.metadata.create_all(bind=connection)
 
         if "acquisition_scripts" not in tables or "acquisition_source_scripts" not in tables:
             return

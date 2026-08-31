@@ -136,7 +136,7 @@ class AcquisitionScriptParameterOption(BaseModel):
 class AcquisitionScriptParameterRead(BaseModel):
     key: str
     label: str
-    type: Literal["string", "integer", "number", "boolean", "select"]
+    type: Literal["string", "integer", "number", "boolean", "select", "datetime", "string_list"]
     required: bool = False
     default: object | None = None
     description: str | None = None
@@ -163,10 +163,12 @@ class AcquisitionAssetRead(BaseModel):
     id: str
     filename: str
     content_type: str | None
+    media_type: Literal["image", "video"] = "image"
     sha256: str
     size_bytes: int
     width: int | None
     height: int | None
+    duration_seconds: float | None = None
     blur_score: float | None
     overall_quality_score: float | None = None
     face_quality_score: float | None = None
@@ -177,6 +179,11 @@ class AcquisitionAssetRead(BaseModel):
     created_at: datetime
     preview_url: str | None = None
     original_url: str | None = None
+    source_caption: str | None = None
+    source_hashtags: list[str] = Field(default_factory=list)
+    source_published_at: datetime | None = None
+    source_message_url: str | None = None
+    source_channel_title: str | None = None
 
 
 class PaginatedAcquisitionAssets(BaseModel):
@@ -241,6 +248,8 @@ class AcquisitionImportBatchItemRead(BaseModel):
     ordinal: int
     status: str
     gallery_photo_id: int | None
+    video_id: int | None = None
+    target_type: Literal["image", "video"] = "image"
     attempt_count: int
     error_message: str | None
 
@@ -285,6 +294,8 @@ class AcquisitionImportBatchItemDetailRead(BaseModel):
     ordinal: int
     status: str
     gallery_photo_id: int | None
+    video_id: int | None = None
+    target_type: Literal["image", "video"] = "image"
     gallery_photo_snapshot_id: int | None
     gallery_available: bool
     attempt_count: int

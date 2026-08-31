@@ -5,3 +5,4 @@ from .similarity import *
 from .subtitles import *
 from .system import *
 from .videos import *
+from .telegram import *

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Archive, Check, CheckCheck, ChevronLeft, ChevronRight, Download, FolderPlus, Images, Link2, LoaderCircle, Pencil, Play, Plus, RotateCcw, ScanSearch, Square, Trash2, X } from "lucide-react";
+import { Archive, Check, CheckCheck, ChevronLeft, ChevronRight, Download, FolderPlus, Images, Link2, LoaderCircle, Pencil, Play, Plus, RotateCcw, ScanSearch, Square, Trash2, Video, X } from "lucide-react";
 
 import {
   acquisitionDownloadUrl,
@@ -7,10 +7,13 @@ import {
   changeAcquisitionAssets,
   createAcquisitionCategory,
   createAcquisitionExport,
+  createTelegramChannel,
   createAcquisitionSource,
   deleteAcquisitionCategory,
   deleteAcquisitionSource,
+  getAcquisitionAsset,
   getAcquisitionAssetSummary,
+  getTelegramAccount,
   listAcquisitionAssetIds,
   listAcquisitionAssets,
   listAcquisitionCategories,
@@ -27,21 +30,22 @@ import {
   startAcquisitionRun,
   startAcquisitionSimilarityScan,
   stopAcquisitionRun,
+  startTelegramLogin,
   unbindAcquisitionScript,
   updateAcquisitionCategory,
-  updateAcquisitionSource
+  updateAcquisitionSource,
+  verifyTelegramLogin,
+  logoutTelegramAccount
 } from "./api/acquisition";
 import {
   acquisitionAssetPageSize,
   clampAcquisitionOffset,
   createAcquisitionStatusReset,
-  getAcquisitionPageFill,
-  getAcquisitionRejectContinuation,
   getAcquisitionPreviewUrl,
   getAcquisitionLightboxShortcut,
   getAcquisitionPagination,
+  getNextAcquisitionSnapshotIndex,
   hasSelectedAllAcquisitionAssets,
-  isAcquisitionPageFillValid,
   isAcquisitionImportBatchActive,
   removeAcquisitionSelection,
   toggleAcquisitionSelection
@@ -65,6 +69,7 @@ import type {
   AcquisitionSource,
   PaginatedAcquisitionAssets
 } from "./types";
+import type { TelegramAccount } from "./types/telegram";
 import { formatBytes, formatDate, toShanghaiDateTimeBoundary } from "./utils";
 import "./AcquisitionCenter.css";
 
@@ -148,6 +153,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [assetJumpPage, setAssetJumpPage] = useState("");
   const [assetLoading, setAssetLoading] = useState(false);
   const [lightboxSelection, setLightboxSelection] = useState<{ asset: AcquisitionAsset; globalIndex: number } | null>(null);
+  const [lightboxSnapshotIds, setLightboxSnapshotIds] = useState<string[]>([]);
+  const [lightboxSnapshotIndex, setLightboxSnapshotIndex] = useState(-1);
+  const [lightboxNavigationBusy, setLightboxNavigationBusy] = useState(false);
   const [assetSummary, setAssetSummary] = useState<AcquisitionAssetSummary>({ total: 0, status_counts: {} });
   const [importBatches, setImportBatches] = useState<AcquisitionImportBatch[]>([]);
   const [importBatchesTotal, setImportBatchesTotal] = useState(0);
@@ -184,9 +192,17 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [runCategoryId, setRunCategoryId] = useState("");
   const [runScriptKey, setRunScriptKey] = useState("");
   const [runParameters, setRunParameters] = useState<Record<string, string | boolean>>({});
+  const [telegramAccount, setTelegramAccount] = useState<TelegramAccount | null>(null);
+  const [telegramApiId, setTelegramApiId] = useState("");
+  const [telegramApiHash, setTelegramApiHash] = useState("");
+  const [telegramPhone, setTelegramPhone] = useState("");
+  const [telegramCode, setTelegramCode] = useState("");
+  const [telegramPassword, setTelegramPassword] = useState("");
   const [runMode, setRunMode] = useState<"incremental" | "full" | "verify">("incremental");
   const [assetStatus, setAssetStatus] = useState("pending_review");
   const [importAsRichText, setImportAsRichText] = useState(false);
+  const [assetActionBusy, setAssetActionBusy] = useState(false);
+  const [runSubmitting, setRunSubmitting] = useState(false);
   const [exportScope, setExportScope] = useState<"all" | "source" | "category" | "run">("all");
   const [exportScopeId, setExportScopeId] = useState("");
   const [batchDateFrom, setBatchDateFrom] = useState("");
@@ -196,6 +212,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const assetRequestIdRef = useRef(0);
+  const lightboxSnapshotRequestIdRef = useRef(0);
+  const lightboxAssetCacheRef = useRef(new Map<string, AcquisitionAsset>());
+  const unavailableLightboxAssetIdsRef = useRef(new Set<string>());
   const lightboxRejectPendingRef = useRef(false);
   const reviewReconcileNeededRef = useRef(false);
   const runLauncherRef = useRef<HTMLDivElement>(null);
@@ -215,19 +234,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const runPagePagination = getAcquisitionPagination(runPageTotal, runPageOffset, runPageItems.length, managementPageSize);
   const areAllReviewAssetsSelected = hasSelectedAllAcquisitionAssets(selectedAssets, assetsTotal);
   const lightboxAsset = lightboxSelection?.asset ?? null;
-  const lightboxAssetIndex = lightboxAsset ? assets.findIndex((asset) => asset.id === lightboxAsset.id) : -1;
-  const lightboxGlobalIndex = lightboxAssetIndex >= 0
-    ? assetOffset + lightboxAssetIndex
-    : lightboxSelection?.globalIndex ?? -1;
-  const previousPreviewIndex = lightboxAssetIndex >= 0
-    ? findPreviewableIndexInDirection(assets, lightboxAssetIndex - 1, -1)
-    : -1;
-  const nextPreviewIndex = lightboxAssetIndex >= 0
-    ? findPreviewableIndexInDirection(assets, lightboxAssetIndex + 1, 1)
-    : -1;
-  const canGoToPreviousAsset = lightboxAssetIndex >= 0 && (previousPreviewIndex >= 0 || assetOffset > 0);
-  const canGoToNextAsset = lightboxAssetIndex >= 0
-    && (nextPreviewIndex >= 0 || assetOffset + assets.length < assetsTotal);
+  const lightboxGlobalIndex = lightboxSnapshotIndex;
+  const canGoToPreviousAsset = lightboxSnapshotIndex > 0;
+  const canGoToNextAsset = lightboxSnapshotIndex >= 0 && lightboxSnapshotIndex + 1 < lightboxSnapshotIds.length;
   const importBatchPagination = getAcquisitionPagination(importBatchesTotal, importBatchOffset, importBatches.length, importBatchPageSize);
   const importBatchItemPagination = getAcquisitionPagination(importBatchItemsTotal, importBatchItemOffset, importBatchItems.length, importBatchItemPageSize);
   const similarityPagination = getAcquisitionPagination(similarity.total, similarity.offset, similarity.groups.length, similarityGroupPageSize);
@@ -242,10 +251,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     : null;
 
   const refreshReferenceData = useCallback(async () => {
-    const [scriptsResult, sourcesResult, categoriesResult, runsResult, exportsResult, summaryResult] = await Promise.all([
+    const [scriptsResult, sourcesResult, categoriesResult, runsResult, exportsResult, summaryResult, telegramResult] = await Promise.all([
       settleRequest(listAcquisitionScripts()), settleRequest(listAcquisitionSources()),
       settleRequest(listAcquisitionCategories()), settleRequest(listAcquisitionRuns()),
-      settleRequest(listAcquisitionExports()), settleRequest(getAcquisitionAssetSummary())
+      settleRequest(listAcquisitionExports()), settleRequest(getAcquisitionAssetSummary()), settleRequest(getTelegramAccount())
     ]);
     if (scriptsResult.data) setScripts(scriptsResult.data);
     if (sourcesResult.data) {
@@ -259,7 +268,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     if (runsResult.data) setRuns(runsResult.data);
     if (exportsResult.data) setExports(exportsResult.data);
     if (summaryResult.data) setAssetSummary(summaryResult.data);
-    const failed = [scriptsResult, sourcesResult, categoriesResult, runsResult, exportsResult, summaryResult]
+    if (telegramResult.data !== undefined) setTelegramAccount(telegramResult.data);
+    const failed = [scriptsResult, sourcesResult, categoriesResult, runsResult, exportsResult, summaryResult, telegramResult]
       .find((result) => result.error);
     if (failed?.error) throw failed.error;
   }, []);
@@ -395,15 +405,15 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       loadSourcePage(sourcePageOffset),
       loadCategoryPage(categoryPageOffset),
       loadRunPage(runPageOffset),
-      loadAssetPage(assetStatus, assetOffset),
       loadSimilarityPage(similarityOffset),
       loadImportBatchPage(importBatchOffset)
     ];
+    if (!lightboxSelection) requests.push(loadAssetPage(assetStatus, assetOffset));
     if (selectedImportBatchId) {
       requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset));
     }
     await Promise.all(requests);
-  }, [assetOffset, assetStatus, categoryPageOffset, importBatchItemOffset, importBatchOffset, loadAssetPage, loadCategoryPage, loadImportBatchItemPage, loadImportBatchPage, loadRunPage, loadSimilarityPage, loadSourcePage, refreshReferenceData, runPageOffset, selectedImportBatchId, similarityOffset, sourcePageOffset]);
+  }, [assetOffset, assetStatus, categoryPageOffset, importBatchItemOffset, importBatchOffset, lightboxSelection, loadAssetPage, loadCategoryPage, loadImportBatchItemPage, loadImportBatchPage, loadRunPage, loadSimilarityPage, loadSourcePage, refreshReferenceData, runPageOffset, selectedImportBatchId, similarityOffset, sourcePageOffset]);
 
   useEffect(() => { void refreshReferenceData().catch((error: Error) => setNotice(error.message)); }, [refreshReferenceData]);
 
@@ -491,8 +501,32 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   async function performSelectedAssetAction(action: "import" | "reject", message: string) {
     const assetIds = [...selectedAssets];
     if (!assetIds.length) return;
+    if (action === "import") {
+      setAssetActionBusy(true);
+      setNotice(null);
+      try {
+        await changeAcquisitionAssets("import", assetIds, importAsRichText);
+        const selected = new Set(assetIds);
+        setSelectedAssets((current) => removeAcquisitionSelection(current, assetIds));
+        setAssets((current) => current.filter((asset) => !selected.has(asset.id)));
+        setAssetsTotal((current) => Math.max(0, current - assetIds.length));
+        setAssetSummary((current) => {
+          const statusCounts = { ...current.status_counts };
+          statusCounts[assetStatus] = Math.max(0, (statusCounts[assetStatus] ?? 0) - assetIds.length);
+          statusCounts.import_queued = (statusCounts.import_queued ?? 0) + assetIds.length;
+          return { ...current, status_counts: statusCounts };
+        });
+        setNotice(message);
+        await Promise.all([loadImportBatchPage(importBatchOffset), refreshReferenceData()]);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "图片入库失败");
+      } finally {
+        setAssetActionBusy(false);
+      }
+      return;
+    }
     await perform(async () => {
-      await changeAcquisitionAssets(action, assetIds, action === "import" && importAsRichText);
+      await changeAcquisitionAssets(action, assetIds);
       setSelectedAssets((current) => removeAcquisitionSelection(current, assetIds));
       if (lightboxAsset && assetIds.includes(lightboxAsset.id)) setLightboxSelection(null);
     }, message);
@@ -594,7 +628,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     await perform(async () => {
       const payload = { name: categoryName.trim(), crawl_url: categoryUrl.trim(), notes: categoryNotes.trim() || null };
       if (editingCategoryId) await updateAcquisitionCategory(editingCategoryId, payload);
-      else await createAcquisitionCategory(Number(categorySourceId), payload);
+      else if (sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1") {
+        await createTelegramChannel(Number(categorySourceId), { name: payload.name, channel_ref: categoryUrl.trim(), notes: payload.notes });
+      } else await createAcquisitionCategory(Number(categorySourceId), payload);
       resetCategoryForm();
     }, editingCategoryId ? "分类信息已更新" : "分类已创建");
   }
@@ -631,12 +667,32 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     window.requestAnimationFrame(() => runLauncherRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
+  async function startRun() {
+    if (!runCategoryId || !runScriptKey || runSubmitting) return;
+    setRunSubmitting(true);
+    setNotice(null);
+    try {
+      await startAcquisitionRun(Number(runCategoryId), {
+        script_key: runScriptKey,
+        mode: runMode,
+        parameters: runPayloadParameters()
+      });
+      setNotice("采集任务已进入队列");
+      await Promise.all([refreshReferenceData(), loadRunPage(runPageOffset)]);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "采集任务创建失败");
+    } finally {
+      setRunSubmitting(false);
+    }
+  }
+
   function runPayloadParameters(): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const parameter of selectedRunScript?.parameters ?? []) {
       const value = runParameters[parameter.key];
       if (value === "" && !parameter.required) continue;
       if (parameter.type === "integer" || parameter.type === "number") result[parameter.key] = Number(value);
+      else if (parameter.type === "string_list") result[parameter.key] = String(value).split(",").map((item) => item.trim()).filter(Boolean);
       else result[parameter.key] = value;
     }
     const startPage = Number(result.start_page ?? 1);
@@ -649,8 +705,48 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setSelectedAssets((items) => toggleAcquisitionSelection(items, id));
   }
 
-  function showLightboxAsset(asset: AcquisitionAsset, index: number, offset = assetOffset) {
-    setLightboxSelection({ asset, globalIndex: offset + index });
+  async function submitTelegramLogin(event: FormEvent) {
+    event.preventDefault();
+    await perform(async () => {
+      const account = await startTelegramLogin({ api_id: Number(telegramApiId), api_hash: telegramApiHash.trim(), phone_number: telegramPhone.trim() });
+      setTelegramAccount(account);
+    }, "Telegram 验证码已发送");
+  }
+
+  async function submitTelegramVerify(event: FormEvent) {
+    event.preventDefault();
+    await perform(async () => {
+      const account = await verifyTelegramLogin({ code: telegramCode.trim(), password: telegramPassword.trim() || undefined });
+      setTelegramAccount(account);
+      setTelegramCode("");
+      setTelegramPassword("");
+    }, "Telegram 账号已连接");
+  }
+
+  function showLightboxAsset(asset: AcquisitionAsset) {
+    const requestId = lightboxSnapshotRequestIdRef.current + 1;
+    lightboxSnapshotRequestIdRef.current = requestId;
+    lightboxAssetCacheRef.current.set(asset.id, asset);
+    unavailableLightboxAssetIdsRef.current.clear();
+    setLightboxSelection({ asset, globalIndex: 0 });
+    setLightboxSnapshotIds([asset.id]);
+    setLightboxSnapshotIndex(0);
+    setLightboxNavigationBusy(true);
+    void listAcquisitionAssetIds(assetStatus, true).then((ids) => {
+      if (requestId !== lightboxSnapshotRequestIdRef.current) return;
+      const currentIndex = ids.indexOf(asset.id);
+      if (currentIndex < 0) {
+        setLightboxSelection(null);
+        setNotice("当前图片已不在待审核列表中");
+        return;
+      }
+      setLightboxSnapshotIds(ids);
+      setLightboxSnapshotIndex(currentIndex);
+    }).catch((error: Error) => {
+      if (requestId === lightboxSnapshotRequestIdRef.current) setNotice(error.message);
+    }).finally(() => {
+      if (requestId === lightboxSnapshotRequestIdRef.current) setLightboxNavigationBusy(false);
+    });
   }
 
   function changeReviewMode(nextMode: "list" | "similarity") {
@@ -712,117 +808,44 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     void goToAssetOffset((pageNumber - 1) * acquisitionAssetPageSize);
   }
 
-  async function navigateLightbox(direction: -1 | 1) {
-    if (lightboxAssetIndex < 0) return;
-    const localIndex = direction < 0 ? previousPreviewIndex : nextPreviewIndex;
-    if (localIndex >= 0) {
-      showLightboxAsset(assets[localIndex], localIndex);
-      return;
-    }
-
-    let nextOffset = assetOffset + direction * acquisitionAssetPageSize;
-    while (nextOffset >= 0 && nextOffset < assetsTotal) {
-      const page = await loadAssetPage(assetStatus, nextOffset);
-      if (!page) return;
-      const startIndex = direction < 0 ? page.items.length - 1 : 0;
-      const index = findPreviewableIndexInDirection(page.items, startIndex, direction);
-      if (index >= 0) {
-        showLightboxAsset(page.items[index], index, page.offset);
-        return;
-      }
-      nextOffset += direction * acquisitionAssetPageSize;
-    }
-    setLightboxSelection(null);
-  }
-
-  async function focusPreviewAfterRemoval(
-    page: PaginatedAcquisitionAssets,
-    preferredIndex: number,
-    direction: -1 | 1
-  ) {
-    let loadedForwardPage = false;
-    if (direction > 0) {
-      const localNextIndex = findPreviewableIndexInDirection(page.items, Math.max(0, preferredIndex), 1);
-      if (localNextIndex >= 0) {
-        showLightboxAsset(page.items[localNextIndex], localNextIndex, page.offset);
-        return;
-      }
-      for (let nextOffset = page.offset + acquisitionAssetPageSize; nextOffset < page.total; nextOffset += acquisitionAssetPageSize) {
-        const nextPage = await loadAssetPage(assetStatus, nextOffset);
-        if (!nextPage) return;
-        loadedForwardPage = true;
-        const nextIndex = findPreviewableIndexInDirection(nextPage.items, 0, 1);
-        if (nextIndex >= 0) {
-          showLightboxAsset(nextPage.items[nextIndex], nextIndex, nextPage.offset);
-          return;
-        }
-      }
-    }
-
-    let previousPage = page;
-    let previousPreferredIndex = preferredIndex;
-    if (loadedForwardPage) {
-      const restoredPage = await loadAssetPage(assetStatus, page.offset);
-      if (!restoredPage) return;
-      previousPage = restoredPage;
-      previousPreferredIndex = page.offset + preferredIndex - restoredPage.offset;
-    }
-    const localPreviousStart = direction > 0 ? previousPreferredIndex - 1 : previousPreferredIndex;
-    const localPreviousIndex = findPreviewableIndexInDirection(
-      previousPage.items,
-      Math.min(localPreviousStart, previousPage.items.length - 1),
-      -1
-    );
-    if (localPreviousIndex >= 0) {
-      showLightboxAsset(previousPage.items[localPreviousIndex], localPreviousIndex, previousPage.offset);
-      return;
-    }
-    for (let previousOffset = previousPage.offset - acquisitionAssetPageSize; previousOffset >= 0; previousOffset -= acquisitionAssetPageSize) {
-      const earlierPage = await loadAssetPage(assetStatus, previousOffset);
-      if (!earlierPage) return;
-      const previousIndex = findPreviewableIndexInDirection(earlierPage.items, earlierPage.items.length - 1, -1);
-      if (previousIndex >= 0) {
-        showLightboxAsset(earlierPage.items[previousIndex], previousIndex, earlierPage.offset);
-        return;
-      }
-    }
-    setLightboxSelection(null);
-  }
-
-  async function reconcileAssetPageAfterRemoval(
-    remainingAssets: AcquisitionAsset[],
-    remainingTotal: number
-  ): Promise<PaginatedAcquisitionAssets> {
-    const localPage: PaginatedAcquisitionAssets = {
-      items: remainingAssets,
-      total: remainingTotal,
-      offset: assetOffset,
-      limit: acquisitionAssetPageSize
-    };
-    const fill = getAcquisitionPageFill(
-      remainingAssets.length,
-      assetOffset,
-      remainingTotal
-    );
-    if (!fill) return localPage;
-
+  async function selectLightboxSnapshotAsset(snapshotIds: string[], index: number): Promise<boolean> {
+    const assetId = snapshotIds[index];
+    if (!assetId || unavailableLightboxAssetIdsRef.current.has(assetId)) return false;
     try {
-      const fillPage = await listAcquisitionAssets(assetStatus, fill.offset, fill.limit);
-      if (!isAcquisitionPageFillValid(
-        remainingAssets.map((asset) => asset.id),
-        remainingTotal,
-        fill,
-        fillPage
-      )) throw new Error("审核图片列表已发生变化");
+      const asset = lightboxAssetCacheRef.current.get(assetId) ?? await getAcquisitionAsset(assetId);
+      if (!asset.original_url || asset.media_type !== "image") throw new Error("该图片已不可预览");
+      lightboxAssetCacheRef.current.set(asset.id, asset);
+      setLightboxSelection({ asset, globalIndex: index });
+      setLightboxSnapshotIndex(index);
+      return true;
+    } catch (error) {
+      unavailableLightboxAssetIdsRef.current.add(assetId);
+      if (!(error instanceof Error) || !error.message.includes("不存在")) setNotice(error instanceof Error ? error.message : "图片加载失败");
+      return false;
+    }
+  }
 
-      const page = { ...localPage, items: [...remainingAssets, ...fillPage.items] };
-      setAssets(page.items);
-      setAssetsTotal(page.total);
-      return page;
-    } catch {
-      const page = await loadAssetPage(assetStatus, assetOffset);
-      if (!page) throw new Error("审核图片列表刷新失败");
-      return page;
+  async function navigateLightbox(direction: -1 | 1) {
+    if (lightboxNavigationBusy) return;
+    setLightboxNavigationBusy(true);
+    try {
+      let index = getNextAcquisitionSnapshotIndex(
+        lightboxSnapshotIds,
+        lightboxSnapshotIndex,
+        direction,
+        unavailableLightboxAssetIdsRef.current
+      );
+      while (index >= 0) {
+        if (await selectLightboxSnapshotAsset(lightboxSnapshotIds, index)) return;
+        index = getNextAcquisitionSnapshotIndex(
+          lightboxSnapshotIds,
+          index,
+          direction,
+          unavailableLightboxAssetIdsRef.current
+        );
+      }
+    } finally {
+      setLightboxNavigationBusy(false);
     }
   }
 
@@ -840,16 +863,13 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       if (!confirmed) return;
 
       const rejectedId = lightboxAsset.id;
-      const preferredIndex = lightboxAssetIndex;
-      const removedGlobalIndex = assetOffset + preferredIndex;
-      const remainingAssets = assets.filter((asset) => asset.id !== rejectedId);
-      const remainingTotal = Math.max(0, assetsTotal - 1);
-      setBusy(true);
+      const rejectedSnapshotIndex = lightboxSnapshotIndex;
+      setAssetActionBusy(true);
       setNotice(null);
       await changeAcquisitionAssets("reject", [rejectedId]);
       setSelectedAssets((current) => removeAcquisitionSelection(current, [rejectedId]));
-      setAssets(remainingAssets);
-      setAssetsTotal(remainingTotal);
+      setAssets((current) => current.filter((asset) => asset.id !== rejectedId));
+      setAssetsTotal((current) => Math.max(0, current - 1));
       setAssetSummary((current) => {
         const statusCounts = { ...current.status_counts };
         statusCounts[assetStatus] = Math.max(0, (statusCounts[assetStatus] ?? 0) - 1);
@@ -857,70 +877,36 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         return { ...current, status_counts: statusCounts };
       });
       reviewReconcileNeededRef.current = true;
-
-      const immediateContinuation = getAcquisitionRejectContinuation(
-        remainingAssets.map((asset) => Boolean(asset.preview_url)),
-        preferredIndex,
-        assetOffset,
-        remainingTotal
-      );
-      if (immediateContinuation.kind === "local") {
-        showLightboxAsset(remainingAssets[immediateContinuation.index], immediateContinuation.index);
-      }
-
-      let page: PaginatedAcquisitionAssets;
-      try {
-        page = await reconcileAssetPageAfterRemoval(remainingAssets, remainingTotal);
-      } catch (error) {
-        setLightboxSelection(null);
-        setNotice(error instanceof Error ? `图片已丢弃，但列表刷新失败：${error.message}` : "图片已丢弃，但列表刷新失败");
-        return;
-      }
-
-      const reconciledPreferredIndex = removedGlobalIndex - page.offset;
-      const continuation = getAcquisitionRejectContinuation(
-        page.items.map((asset) => Boolean(asset.preview_url)),
-        reconciledPreferredIndex,
-        page.offset,
-        page.total
-      );
-      if (continuation.kind === "local") {
-        showLightboxAsset(page.items[continuation.index], continuation.index, page.offset);
-      } else if (continuation.kind === "reload") {
-        setLightboxSelection((current) => current
-          ? { ...current, globalIndex: continuation.offset + continuation.preferredIndex }
-          : current);
-        try {
-          const page = await loadAssetPage(assetStatus, continuation.offset);
-          if (page) {
-            const targetGlobalIndex = continuation.offset + continuation.preferredIndex;
-            await focusPreviewAfterRemoval(
-              page,
-              targetGlobalIndex - page.offset,
-              continuation.direction
-            );
-          }
-        } catch (error) {
-          setLightboxSelection(null);
-          setNotice(error instanceof Error ? `图片已丢弃，但下一页加载失败：${error.message}` : "图片已丢弃，但下一页加载失败");
-          return;
-        }
-      } else {
+      const nextSnapshotIds = lightboxSnapshotIds.filter((assetId) => assetId !== rejectedId);
+      lightboxAssetCacheRef.current.delete(rejectedId);
+      unavailableLightboxAssetIdsRef.current.delete(rejectedId);
+      setLightboxSnapshotIds(nextSnapshotIds);
+      const nextIndex = Math.min(rejectedSnapshotIndex, nextSnapshotIds.length - 1);
+      if (nextIndex < 0 || !(await selectLightboxSnapshotAsset(nextSnapshotIds, nextIndex))) {
         setLightboxSelection(null);
       }
       setNotice("图片已丢弃，临时文件已清除");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "图片丢弃失败");
     } finally {
-      setBusy(false);
+      setAssetActionBusy(false);
       lightboxRejectPendingRef.current = false;
     }
   }
 
   function closeReviewLightbox() {
     if (lightboxRejectPendingRef.current) return;
+    lightboxSnapshotRequestIdRef.current += 1;
     setLightboxSelection(null);
-    if (!reviewReconcileNeededRef.current) return;
+    setLightboxSnapshotIds([]);
+    setLightboxSnapshotIndex(-1);
+    setLightboxNavigationBusy(false);
+    lightboxAssetCacheRef.current.clear();
+    unavailableLightboxAssetIdsRef.current.clear();
+    if (!reviewReconcileNeededRef.current && !assetLoading) {
+      void loadAssetPage(assetStatus, assetOffset).catch((error: Error) => setNotice(error.message));
+      return;
+    }
     reviewReconcileNeededRef.current = false;
     void Promise.all([
       loadAssetPage(assetStatus, assetOffset),
@@ -1004,6 +990,22 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       </div>
 
       {canEdit && <div className="acquisition-section acquisition-forms">
+        <div>
+          <div className="acquisition-section-title"><span>Telegram 账号</span><Link2 size={17} /></div>
+          {telegramAccount?.status === "active" ? <>
+            <p className="source-notes">已连接 {telegramAccount.username ? `@${telegramAccount.username}` : telegramAccount.phone_masked}</p>
+            <button type="button" className="secondary-command" disabled={busy} onClick={() => void perform(async () => { setTelegramAccount(await logoutTelegramAccount()); }, "Telegram 账号已退出")}>退出账号</button>
+          </> : telegramAccount?.status === "verification_pending" ? <form onSubmit={(event) => void submitTelegramVerify(event)}>
+            <input value={telegramCode} onChange={(event) => setTelegramCode(event.target.value)} placeholder="登录验证码" required />
+            <input type="password" value={telegramPassword} onChange={(event) => setTelegramPassword(event.target.value)} placeholder="两步验证密码（如有）" />
+            <button type="submit" disabled={busy}>验证登录</button>
+          </form> : <form onSubmit={(event) => void submitTelegramLogin(event)}>
+            <input type="number" value={telegramApiId} onChange={(event) => setTelegramApiId(event.target.value)} placeholder="API ID" required />
+            <input value={telegramApiHash} onChange={(event) => setTelegramApiHash(event.target.value)} placeholder="API Hash" required />
+            <input value={telegramPhone} onChange={(event) => setTelegramPhone(event.target.value)} placeholder="手机号（含国家区号）" required />
+            <button type="submit" disabled={busy}>发送验证码</button>
+          </form>}
+        </div>
         <form onSubmit={(event) => void submitSource(event)}>
           <div className="acquisition-section-title"><span>{editingSourceId ? "编辑站点" : "新增站点"}</span><Plus size={17} /></div>
           <input value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="站点名称" required />
@@ -1015,9 +1017,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           <div className="acquisition-section-title"><span>{editingCategoryId ? "编辑分类" : "新增分类"}</span><FolderPlus size={17} /></div>
           <select value={categorySourceId} onChange={(event) => setCategorySourceId(event.target.value)} required disabled={editingCategoryId != null}><option value="">选择站点</option>{sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select>
           <input value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="分类名称" required />
-          <input type="url" value={categoryUrl} onChange={(event) => setCategoryUrl(event.target.value)} placeholder="分类分页入口 URL" required />
+          <input type={sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" ? "text" : "url"} value={categoryUrl} onChange={(event) => setCategoryUrl(event.target.value)} placeholder={sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" ? "@频道名或私人频道链接" : "分类分页入口 URL"} required />
           <textarea value={categoryNotes} onChange={(event) => setCategoryNotes(event.target.value)} placeholder="备注（选填）" rows={3} />
-          <div className="form-command-row"><button type="submit" disabled={busy}>{editingCategoryId ? "保存分类" : "新建分类"}</button>{editingCategoryId && <button type="button" className="secondary-command" onClick={resetCategoryForm}>取消</button>}</div>
+          <div className="form-command-row"><button type="submit" disabled={busy}>{editingCategoryId ? "保存分类" : sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" ? "添加 Telegram 频道" : "新建分类"}</button>{editingCategoryId && <button type="button" className="secondary-command" onClick={resetCategoryForm}>取消</button>}</div>
         </form>
       </div>}
 
@@ -1042,27 +1044,25 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     {tab === "runs" && <section className="acquisition-grid run-layout">
       <div className="acquisition-section run-launcher" ref={runLauncherRef}>
         <div className="acquisition-section-title"><span>启动采集</span><Play size={17} /></div>
-        <label><span>分类页面</span><select value={runCategoryId} onChange={(event) => selectRunCategory(event.target.value)} disabled={!canAdd || busy}><option value="">选择分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{sourceById.get(category.source_id)?.name ?? "未知站点"} / {category.name}</option>)}</select></label>
-        <label><span>爬取脚本</span><select value={runScriptKey} onChange={(event) => selectRunScript(event.target.value)} disabled={!canAdd || busy || !availableRunScripts.length}><option value="">{runCategoryId && !availableRunScripts.length ? "该站点尚未绑定脚本" : "选择脚本"}</option>{availableRunScripts.map((script) => <option key={script.key} value={script.key}>{script.name} · v{script.version}</option>)}</select></label>
+        <label><span>分类页面</span><select value={runCategoryId} onChange={(event) => selectRunCategory(event.target.value)} disabled={!canAdd || runSubmitting}><option value="">选择分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{sourceById.get(category.source_id)?.name ?? "未知站点"} / {category.name}</option>)}</select></label>
+        <label><span>爬取脚本</span><select value={runScriptKey} onChange={(event) => selectRunScript(event.target.value)} disabled={!canAdd || runSubmitting || !availableRunScripts.length}><option value="">{runCategoryId && !availableRunScripts.length ? "该站点尚未绑定脚本" : "选择脚本"}</option>{availableRunScripts.map((script) => <option key={script.key} value={script.key}>{script.name} · v{script.version}</option>)}</select></label>
         {selectedRunScript?.parameters.map((parameter) => <label key={parameter.key} title={parameter.description ?? undefined}>
           <span>{parameter.label}{parameter.required ? " *" : ""}</span>
           {parameter.type === "boolean"
             ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
             : parameter.type === "select"
               ? <select value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))}>{parameter.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-              : <input type={parameter.type === "string" ? "text" : "number"} required={parameter.required} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} step={parameter.type === "integer" ? 1 : "any"} value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))} />}
+              : <input type={parameter.type === "datetime" ? "datetime-local" : parameter.type === "string" || parameter.type === "string_list" ? "text" : "number"} required={parameter.required} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} step={parameter.type === "integer" ? 1 : "any"} placeholder={parameter.type === "string_list" ? "多个值以逗号分隔" : undefined} value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))} />}
         </label>)}
         <div className="mode-switch run-mode-switch" aria-label="采集模式"><button type="button" className={runMode === "incremental" ? "active" : ""} onClick={() => setRunMode("incremental")}>增量</button><button type="button" className={runMode === "full" ? "active" : ""} onClick={() => setRunMode("full")}>全量发现</button><button type="button" className={runMode === "verify" ? "active" : ""} onClick={() => setRunMode("verify")}>核验更新</button></div>
-        <button type="button" disabled={!canAdd || !runCategoryId || !runScriptKey || busy} onClick={() => void perform(async () => {
-          await startAcquisitionRun(Number(runCategoryId), { script_key: runScriptKey, mode: runMode, parameters: runPayloadParameters() });
-        }, "采集任务已进入队列")}><Play size={16} /> 开始采集</button>
+        <button type="button" disabled={!canAdd || !runCategoryId || !runScriptKey || runSubmitting} onClick={() => void startRun()}><Play size={16} /> 开始采集</button>
       </div>
       <div className="acquisition-section run-list">
         <div className="acquisition-section-title"><span>最近运行</span><small>{runPageTotal} 条</small></div>
         {runPageItems.map((run) => {
           const configuration = getAcquisitionRunFormConfiguration(run, categories, sources, scripts);
           const isActive = run.status === "pending" || run.status === "running";
-          const canLoadConfiguration = canAdd && !busy && !isActive && Boolean(configuration);
+          const canLoadConfiguration = canAdd && !runSubmitting && !isActive && Boolean(configuration);
           const loadTitle = isActive
             ? "运行结束后可载入配置"
             : configuration
@@ -1103,26 +1103,26 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
               <button type="button" className={similarityScope === "pending_to_gallery" ? "active" : ""} disabled={busy} onClick={() => { setSimilarityScope("pending_to_gallery"); setSimilarityOffset(0); setSelectedAssets([]); }}>联查图库</button>
             </div>
           </div>}
-          {reviewMode === "list" && <><select value={assetStatus} disabled={busy} onChange={(event) => changeAssetStatus(event.target.value)}><option value="pending_review">待审核</option><option value="import_failed">入库失败</option><option value="import_queued">等待入库</option><option value="importing">正在入库</option><option value="imported">已入图库</option><option value="gallery_duplicate">图库已存在</option></select><span>{assetsTotal} 张</span></>}
+          {reviewMode === "list" && <><select value={assetStatus} disabled={busy} onChange={(event) => changeAssetStatus(event.target.value)}><option value="pending_review">待审核</option><option value="import_failed">入库失败</option><option value="import_queued">等待入库</option><option value="importing">正在入库</option><option value="imported">已入库</option><option value="gallery_duplicate">图库已存在</option></select><span>{assetsTotal} 项</span></>}
           {reviewMode === "similarity" && <span>{similarity.total} 组</span>}
-          {selectedAssets.length > 0 && <span className="review-selection-count">已选 {selectedAssets.length} 张</span>}
+          {selectedAssets.length > 0 && <span className="review-selection-count">已选 {selectedAssets.length} 项</span>}
         </div>
         <div className="review-actions">
           {canEdit && <button type="button" title={`扫描${similarityScope === "pending_only" ? "审核区内" : "审核区与图库"}的${similarityScanType === "mirror" ? "镜像" : "普通"}相似图片`} disabled={busy || similarity.task?.status === "pending" || similarity.task?.status === "running"} onClick={() => void startSimilarityScan()}><ScanSearch size={16} /> {similarity.generated_at ? "重新扫描" : "扫描相似"}</button>}
-          {reviewMode === "list" && <button type="button" title={areAllReviewAssetsSelected ? "取消选择当前状态下所有图片" : "选中当前状态下所有页面的图片"} disabled={busy || assetsTotal === 0} onClick={() => void selectAllReviewAssets()}><CheckCheck size={16} /> {areAllReviewAssetsSelected ? "取消全选" : `全选 ${assetsTotal}`}</button>}
-          {reviewMode === "list" && canAdd && <div className="mode-switch import-type-switch" aria-label="导入图片类型">
-            <button type="button" className={!importAsRichText ? "active" : ""} disabled={busy} onClick={() => setImportAsRichText(false)}>普通图片</button>
-            <button type="button" className={importAsRichText ? "active" : ""} disabled={busy} onClick={() => setImportAsRichText(true)}>图文图片</button>
+          {reviewMode === "list" && <button type="button" title={areAllReviewAssetsSelected ? "取消选择当前状态下所有图片" : "选中当前状态下所有页面的图片"} disabled={busy || assetActionBusy || assetsTotal === 0} onClick={() => void selectAllReviewAssets()}><CheckCheck size={16} /> {areAllReviewAssetsSelected ? "取消全选" : `全选 ${assetsTotal}`}</button>}
+          {reviewMode === "list" && canAdd && assets.some((asset) => asset.media_type === "image") && <div className="mode-switch import-type-switch" aria-label="导入图片类型">
+            <button type="button" className={!importAsRichText ? "active" : ""} disabled={busy || assetActionBusy} onClick={() => setImportAsRichText(false)}>普通图片</button>
+            <button type="button" className={importAsRichText ? "active" : ""} disabled={busy || assetActionBusy} onClick={() => setImportAsRichText(true)}>图文图片</button>
           </div>}
-          {reviewMode === "list" && canAdd && <button type="button" disabled={busy || !selectedAssets.length} onClick={() => void performSelectedAssetAction("import", assetStatus === "import_failed" ? `已创建${importAsRichText ? "图文图片" : "普通图片"}重试批次` : `已创建${importAsRichText ? "图文图片" : "普通图片"}入库批次`)}><Check size={16} /> {assetStatus === "import_failed" ? `重试为${importAsRichText ? "图文图" : "普通图"}` : `导入为${importAsRichText ? "图文图" : "普通图"}`} {selectedAssets.length || ""}</button>}
-          {canDelete && <button type="button" className="danger-command" disabled={busy || !selectedAssets.length} onClick={() => reviewMode === "similarity" ? void rejectSimilarityAssets(selectedAssets) : void performSelectedAssetAction("reject", "已丢弃临时图片")}><X size={16} /> 丢弃 {selectedAssets.length || ""}</button>}
+          {reviewMode === "list" && canAdd && <button type="button" disabled={busy || assetActionBusy || !selectedAssets.length} onClick={() => void performSelectedAssetAction("import", assetStatus === "import_failed" ? "已创建媒体重试批次" : "已创建媒体入库批次")}><Check size={16} /> 导入 {selectedAssets.length || ""}</button>}
+          {canDelete && <button type="button" className="danger-command" disabled={busy || assetActionBusy || !selectedAssets.length} onClick={() => reviewMode === "similarity" ? void rejectSimilarityAssets(selectedAssets) : void performSelectedAssetAction("reject", "已丢弃临时图片")}><X size={16} /> 丢弃 {selectedAssets.length || ""}</button>}
         </div>
       </div>
       {reviewMode === "list" && <><div className={assetLoading ? "review-grid loading" : "review-grid"} aria-busy={assetLoading}>
-        {assets.map((asset, index) => <article className={selectedAssets.includes(asset.id) ? "review-tile selected" : "review-tile"} key={asset.id}>
+          {assets.map((asset, index) => <article className={selectedAssets.includes(asset.id) ? "review-tile selected" : "review-tile"} key={asset.id}>
           <label className="tile-select"><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={() => toggleAsset(asset.id)} /><span>选择</span></label>
-          {asset.preview_url ? <button className="review-image-button" type="button" onClick={() => showLightboxAsset(asset, index)} aria-label={`查看大图 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
-          <div className="tile-meta"><strong title={asset.filename}>{asset.filename}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "尺寸未知"} · {formatBytes(asset.size_bytes)}</small>{asset.quality_warnings.length > 0 && <p>{asset.quality_warnings.join(" / ")}</p>}</div>
+          {asset.media_type === "video" && asset.original_url ? <video className="review-image-button" src={acquisitionDownloadUrl(asset.original_url)} controls preload="metadata" /> : asset.preview_url ? <button className="review-image-button" type="button" onClick={() => showLightboxAsset(asset)} aria-label={`查看大图 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
+          <div className="tile-meta"><strong title={asset.filename}>{asset.media_type === "video" && <Video size={14} />} {asset.filename}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "尺寸未知"}{asset.duration_seconds != null ? ` · ${Math.round(asset.duration_seconds)} 秒` : ""} · {formatBytes(asset.size_bytes)}</small>{asset.source_caption && <p>{asset.source_caption}</p>}{asset.source_hashtags.length > 0 && <small>#{asset.source_hashtags.join(" #")}</small>}{asset.quality_warnings.length > 0 && <p>{asset.quality_warnings.join(" / ")}</p>}</div>
         </article>)}
       </div>
       {!assets.length && <p className="acquisition-empty review-empty">此状态下没有图片。</p>}
@@ -1315,11 +1315,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     {lightboxAsset?.original_url && <PhotoLightbox
       backdropClassName="acquisition-review-lightbox-backdrop"
       shellClassName="acquisition-review-lightbox"
-      busy={busy || assetLoading}
+      busy={assetActionBusy || lightboxNavigationBusy}
       canGoPrevious={canGoToPreviousAsset}
       canGoNext={canGoToNextAsset}
-      previousLabel={previousPreviewIndex < 0 && assetOffset > 0 ? "上一页" : undefined}
-      nextLabel={nextPreviewIndex < 0 && assetOffset + assets.length < assetsTotal ? "下一页" : undefined}
       onClose={closeReviewLightbox}
       onPrevious={() => navigateLightbox(-1)}
       onNext={() => navigateLightbox(1)}
@@ -1336,7 +1334,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       meta={<>
         <div className="acquisition-lightbox-heading">
           <div><p className="acquisition-eyebrow">采集审核</p><h2>{statusLabel(assetStatus)}</h2></div>
-          <strong>{lightboxGlobalIndex + 1} / {assetsTotal}</strong>
+          <strong>{lightboxGlobalIndex + 1} / {lightboxSnapshotIds.length}</strong>
         </div>
         <dl className="acquisition-lightbox-facts">
           <div><dt>文件名</dt><dd title={lightboxAsset.filename}>{lightboxAsset.filename}</dd></div>
@@ -1348,10 +1346,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           <p>{lightboxAsset.quality_warnings.length ? lightboxAsset.quality_warnings.join(" / ") : "未发现自动质量提示"}</p>
         </section>
         <div className="acquisition-lightbox-actions">
-          <button type="button" className={selectedAssets.includes(lightboxAsset.id) ? "selected" : ""} onClick={() => toggleAsset(lightboxAsset.id)} disabled={busy}>
+          <button type="button" className={selectedAssets.includes(lightboxAsset.id) ? "selected" : ""} onClick={() => toggleAsset(lightboxAsset.id)} disabled={assetActionBusy}>
             <Check size={17} /> {selectedAssets.includes(lightboxAsset.id) ? "取消选择" : "选中当前"}
           </button>
-          {canDelete && <button type="button" className="danger-command" onClick={() => void rejectLightboxAsset()} disabled={busy}>
+          {canDelete && <button type="button" className="danger-command" onClick={() => void rejectLightboxAsset()} disabled={assetActionBusy}>
             <Trash2 size={17} /> 丢弃当前
           </button>}
         </div>

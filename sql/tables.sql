@@ -89,10 +89,13 @@ CREATE INDEX ix_workspaces_owner_user_id ON workspaces (owner_user_id);
 --   sha256：文件内容 SHA-256 摘要
 --   filename：原始文件名
 --   content_type：文件 MIME 类型
+--   media_type：媒体类型：image（图片）或 video（视频）
 --   object_key：对象存储中的文件键
+--   preview_object_key：对象存储中的预览图键
 --   size_bytes：文件大小，单位为字节
 --   width：媒体宽度，单位为像素
 --   height：媒体高度，单位为像素
+--   duration_seconds：视频时长，单位为秒
 --   blur_score：兼容保留的旧版清晰度评分
 --   perceptual_phash：采集图片感知哈希值
 --   perceptual_dhash：采集图片差异哈希值
@@ -116,10 +119,13 @@ CREATE TABLE acquisition_assets (
 	sha256 VARCHAR(64) NOT NULL, 
 	filename VARCHAR(512) NOT NULL, 
 	content_type VARCHAR(128), 
+	media_type VARCHAR(16) DEFAULT 'image' NOT NULL, 
 	object_key VARCHAR(512), 
+	preview_object_key VARCHAR(512), 
 	size_bytes BIGINT NOT NULL, 
 	width INTEGER, 
 	height INTEGER, 
+	duration_seconds FLOAT, 
 	blur_score FLOAT, 
 	perceptual_phash VARCHAR(32), 
 	perceptual_dhash VARCHAR(32), 
@@ -140,8 +146,10 @@ CREATE TABLE acquisition_assets (
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_acquisition_asset_workspace_sha256 UNIQUE (workspace_id, sha256), 
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
-	UNIQUE (object_key)
+	UNIQUE (object_key), 
+	UNIQUE (preview_object_key)
 );
+CREATE INDEX ix_acquisition_assets_media_type ON acquisition_assets (media_type);
 CREATE INDEX ix_acquisition_assets_perceptual_dhash ON acquisition_assets (perceptual_dhash);
 CREATE INDEX ix_acquisition_assets_perceptual_phash ON acquisition_assets (perceptual_phash);
 CREATE INDEX ix_acquisition_assets_quality_version ON acquisition_assets (quality_version);
@@ -391,6 +399,43 @@ CREATE TABLE tasks (
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
 );
 CREATE INDEX ix_tasks_workspace_id ON tasks (workspace_id);
+
+-- 表名：telegram_accounts
+-- 表说明：工作区 Telegram 采集账号
+-- 字段说明：
+--   id：主键标识
+--   workspace_id：所属工作区标识
+--   api_id：Telegram 应用标识
+--   api_hash_encrypted：加密的 Telegram 应用密钥
+--   session_encrypted：加密的 Telegram 登录会话
+--   pending_login_state_encrypted：加密的待完成登录状态
+--   phone_masked：脱敏后的手机号
+--   telegram_user_id：Telegram 用户标识
+--   username：Telegram 用户名
+--   status：账号状态
+--   last_login_at：最近登录时间
+--   created_at：记录创建时间（上海时区无时区值）
+--   updated_at：记录最后更新时间（上海时区无时区值）
+CREATE TABLE telegram_accounts (
+	id INTEGER NOT NULL, 
+	workspace_id INTEGER NOT NULL, 
+	api_id INTEGER NOT NULL, 
+	api_hash_encrypted TEXT NOT NULL, 
+	session_encrypted TEXT, 
+	pending_login_state_encrypted TEXT, 
+	phone_masked VARCHAR(64), 
+	telegram_user_id BIGINT, 
+	username VARCHAR(128), 
+	status VARCHAR(32) NOT NULL, 
+	last_login_at DATETIME, 
+	created_at DATETIME NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_telegram_account_workspace UNIQUE (workspace_id), 
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
+);
+CREATE INDEX ix_telegram_accounts_status ON telegram_accounts (status);
+CREATE INDEX ix_telegram_accounts_workspace_id ON telegram_accounts (workspace_id);
 
 -- 表名：upload_history
 -- 表说明：历史上传批次汇总记录
@@ -704,6 +749,8 @@ CREATE INDEX ix_acquisition_categories_source_id ON acquisition_categories (sour
 --   status：导入批次项目状态：queued、processing、imported、failed 或 skipped
 --   promotion_intent：入库时的人物样本提升意图
 --   gallery_photo_id：关联图库图片标识
+--   video_id：关联视频库视频标识
+--   target_type：导入目标类型：image 或 video
 --   attempt_count：处理尝试次数
 --   error_message：失败或异常原因
 --   created_at：记录创建时间（上海时区无时区值）
@@ -716,6 +763,8 @@ CREATE TABLE acquisition_import_batch_items (
 	status VARCHAR(32) NOT NULL, 
 	promotion_intent VARCHAR(32), 
 	gallery_photo_id INTEGER, 
+	video_id INTEGER, 
+	target_type VARCHAR(16) NOT NULL, 
 	attempt_count INTEGER NOT NULL, 
 	error_message TEXT, 
 	created_at DATETIME NOT NULL, 
@@ -725,12 +774,14 @@ CREATE TABLE acquisition_import_batch_items (
 	CONSTRAINT uq_acquisition_import_batch_ordinal UNIQUE (batch_id, ordinal), 
 	FOREIGN KEY(batch_id) REFERENCES acquisition_import_batches (id) ON DELETE CASCADE, 
 	FOREIGN KEY(asset_id) REFERENCES acquisition_assets (id) ON DELETE RESTRICT, 
-	FOREIGN KEY(gallery_photo_id) REFERENCES gallery_photos (id) ON DELETE SET NULL
+	FOREIGN KEY(gallery_photo_id) REFERENCES gallery_photos (id) ON DELETE SET NULL, 
+	FOREIGN KEY(video_id) REFERENCES video_items (id) ON DELETE SET NULL
 );
 CREATE INDEX ix_acquisition_import_batch_items_asset_id ON acquisition_import_batch_items (asset_id);
 CREATE INDEX ix_acquisition_import_batch_items_batch_id ON acquisition_import_batch_items (batch_id);
 CREATE INDEX ix_acquisition_import_batch_items_gallery_photo_id ON acquisition_import_batch_items (gallery_photo_id);
 CREATE INDEX ix_acquisition_import_batch_items_status ON acquisition_import_batch_items (status);
+CREATE INDEX ix_acquisition_import_batch_items_video_id ON acquisition_import_batch_items (video_id);
 
 -- 表名：acquisition_similarity_candidates
 -- 表说明：采集资产与资产或图库图片的相似候选
@@ -1448,6 +1499,38 @@ CREATE INDEX ix_acquisition_imported_photos_asset_id ON acquisition_imported_pho
 CREATE INDEX ix_acquisition_imported_photos_gallery_photo_id ON acquisition_imported_photos (gallery_photo_id);
 CREATE INDEX ix_acquisition_imported_photos_run_id ON acquisition_imported_photos (run_id);
 
+-- 表名：acquisition_imported_videos
+-- 表说明：采集资产导入视频库的溯源记录
+-- 字段说明：
+--   id：主键标识
+--   run_id：关联采集运行标识
+--   asset_id：关联采集资产标识
+--   video_id：关联视频库视频标识
+--   video_id_snapshot：视频库视频标识快照
+--   filename_snapshot：文件名快照
+--   sha256_snapshot：内容摘要快照
+--   category_path_snapshot：采集分类路径快照
+--   created_at：记录创建时间（上海时区无时区值）
+CREATE TABLE acquisition_imported_videos (
+	id INTEGER NOT NULL, 
+	run_id VARCHAR(64) NOT NULL, 
+	asset_id VARCHAR(64) NOT NULL, 
+	video_id INTEGER, 
+	video_id_snapshot INTEGER NOT NULL, 
+	filename_snapshot VARCHAR(512) NOT NULL, 
+	sha256_snapshot VARCHAR(64) NOT NULL, 
+	category_path_snapshot VARCHAR(1024) NOT NULL, 
+	created_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_acquisition_imported_run_video UNIQUE (run_id, asset_id), 
+	FOREIGN KEY(run_id) REFERENCES acquisition_runs (id) ON DELETE CASCADE, 
+	FOREIGN KEY(asset_id) REFERENCES acquisition_assets (id) ON DELETE RESTRICT, 
+	FOREIGN KEY(video_id) REFERENCES video_items (id) ON DELETE SET NULL
+);
+CREATE INDEX ix_acquisition_imported_videos_asset_id ON acquisition_imported_videos (asset_id);
+CREATE INDEX ix_acquisition_imported_videos_run_id ON acquisition_imported_videos (run_id);
+CREATE INDEX ix_acquisition_imported_videos_video_id ON acquisition_imported_videos (video_id);
+
 -- 表名：acquisition_run_items
 -- 表说明：采集运行与候选图片资产的处理明细
 -- 字段说明：
@@ -1485,6 +1568,56 @@ CREATE INDEX ix_acquisition_run_items_collection_outcome ON acquisition_run_item
 CREATE INDEX ix_acquisition_run_items_run_id ON acquisition_run_items (run_id);
 CREATE INDEX ix_acquisition_run_items_source_item_id ON acquisition_run_items (source_item_id);
 CREATE INDEX ix_acquisition_run_items_status ON acquisition_run_items (status);
+
+-- 表名：acquisition_telegram_messages
+-- 表说明：Telegram 采集消息媒体来源信息
+-- 字段说明：
+--   id：主键标识
+--   workspace_id：所属工作区标识
+--   source_item_id：关联采集来源条目标识
+--   channel_id：Telegram 频道标识
+--   channel_title：频道标题
+--   channel_username：频道用户名
+--   message_id：Telegram 消息标识
+--   media_index：消息内媒体序号
+--   grouped_id：相册分组标识
+--   media_type：媒体类型：image 或 video
+--   published_at：消息发布时间
+--   edited_at：消息编辑时间
+--   caption：消息文案
+--   message_url：消息链接
+--   protected_content：是否为受保护内容
+--   created_at：记录创建时间（上海时区无时区值）
+--   updated_at：记录最后更新时间（上海时区无时区值）
+CREATE TABLE acquisition_telegram_messages (
+	id INTEGER NOT NULL, 
+	workspace_id INTEGER NOT NULL, 
+	source_item_id INTEGER NOT NULL, 
+	channel_id VARCHAR(64) NOT NULL, 
+	channel_title VARCHAR(256), 
+	channel_username VARCHAR(256), 
+	message_id INTEGER NOT NULL, 
+	media_index INTEGER NOT NULL, 
+	grouped_id VARCHAR(64), 
+	media_type VARCHAR(16) NOT NULL, 
+	published_at DATETIME, 
+	edited_at DATETIME, 
+	caption TEXT, 
+	message_url VARCHAR(2048), 
+	protected_content BOOLEAN NOT NULL, 
+	created_at DATETIME NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_telegram_message_media UNIQUE (workspace_id, channel_id, message_id, media_index), 
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
+	FOREIGN KEY(source_item_id) REFERENCES acquisition_source_items (id) ON DELETE CASCADE
+);
+CREATE INDEX ix_acquisition_telegram_messages_channel_id ON acquisition_telegram_messages (channel_id);
+CREATE INDEX ix_acquisition_telegram_messages_grouped_id ON acquisition_telegram_messages (grouped_id);
+CREATE INDEX ix_acquisition_telegram_messages_message_id ON acquisition_telegram_messages (message_id);
+CREATE INDEX ix_acquisition_telegram_messages_published_at ON acquisition_telegram_messages (published_at);
+CREATE UNIQUE INDEX ix_acquisition_telegram_messages_source_item_id ON acquisition_telegram_messages (source_item_id);
+CREATE INDEX ix_acquisition_telegram_messages_workspace_id ON acquisition_telegram_messages (workspace_id);
 
 -- 表名：gallery_similarity_group_members
 -- 表说明：图库相似图片分组成员及推荐保留结果
@@ -1554,3 +1687,24 @@ CREATE TABLE gallery_similarity_group_people (
 );
 CREATE INDEX ix_gallery_similarity_group_people_group_id ON gallery_similarity_group_people (group_id);
 CREATE INDEX ix_gallery_similarity_group_people_person_id ON gallery_similarity_group_people (person_id);
+
+-- 表名：acquisition_telegram_hashtags
+-- 表说明：Telegram 消息解析出的标签
+-- 字段说明：
+--   id：主键标识
+--   telegram_message_id：关联 Telegram 消息标识
+--   tag_raw：原始标签文本
+--   tag_normalized：规范化标签文本
+--   created_at：记录创建时间（上海时区无时区值）
+CREATE TABLE acquisition_telegram_hashtags (
+	id INTEGER NOT NULL, 
+	telegram_message_id INTEGER NOT NULL, 
+	tag_raw VARCHAR(256) NOT NULL, 
+	tag_normalized VARCHAR(256) NOT NULL, 
+	created_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_telegram_message_hashtag UNIQUE (telegram_message_id, tag_normalized), 
+	FOREIGN KEY(telegram_message_id) REFERENCES acquisition_telegram_messages (id) ON DELETE CASCADE
+);
+CREATE INDEX ix_acquisition_telegram_hashtags_tag_normalized ON acquisition_telegram_hashtags (tag_normalized);
+CREATE INDEX ix_acquisition_telegram_hashtags_telegram_message_id ON acquisition_telegram_hashtags (telegram_message_id);

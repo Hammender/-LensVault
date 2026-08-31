@@ -1,5 +1,35 @@
 [
   {
+    "path": "/api/acquisition/telegram/account",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/telegram/account/login/start",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/telegram/account/login/verify",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/telegram/account/test",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/telegram/account/logout",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/acquisition/scripts",
     "methods": [
       "GET"
@@ -66,6 +96,12 @@
     ]
   },
   {
+    "path": "/api/acquisition/sources/{source_id}/telegram-channels",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/acquisition/categories/{category_id}",
     "methods": [
       "PATCH"
@@ -115,6 +151,12 @@
   },
   {
     "path": "/api/acquisition/assets/summary",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets/{asset_id}",
     "methods": [
       "GET"
     ]

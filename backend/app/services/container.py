@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from app.services.similarity import GallerySimilarityScanner
     from app.services.subtitles import SubtitleService
     from app.services.videos import VideoService
+    from app.services.telegram import TelegramService
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class ServiceContainer:
     subtitles: SubtitleService
     similarity: GallerySimilarityScanner
     acquisition: AcquisitionService
+    telegram: TelegramService
 
 
 def build_service_container(settings: Settings) -> ServiceContainer:
@@ -40,6 +42,7 @@ def build_service_container(settings: Settings) -> ServiceContainer:
     from app.services.similarity import GallerySimilarityScanner
     from app.services.subtitles import SubtitleService
     from app.services.videos import VideoService
+    from app.services.telegram import TelegramService
 
     storage = MinioStorage(settings)
     face = FaceService(settings)
@@ -47,13 +50,14 @@ def build_service_container(settings: Settings) -> ServiceContainer:
     ocr = OcrService()
     pictures = PictureService(storage, face, vector_store, ocr, settings)
     similarity = GallerySimilarityScanner(storage, vector_store, settings, face_service=face)
+    videos = VideoService(storage)
     return ServiceContainer(
         storage=storage,
         face=face,
         vector_store=vector_store,
         ocr=ocr,
         pictures=pictures,
-        videos=VideoService(storage),
+        videos=videos,
         subtitles=SubtitleService(storage, settings),
         similarity=similarity,
         acquisition=AcquisitionService(
@@ -63,5 +67,7 @@ def build_service_container(settings: Settings) -> ServiceContainer:
             similarity.extractor,
             similarity,
             face,
+            videos,
         ),
+        telegram=TelegramService(settings),
     )

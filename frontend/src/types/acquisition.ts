@@ -27,7 +27,7 @@ export type AcquisitionScriptParameterOption = {
 export type AcquisitionScriptParameter = {
   key: string;
   label: string;
-  type: "string" | "integer" | "number" | "boolean" | "select";
+  type: "string" | "integer" | "number" | "boolean" | "select" | "datetime" | "string_list";
   required: boolean;
   default: unknown;
   description: string | null;
@@ -111,10 +111,12 @@ export type AcquisitionAsset = {
   id: string;
   filename: string;
   content_type: string | null;
+  media_type: "image" | "video";
   sha256: string;
   size_bytes: number;
   width: number | null;
   height: number | null;
+  duration_seconds: number | null;
   blur_score: number | null;
   overall_quality_score: number | null;
   face_quality_score: number | null;
@@ -125,6 +127,11 @@ export type AcquisitionAsset = {
   created_at: string;
   preview_url: string | null;
   original_url: string | null;
+  source_caption: string | null;
+  source_hashtags: string[];
+  source_published_at: string | null;
+  source_message_url: string | null;
+  source_channel_title: string | null;
 };
 
 export type PaginatedAcquisitionAssets = {
@@ -145,6 +152,8 @@ export type AcquisitionImportBatchItem = {
   ordinal: number;
   status: string;
   gallery_photo_id: number | null;
+  video_id: number | null;
+  target_type: "image" | "video";
   attempt_count: number;
   error_message: string | null;
 };

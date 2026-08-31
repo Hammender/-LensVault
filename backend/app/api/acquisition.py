@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, aliased
 from app.core.timezones import as_shanghai_naive, shanghai_isoformat, shanghai_now
 from app.core.config import get_settings
 from app.db import get_db
-from app.dependencies.context import CurrentContext, require_context
+from app.dependencies.context import CurrentContext, require_context, require_workspace_owner
 from app.http.media import stream_storage_object
 from app.models import (
     AcquisitionAsset,
@@ -28,7 +28,10 @@ from app.models import (
     AcquisitionSimilarityCandidate,
     AcquisitionSource,
     AcquisitionSourceScript,
+    AcquisitionTelegramHashtag,
+    AcquisitionTelegramMessage,
     GalleryPhoto,
+    TelegramAccount,
     GallerySimilarityFeature,
     Task,
 )
@@ -55,6 +58,10 @@ from app.schemas import (
     AcquisitionSourceUpdate,
     AcquisitionSimilarityResultRead,
     AcquisitionSimilarityScanCreate,
+    TelegramAccountRead,
+    TelegramChannelCreate,
+    TelegramLoginStartRequest,
+    TelegramLoginVerifyRequest,
     PaginatedAcquisitionAssets,
     PaginatedAcquisitionCategories,
     PaginatedAcquisitionImportBatchItems,
@@ -84,6 +91,21 @@ def _service(request: Request) -> AcquisitionService:
     return request.app.state.services.acquisition
 
 
+def _telegram_service(request: Request):
+    return request.app.state.services.telegram
+
+
+def _telegram_account_or_404(db: Session, workspace_id: int) -> TelegramAccount:
+    account = db.scalar(select(TelegramAccount).where(TelegramAccount.workspace_id == workspace_id))
+    if account is None:
+        raise HTTPException(status_code=404, detail="当前工作区尚未绑定 Telegram 账号")
+    return account
+
+
+def _telegram_account_read(account: TelegramAccount) -> TelegramAccountRead:
+    return TelegramAccountRead.model_validate(account)
+
+
 def _source_or_404(db: Session, source_id: int, workspace_id: int) -> AcquisitionSource:
     source = db.get(AcquisitionSource, source_id)
     if source is None or source.workspace_id != workspace_id:
@@ -100,6 +122,7 @@ def _category_or_404(db: Session, category_id: int, workspace_id: int) -> Acquis
 
 
 def _asset_read(
+    db: Session,
     asset: AcquisitionAsset,
     *,
     similarity_quality_score: float | None = None,
@@ -109,14 +132,27 @@ def _asset_read(
         warnings = json.loads(asset.quality_warnings or "[]")
     except json.JSONDecodeError:
         warnings = []
+    telegram = db.scalar(
+        select(AcquisitionTelegramMessage)
+        .join(AcquisitionRunItem, AcquisitionRunItem.source_item_id == AcquisitionTelegramMessage.source_item_id)
+        .where(AcquisitionRunItem.asset_id == asset.id)
+        .order_by(AcquisitionTelegramMessage.created_at.asc())
+    )
+    hashtags = []
+    if telegram is not None:
+        hashtags = list(db.scalars(
+            select(AcquisitionTelegramHashtag.tag_raw).where(AcquisitionTelegramHashtag.telegram_message_id == telegram.id)
+        ).all())
     return AcquisitionAssetRead(
         id=asset.id,
         filename=asset.filename,
         content_type=asset.content_type,
+        media_type=asset.media_type if asset.media_type in {"image", "video"} else "image",
         sha256=asset.sha256,
         size_bytes=asset.size_bytes,
         width=asset.width,
         height=asset.height,
+        duration_seconds=asset.duration_seconds,
         blur_score=asset.blur_score,
         overall_quality_score=asset.quality_score,
         face_quality_score=asset.primary_face_quality_score,
@@ -127,7 +163,90 @@ def _asset_read(
         created_at=asset.created_at,
         preview_url=f"/api/acquisition/assets/{asset.id}/preview?v={asset.sha256}" if asset.object_key else None,
         original_url=f"/api/acquisition/assets/{asset.id}/original?v={asset.sha256}" if asset.object_key else None,
+        source_caption=telegram.caption if telegram else None,
+        source_hashtags=hashtags,
+        source_published_at=telegram.published_at if telegram else None,
+        source_message_url=telegram.message_url if telegram else None,
+        source_channel_title=telegram.channel_title if telegram else None,
     )
+
+
+@router.get("/telegram/account", response_model=TelegramAccountRead | None)
+def get_telegram_account(
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> TelegramAccountRead | None:
+    account = db.scalar(select(TelegramAccount).where(TelegramAccount.workspace_id == current.workspace_id))
+    return _telegram_account_read(account) if account else None
+
+
+@router.post("/telegram/account/login/start", response_model=TelegramAccountRead)
+def start_telegram_login(
+    payload: TelegramLoginStartRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_workspace_owner),
+) -> TelegramAccountRead:
+    account = db.scalar(select(TelegramAccount).where(TelegramAccount.workspace_id == current.workspace_id))
+    try:
+        account = _telegram_service(request).start_login(
+            account, current.workspace_id, payload.api_id, payload.api_hash.strip(), payload.phone_number.strip()
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if account.id is None:
+        db.add(account)
+    db.commit()
+    db.refresh(account)
+    return _telegram_account_read(account)
+
+
+@router.post("/telegram/account/login/verify", response_model=TelegramAccountRead)
+def verify_telegram_login(
+    payload: TelegramLoginVerifyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_workspace_owner),
+) -> TelegramAccountRead:
+    account = _telegram_account_or_404(db, current.workspace_id)
+    try:
+        _telegram_service(request).verify_login(account, payload.code.strip(), payload.password)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.refresh(account)
+    return _telegram_account_read(account)
+
+
+@router.post("/telegram/account/test", response_model=TelegramAccountRead)
+def test_telegram_account(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_workspace_owner),
+) -> TelegramAccountRead:
+    account = _telegram_account_or_404(db, current.workspace_id)
+    try:
+        _telegram_service(request).test_account(account)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.refresh(account)
+    return _telegram_account_read(account)
+
+
+@router.post("/telegram/account/logout", response_model=TelegramAccountRead)
+def logout_telegram_account(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_workspace_owner),
+) -> TelegramAccountRead:
+    account = _telegram_account_or_404(db, current.workspace_id)
+    _telegram_service(request).logout(account)
+    db.commit()
+    db.refresh(account)
+    return _telegram_account_read(account)
 
 
 def _source_read(db: Session, source: AcquisitionSource) -> AcquisitionSourceRead:
@@ -495,7 +614,7 @@ def _list_gallery_similarity(
             "recommendation_status": recommendation.status,
             "members": [
                 _asset_read(
-                    pending_assets[asset_id],
+                    db, pending_assets[asset_id],
                     similarity_quality_score=quality_scores[f"pending:{asset_id}"],
                     recommended_keep=recommendation.recommended_id == f"pending:{asset_id}",
                 ).model_dump()
@@ -703,6 +822,29 @@ def create_category(
     return AcquisitionCategoryRead.model_validate(category)
 
 
+@router.post("/sources/{source_id}/telegram-channels", response_model=AcquisitionCategoryRead)
+def create_telegram_channel(
+    source_id: int,
+    payload: TelegramChannelCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> AcquisitionCategoryRead:
+    source = _source_or_404(db, source_id, current.workspace_id)
+    if source.page_format_key != "telegram-channel-v1":
+        raise HTTPException(status_code=400, detail="当前来源未绑定 Telegram 频道脚本")
+    account = _telegram_account_or_404(db, current.workspace_id)
+    if account.status != "active":
+        raise HTTPException(status_code=400, detail="当前工作区 Telegram 账号不可用")
+    try:
+        category = _service(request).create_category(
+            db, source, payload.name, payload.channel_ref, payload.notes
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AcquisitionCategoryRead.model_validate(category)
+
+
 @router.patch("/categories/{category_id}", response_model=AcquisitionCategoryRead)
 def update_category(
     category_id: int,
@@ -809,18 +951,24 @@ def list_assets(
     assets = db.scalars(
         query.order_by(AcquisitionAsset.created_at.desc(), AcquisitionAsset.id.desc()).offset(offset).limit(limit)
     ).all()
-    return PaginatedAcquisitionAssets(items=[_asset_read(asset) for asset in assets], total=total, offset=offset, limit=limit)
+    return PaginatedAcquisitionAssets(items=[_asset_read(db, asset) for asset in assets], total=total, offset=offset, limit=limit)
 
 
 @router.get("/assets/ids", response_model=list[str])
 def list_asset_ids(
     status: str | None = Query(default=None),
+    previewable: bool = False,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> list[str]:
     query = select(AcquisitionAsset.id).where(AcquisitionAsset.workspace_id == current.workspace_id)
     if status:
         query = query.where(AcquisitionAsset.status == status)
+    if previewable:
+        query = query.where(
+            AcquisitionAsset.object_key.is_not(None),
+            AcquisitionAsset.media_type == "image",
+        )
     return list(db.scalars(query.order_by(AcquisitionAsset.created_at.desc(), AcquisitionAsset.id.desc())).all())
 
 
@@ -836,6 +984,18 @@ def get_asset_summary(
     ).all()
     status_counts = {status: count for status, count in rows}
     return AcquisitionAssetSummary(total=sum(status_counts.values()), status_counts=status_counts)
+
+
+@router.get("/assets/{asset_id}", response_model=AcquisitionAssetRead)
+def get_asset(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> AcquisitionAssetRead:
+    asset = db.get(AcquisitionAsset, asset_id)
+    if asset is None or asset.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="采集临时图片不存在")
+    return _asset_read(db, asset)
 
 
 @router.get("/assets/{asset_id}/original")
@@ -1163,6 +1323,7 @@ def list_similarity(
             "recommendation_status": recommendation.status,
             "members": [
                 _asset_read(
+                    db,
                     assets[asset_id],
                     similarity_quality_score=quality_scores[asset_id],
                     recommended_keep=recommendation.recommended_id == asset_id,

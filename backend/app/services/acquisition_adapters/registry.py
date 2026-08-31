@@ -36,7 +36,26 @@ END_PAGE = ScriptParameter(
     description="扫描到该页后结束；留空时扫描到网站最后一页。",
 )
 
+TELEGRAM_DATE_FROM = ScriptParameter("date_from", "起始时间", "datetime", description="只采集该时间及之后发布的消息。")
+TELEGRAM_DATE_TO = ScriptParameter("date_to", "结束时间", "datetime", description="只采集该时间及之前发布的消息。")
+TELEGRAM_MEDIA_TYPES = ScriptParameter(
+    "media_types", "媒体类型", "string_list", default=["image", "video"], description="可填写 image、video，多个值以逗号分隔。"
+)
+TELEGRAM_HASHTAGS = ScriptParameter("hashtags", "包含标签", "string_list", description="所有标签均需出现在消息文案中。")
+TELEGRAM_KEYWORDS = ScriptParameter("caption_keywords", "文案关键词", "string_list", description="所有关键词均需出现在消息文案中。")
+TELEGRAM_MAX_MESSAGES = ScriptParameter("max_messages", "最大扫描消息数", "integer", default=1000, minimum=1, maximum=10000)
+
 SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
+    "telegram-channel-mtproto": ScriptDefinition(
+        key="telegram-channel-mtproto",
+        name="Telegram 频道",
+        version="1.0.0",
+        page_format_key="telegram-channel-v1",
+        description="使用当前工作区 Telegram 账号读取频道图片和视频。",
+        adapter=RaindropWorkersAdapter(),
+        parameters=(TELEGRAM_DATE_FROM, TELEGRAM_DATE_TO, TELEGRAM_MEDIA_TYPES, TELEGRAM_HASHTAGS, TELEGRAM_KEYWORDS, TELEGRAM_MAX_MESSAGES),
+        max_download_workers=1,
+    ),
     "idolxxx-gallery": ScriptDefinition(
         key="idolxxx-gallery",
         name="idolxxx-gallery",
@@ -81,4 +100,6 @@ def get_script(key: str) -> ScriptDefinition | None:
 
 
 def script_catalog() -> list[dict[str, object]]:
-    return [SCRIPT_REGISTRY[key].metadata() for key in sorted(SCRIPT_REGISTRY)]
+    return [SCRIPT_REGISTRY[key].metadata() for key in sorted(SCRIPT_REGISTRY) if key != "telegram-channel-mtproto"] + [
+        SCRIPT_REGISTRY["telegram-channel-mtproto"].metadata()
+    ]

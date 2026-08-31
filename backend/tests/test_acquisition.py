@@ -65,9 +65,9 @@ class AcquisitionAdapterTests(unittest.TestCase):
         catalog = script_catalog()
         self.assertEqual(
             {item["name"] for item in catalog},
-            {"idolxxx-gallery", "raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page"},
+            {"idolxxx-gallery", "raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page", "Telegram 频道"},
         )
-        self.assertEqual({item["version"] for item in catalog}, {"1.0.1", "1.0.2", "1.2.0"})
+        self.assertEqual({item["version"] for item in catalog}, {"1.0.0", "1.0.1", "1.0.2", "1.2.0"})
 
     def test_raindrop_page_normalizes_relative_image_urls(self) -> None:
         payload = (
@@ -1224,6 +1224,7 @@ class AcquisitionSimilarityTests(unittest.TestCase):
                 filename=f"{asset_id}.jpg",
                 status="pending_review",
                 created_at=created_at,
+                object_key=f"acquisition/{asset_id}.jpg" if asset_id != "asset-a" else None,
             )
             for asset_id, character in (("asset-a", "a"), ("asset-c", "c"), ("asset-b", "b"))
         ])
@@ -1238,9 +1239,11 @@ class AcquisitionSimilarityTests(unittest.TestCase):
             current=context,
         )
         ids = list_asset_ids(status="pending_review", db=db, current=context)
+        previewable_ids = list_asset_ids(status="pending_review", previewable=True, db=db, current=context)
 
         self.assertEqual([asset.id for asset in page.items], ["asset-c", "asset-b"])
         self.assertEqual(ids, ["asset-c", "asset-b", "asset-a"])
+        self.assertEqual(previewable_ids, ["asset-c", "asset-b"])
         db.close()
         engine.dispose()
 

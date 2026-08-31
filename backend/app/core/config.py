@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     acquisition_quality_max_aspect_ratio: float = 4.0
     acquisition_quality_blur_threshold: float = 45.0
     acquisition_export_ttl_hours: int = 24
+    telegram_session_encryption_key: str = ""
+    telegram_max_media_bytes: int = 2 * 1024 * 1024 * 1024
+    telegram_download_timeout_seconds: int = 600
+    telegram_flood_wait_max_seconds: int = 3600
     gallery_recognition_workers: int = Field(default=2, ge=1, le=8)
 
     face_model_name: str = "buffalo_l"

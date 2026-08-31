@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import time
+import subprocess
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -40,6 +41,8 @@ from app.models import (
     AcquisitionSource,
     AcquisitionSourceScript,
     AcquisitionSourceItem,
+    AcquisitionTelegramHashtag,
+    AcquisitionTelegramMessage,
     GalleryPhoto,
 )
 from app.services.importer import PictureService
@@ -70,6 +73,7 @@ from app.services.similarity import (
     orb_feature_similarity,
 )
 from app.services.storage import MinioStorage
+from app.services.telegram import TelegramService
 
 
 def _stable_key(value: str) -> str:
@@ -194,6 +198,7 @@ class AcquisitionService:
         "import_queued",
         "importing",
         "import_failed",
+        "ignored_protected",
     }
 
     def __init__(
@@ -204,6 +209,7 @@ class AcquisitionService:
         similarity_extractor: DinoV2FeatureExtractor | None = None,
         similarity_scanner: GallerySimilarityScanner | None = None,
         face_service: object | None = None,
+        video_service: object | None = None,
     ) -> None:
         self.storage = storage
         self.pictures = pictures
@@ -211,6 +217,7 @@ class AcquisitionService:
         self._download_policy = threading.local()
         self.similarity_scanner = similarity_scanner
         self.face_service = face_service
+        self.video_service = video_service
         self._run_abort_events: dict[str, threading.Event] = {}
         self._run_abort_lock = threading.Lock()
         self.similarity_extractor = similarity_extractor or (
@@ -268,6 +275,14 @@ class AcquisitionService:
         definition = get_script(script_key)
         if definition is None:
             raise ValueError("采集脚本不存在或未注册")
+        if definition.key == "telegram-channel-mtproto" and db.scalar(
+            select(AcquisitionRun.id).where(
+                AcquisitionRun.workspace_id == workspace_id,
+                AcquisitionRun.script_key == definition.key,
+                AcquisitionRun.status.in_(("pending", "running")),
+            )
+        ) is not None:
+            raise ValueError("当前工作区已有正在运行的 Telegram 采集任务")
         if source.page_format_key and source.page_format_key != definition.page_format_key:
             raise ValueError("该脚本的网页格式与站点已绑定脚本不一致")
         parameters = definition.validate_parameters(default_parameters)
@@ -341,6 +356,10 @@ class AcquisitionService:
         return category
 
     def _validate_category_url(self, source: AcquisitionSource, crawl_url: str) -> None:
+        if source.page_format_key == "telegram-channel-v1":
+            if not crawl_url.strip():
+                raise ValueError("Telegram 频道不能为空")
+            return
         self._validate_http_url(crawl_url, "分类 URL")
         source_host = (urlparse(source.base_url or "").hostname or "").lower()
         category_host = (urlparse(crawl_url.strip()).hostname or "").lower()
@@ -613,6 +632,9 @@ class AcquisitionService:
             parameters = json.loads(run.parameters_json or "{}")
         except (TypeError, json.JSONDecodeError):
             parameters = {}
+        if definition.key == "telegram-channel-mtproto":
+            self._process_telegram_run(db, run, source, category, parameters)
+            return
         has_failed_sources = db.scalar(
             select(AcquisitionSourceItem.id).where(
                 AcquisitionSourceItem.category_id == category.id,
@@ -659,25 +681,13 @@ class AcquisitionService:
 
                 stopped = False
                 with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acquisition-download") as executor:
-                    for page in definition.adapter.enumerate_pages(
-                        referer,
-                        parameters,
-                        known_external_keys,
-                        run.mode == "incremental",
-                    ):
+                    for page in definition.adapter.enumerate_pages(referer, parameters, known_external_keys, run.mode == "incremental"):
                         if abort_event.is_set():
                             stopped = True
                             break
                         run.scan_end_page = page.page_number
-                        pending = [
-                            prepared
-                            for remote in page.items
-                            if (prepared := self._prepare_remote_item(db, run, source, category, remote)) is not None
-                        ]
-                        futures = {
-                            executor.submit(download, prepared): prepared
-                            for prepared in pending
-                        }
+                        pending = [prepared for remote in page.items if (prepared := self._prepare_remote_item(db, run, source, category, remote)) is not None]
+                        futures = {executor.submit(download, prepared): prepared for prepared in pending}
                         for future in as_completed(futures):
                             prepared = futures[future]
                             try:
@@ -708,10 +718,9 @@ class AcquisitionService:
                         return
                     run.status = "interrupted"
                     run.stop_reason = "requested_end"
-                    run.completed_at = shanghai_now()
                 else:
                     run.status = "completed"
-                    run.completed_at = shanghai_now()
+                run.completed_at = shanghai_now()
             finally:
                 with self._run_abort_lock:
                     self._run_abort_events.pop(run_id, None)
@@ -724,6 +733,174 @@ class AcquisitionService:
             run.error_message = str(exc)
             run.completed_at = shanghai_now()
         db.commit()
+
+    def _process_telegram_run(
+        self,
+        db: Session,
+        run: AcquisitionRun,
+        source: AcquisitionSource,
+        category: AcquisitionCategory,
+        parameters: dict[str, object],
+    ) -> None:
+        from app.models import TelegramAccount
+
+        account = db.scalar(select(TelegramAccount).where(TelegramAccount.workspace_id == run.workspace_id))
+        if account is None or account.status != "active" or not account.session_encrypted:
+            run.status = "failed"
+            run.error_message = "当前工作区 Telegram 账号不可用"
+            run.completed_at = shanghai_now()
+            db.commit()
+            return
+        run.status = "running"
+        run.started_at = shanghai_now()
+        run.scan_start_page = 1
+        run.scan_end_page = None
+        run.error_message = None
+        db.commit()
+        temporary_root = self.settings.data_dir / "acquisition" / "telegram-tmp" / run.id
+        try:
+            records = TelegramService(self.settings).read_channel_media(account, category.crawl_url, parameters, temporary_root)
+            for index, record in enumerate(records, start=1):
+                run.scan_end_page = index
+                self._persist_telegram_record(db, run, source, category, record)
+            run.status = "completed"
+            run.reached_collection_end = True
+            run.stop_reason = "collection_end"
+            run.completed_at = shanghai_now()
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            run = db.get(AcquisitionRun, run.id)
+            if run is not None:
+                run.status = "failed"
+                run.error_message = str(exc)
+                run.completed_at = shanghai_now()
+                db.commit()
+        finally:
+            if temporary_root.exists():
+                for path in temporary_root.rglob("*"):
+                    if path.is_file():
+                        path.unlink(missing_ok=True)
+                try:
+                    temporary_root.rmdir()
+                    temporary_root.parent.rmdir()
+                except OSError:
+                    pass
+
+    def _persist_telegram_record(
+        self,
+        db: Session,
+        run: AcquisitionRun,
+        source: AcquisitionSource,
+        category: AcquisitionCategory,
+        record: dict[str, object],
+    ) -> None:
+        external_key = str(record["external_key"])
+        scoped_key = _stable_key(f"{category.id}:{run.script_key}:{external_key}")
+        source_item = db.scalar(select(AcquisitionSourceItem).where(
+            AcquisitionSourceItem.source_id == source.id, AcquisitionSourceItem.external_key == scoped_key
+        ))
+        if source_item is None:
+            source_item = AcquisitionSourceItem(
+                source_id=source.id, category_id=category.id, script_key=run.script_key,
+                external_key=scoped_key, remote_external_key=external_key,
+                source_url=str(record["source_url"]), title=str(record.get("caption") or "")[:512] or None,
+            )
+            db.add(source_item)
+            db.flush()
+        run_item = AcquisitionRunItem(run_id=run.id, source_item_id=source_item.id)
+        db.add(run_item)
+        run.total_count += 1
+        metadata = db.scalar(select(AcquisitionTelegramMessage).where(AcquisitionTelegramMessage.source_item_id == source_item.id))
+        if metadata is None:
+            metadata = AcquisitionTelegramMessage(
+                workspace_id=run.workspace_id or 0, source_item_id=source_item.id,
+                channel_id=str(record["channel_id"]), channel_title=record.get("channel_title"),
+                channel_username=record.get("channel_username"), message_id=int(record["message_id"]),
+                grouped_id=record.get("grouped_id"), media_type=str(record["media_type"]),
+            )
+            db.add(metadata)
+            db.flush()
+        metadata.published_at = record.get("published_at")
+        metadata.edited_at = record.get("edited_at")
+        metadata.caption = record.get("caption")
+        metadata.message_url = str(record["source_url"])
+        metadata.protected_content = bool(record.get("protected_content"))
+        db.query(AcquisitionTelegramHashtag).filter(AcquisitionTelegramHashtag.telegram_message_id == metadata.id).delete()
+        for raw, normalized in record.get("hashtags", []):
+            db.add(AcquisitionTelegramHashtag(telegram_message_id=metadata.id, tag_raw=raw, tag_normalized=normalized))
+        if record.get("protected_content"):
+            source_item.status = "ignored_protected"
+            source_item.last_error = "频道限制保存内容"
+            run_item.status = "ignored_protected"
+            run_item.collection_outcome = "ignored"
+            run.ignored_count += 1
+            db.commit()
+            return
+        path = record.get("path")
+        if not isinstance(path, Path) or not path.is_file():
+            raise RuntimeError("Telegram 媒体临时文件不存在")
+        payload = path.read_bytes()
+        sha256 = hashlib.sha256(payload).hexdigest()
+        media_type = str(record["media_type"])
+        content_type = mimetypes.guess_type(path.name)[0] or ("image/jpeg" if media_type == "image" else "video/mp4")
+        asset = db.scalar(select(AcquisitionAsset).where(
+            AcquisitionAsset.workspace_id == run.workspace_id, AcquisitionAsset.sha256 == sha256
+        ))
+        if asset is None:
+            asset_id = uuid4().hex
+            object_key = self._asset_key(run.workspace_id, asset_id, path.name)
+            self.storage.put_bytes(object_key, payload, content_type)
+            width = height = None
+            blur = None
+            phash = dhash = None
+            quality = None
+            warnings: list[str] = []
+            duration = None
+            if media_type == "image":
+                width, height, blur, warnings = self._quality(payload)
+                features = compute_perceptual_features(payload)
+                phash, dhash, quality = features.phash, features.dhash, features.quality_score
+            else:
+                duration, width, height = self._probe_video_file(path)
+            asset = AcquisitionAsset(
+                id=asset_id, workspace_id=run.workspace_id, sha256=sha256, filename=path.name,
+                content_type=content_type, media_type=media_type, object_key=object_key, size_bytes=len(payload),
+                width=width, height=height, duration_seconds=duration, blur_score=blur,
+                perceptual_phash=phash, perceptual_dhash=dhash, quality_score=quality,
+                quality_warnings=json.dumps(warnings, ensure_ascii=False),
+            )
+            db.add(asset)
+            run.downloaded_count += 1
+            run.candidate_count += 1
+            run_item.collection_outcome = "candidate"
+        elif asset.status in {"rejected", "imported", "gallery_duplicate"} or not asset.object_key:
+            run.content_duplicate_count += 1
+            run_item.collection_outcome = "content_duplicate"
+            run_item.asset_id = asset.id
+            run_item.status = asset.status
+            source_item.status = asset.status
+            db.commit()
+            return
+        else:
+            run.content_duplicate_count += 1
+            run_item.collection_outcome = "content_duplicate"
+        run_item.asset_id = asset.id
+        run_item.status = "pending_review"
+        source_item.status = "pending_review"
+        source_item.last_error = None
+        db.commit()
+
+    def _probe_video_file(self, path: Path) -> tuple[float | None, int | None, int | None]:
+        command = [self.settings.ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-show_entries", "stream=codec_type,width,height", "-of", "json", str(path)]
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
+            result = json.loads(completed.stdout)
+            stream = next((item for item in result.get("streams", []) if item.get("codec_type") == "video"), {})
+            duration = float(result.get("format", {}).get("duration")) if result.get("format", {}).get("duration") else None
+            return duration, stream.get("width"), stream.get("height")
+        except Exception:
+            return None, None, None
 
     def _prepare_remote_item(
         self,
@@ -813,6 +990,7 @@ class AcquisitionService:
         candidates = db.scalars(
             select(AcquisitionAsset).where(
                 AcquisitionAsset.workspace_id == run.workspace_id,
+                AcquisitionAsset.media_type == "image",
                 AcquisitionAsset.status == "pending_review",
                 AcquisitionAsset.object_key.is_not(None),
                 AcquisitionAsset.perceptual_phash.is_not(None),
@@ -1073,7 +1251,10 @@ class AcquisitionService:
         )
         db.add(batch)
         for ordinal, asset_id in enumerate(ordered_ids):
-            db.add(AcquisitionImportBatchItem(batch_id=batch.id, asset_id=asset_id, ordinal=ordinal))
+            db.add(AcquisitionImportBatchItem(
+                batch_id=batch.id, asset_id=asset_id, ordinal=ordinal,
+                target_type="video" if asset_by_id[asset_id].media_type == "video" else "image",
+            ))
             asset_by_id[asset_id].status = "import_queued"
             asset_by_id[asset_id].error_message = None
         db.commit()
@@ -1107,6 +1288,26 @@ class AcquisitionService:
                 item.error_message = None
                 asset.status = "importing"
                 asset.error_message = None
+                if item.target_type == "video":
+                    if self.video_service is None:
+                        raise RuntimeError("视频导入服务不可用")
+                    metadata = db.scalar(select(AcquisitionTelegramMessage).join(
+                        AcquisitionSourceItem, AcquisitionTelegramMessage.source_item_id == AcquisitionSourceItem.id
+                    ).join(AcquisitionRunItem, AcquisitionRunItem.source_item_id == AcquisitionSourceItem.id).where(
+                        AcquisitionRunItem.asset_id == asset.id
+                    ))
+                    video = self.video_service.import_acquisition_asset(
+                        db, asset, batch.workspace_id, metadata.caption if metadata else None
+                    )
+                    item.video_id = video.id
+                    item.status = "imported"
+                    item.error_message = None
+                    asset.status = "imported"
+                    self._set_linked_item_statuses(db, asset, "imported")
+                    self._refresh_import_batch(db, batch_id)
+                    db.commit()
+                    self._cleanup_asset_object(db, asset)
+                    continue
                 gallery_photo = self._gallery_photo_by_sha(
                     db,
                     batch.workspace_id,
@@ -1340,6 +1541,7 @@ class AcquisitionService:
         assets = db.scalars(
             select(AcquisitionAsset).where(
                 AcquisitionAsset.workspace_id == workspace_id,
+                AcquisitionAsset.media_type == "image",
                 AcquisitionAsset.status == "pending_review",
                 AcquisitionAsset.object_key.is_not(None),
             )

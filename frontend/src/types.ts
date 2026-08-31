@@ -7,3 +7,4 @@ export * from "./types/videos";
 export * from "./types/acquisition";
 export * from "./types/similarity";
 export * from "./types/subtitles";
+export * from "./types/telegram";

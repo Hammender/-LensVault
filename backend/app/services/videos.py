@@ -18,6 +18,10 @@ from app.core.config import Settings, get_settings
 from app.core.timezones import shanghai_now
 from app.db import SessionLocal
 from app.models import (
+    AcquisitionAsset,
+    AcquisitionImportedVideo,
+    AcquisitionRun,
+    AcquisitionRunItem,
     VideoCategoryTag,
     VideoItem,
     VideoItemCategoryTag,
@@ -112,6 +116,50 @@ class VideoService:
             session.total_parts,
         )
         return session
+
+    def import_acquisition_asset(self, db: Session, asset: AcquisitionAsset, workspace_id: int | None, caption: str | None) -> VideoItem:
+        if asset.media_type != "video" or not asset.object_key:
+            raise ValueError("采集资产不是可导入的视频")
+        self._validate_video_file(asset.filename, self._normalize_upload_content_type(asset.filename, asset.content_type))
+        existing = db.scalar(select(VideoItem).where(VideoItem.workspace_id == workspace_id, VideoItem.sha256 == asset.sha256))
+        if existing is not None:
+            return existing
+        object_key = self._build_video_object_key(workspace_id, asset.filename)
+        self.storage.copy_object(object_key, asset.object_key)
+        probe = self._probe_object(object_key, asset.filename)
+        normalized_caption = (caption or "").strip()
+        title = next((line.strip() for line in normalized_caption.splitlines() if line.strip()), Path(asset.filename).stem)
+        video = VideoItem(
+            workspace_id=workspace_id,
+            title=title[:256],
+            description=normalized_caption or None,
+            filename=asset.filename,
+            content_type=self._normalize_upload_content_type(asset.filename, asset.content_type),
+            sha256=asset.sha256,
+            object_key=object_key,
+            size_bytes=asset.size_bytes,
+            duration_seconds=probe.duration_seconds if probe else asset.duration_seconds,
+            width=probe.width if probe else asset.width,
+            height=probe.height if probe else asset.height,
+            original_video_codec=probe.video_codec if probe else None,
+            original_audio_codec=probe.audio_codec if probe else None,
+            video_codec=probe.video_codec if probe else None,
+            audio_codec=probe.audio_codec if probe else None,
+            video_type="short" if (probe.duration_seconds if probe else asset.duration_seconds or 0) <= 300 else "long",
+            status="uploaded",
+        )
+        db.add(video)
+        db.flush()
+        for run_item in db.scalars(select(AcquisitionRunItem).where(AcquisitionRunItem.asset_id == asset.id)).all():
+            run = db.get(AcquisitionRun, run_item.run_id)
+            if run is None:
+                continue
+            if db.scalar(select(AcquisitionImportedVideo).where(AcquisitionImportedVideo.run_id == run.id, AcquisitionImportedVideo.asset_id == asset.id)) is None:
+                db.add(AcquisitionImportedVideo(
+                    run_id=run.id, asset_id=asset.id, video_id=video.id, video_id_snapshot=video.id,
+                    filename_snapshot=asset.filename, sha256_snapshot=asset.sha256, category_path_snapshot=run.category_name_snapshot,
+                ))
+        return video
 
     def put_upload_part(
         self,

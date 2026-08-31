@@ -22,7 +22,7 @@ class AccessBlockedError(RuntimeError):
 class ScriptParameter:
     key: str
     label: str
-    type: Literal["string", "integer", "number", "boolean", "select"]
+    type: Literal["string", "integer", "number", "boolean", "select", "datetime", "string_list"]
     required: bool = False
     default: object | None = None
     description: str | None = None
@@ -117,6 +117,13 @@ class ScriptDefinition:
             elif parameter.type == "boolean":
                 if not isinstance(value, bool):
                     raise ValueError(f"参数“{parameter.label}”必须是布尔值")
+            elif parameter.type == "string_list":
+                if isinstance(value, str):
+                    value = [part.strip() for part in value.split(",") if part.strip()]
+                elif isinstance(value, list) and all(isinstance(part, str) for part in value):
+                    value = [part.strip() for part in value if part.strip()]
+                else:
+                    raise ValueError(f"参数“{parameter.label}”必须是文本列表")
             else:
                 value = str(value)
             if isinstance(value, (int, float)):

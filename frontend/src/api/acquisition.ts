@@ -17,6 +17,7 @@ import type {
   PaginatedAcquisitionAssets,
   Task
 } from "../types";
+import type { TelegramAccount } from "../types/telegram";
 import { authFetch, jsonHeaders, parseResponse as parse, withWorkspaceContext } from "../apiClient";
 import { toShanghaiDateTimeBoundary } from "../utils";
 
@@ -28,6 +29,26 @@ export async function listAcquisitionScripts(): Promise<AcquisitionScript[]> {
 
 export async function listAcquisitionSources(): Promise<AcquisitionSource[]> {
   return parse<AcquisitionSource[]>(await fetch("/api/acquisition/sources"));
+}
+
+export async function getTelegramAccount(): Promise<TelegramAccount | null> {
+  return parse<TelegramAccount | null>(await fetch("/api/acquisition/telegram/account"));
+}
+
+export async function startTelegramLogin(payload: { api_id: number; api_hash: string; phone_number: string }): Promise<TelegramAccount> {
+  return parse<TelegramAccount>(await fetch("/api/acquisition/telegram/account/login/start", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }));
+}
+
+export async function verifyTelegramLogin(payload: { code: string; password?: string }): Promise<TelegramAccount> {
+  return parse<TelegramAccount>(await fetch("/api/acquisition/telegram/account/login/verify", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }));
+}
+
+export async function logoutTelegramAccount(): Promise<TelegramAccount> {
+  return parse<TelegramAccount>(await fetch("/api/acquisition/telegram/account/logout", { method: "POST" }));
+}
+
+export async function createTelegramChannel(sourceId: number, payload: { name: string; channel_ref: string; notes?: string | null }): Promise<AcquisitionCategory> {
+  return parse<AcquisitionCategory>(await fetch(`/api/acquisition/sources/${sourceId}/telegram-channels`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }));
 }
 
 export async function listAcquisitionSourcePage(offset = 0, limit = 10): Promise<PaginatedAcquisitionSources> {
@@ -138,8 +159,13 @@ export async function listAcquisitionAssets(status = "pending_review", offset = 
   return parse<PaginatedAcquisitionAssets>(await fetch(`/api/acquisition/assets?${params.toString()}`));
 }
 
-export async function listAcquisitionAssetIds(status: string): Promise<string[]> {
+export async function getAcquisitionAsset(assetId: string): Promise<AcquisitionAsset> {
+  return parse<AcquisitionAsset>(await fetch(`/api/acquisition/assets/${encodeURIComponent(assetId)}`));
+}
+
+export async function listAcquisitionAssetIds(status: string, previewable = false): Promise<string[]> {
   const params = new URLSearchParams({ status });
+  if (previewable) params.set("previewable", "true");
   return parse<string[]>(await fetch(`/api/acquisition/assets/ids?${params.toString()}`));
 }
 

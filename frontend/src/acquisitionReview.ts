@@ -153,3 +153,15 @@ export function findClosestPreviewableIndex(
   }
   return -1;
 }
+
+export function getNextAcquisitionSnapshotIndex(
+  snapshotIds: readonly string[],
+  currentIndex: number,
+  direction: -1 | 1,
+  unavailableIds: ReadonlySet<string>
+): number {
+  for (let index = currentIndex + direction; index >= 0 && index < snapshotIds.length; index += direction) {
+    if (!unavailableIds.has(snapshotIds[index])) return index;
+  }
+  return -1;
+}
