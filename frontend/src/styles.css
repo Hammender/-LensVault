@@ -2872,6 +2872,39 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 8px 8px 0 var(--panel-border);
   font-weight: 600;
   z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.error-banner-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.error-banner-close {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  margin: -6px -8px 0 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--bg-strong);
+  background: transparent;
+  color: var(--bg-strong);
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.error-banner-close:hover,
+.error-banner-close:focus-visible {
+  background: var(--bg-strong);
+  color: var(--accent);
 }
 
 .recognition-notice {
@@ -4568,6 +4601,7 @@ button.primary,
 }
 
 .modal-inline-error {
+  display: block;
   margin: 8px 0;
   padding: 10px;
   font-size: 0.85rem;

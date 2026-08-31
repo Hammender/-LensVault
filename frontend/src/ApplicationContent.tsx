@@ -309,6 +309,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const galleryImportFileRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const errorAutoDismissRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [jumpPageInput, setJumpPageInput] = useState("");
   const [highlightedSampleId, setHighlightedSampleId] = useState<number | null>(null);
@@ -318,6 +319,13 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
   const galleryDrawerReturnFocusRef = useRef<HTMLElement | null>(null);
 
   const selectedPersonIsSystemUnknown = isSystemUnknownPerson(selectedPerson);
+
+  useEffect(() => {
+    if (!error || !errorAutoDismissRef.current) return;
+    errorAutoDismissRef.current = false;
+    const timer = window.setTimeout(() => setError(null), 15000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
   const canDeleteVideos = authSession.workspace.role === "owner" || Boolean(authSession.workspace.permissions.can_delete_videos);
 
   const selectedPersonDeleteCount = useMemo(
@@ -2189,6 +2197,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
 
     const remainingQueue = workingQueue.filter((item) => item.status !== "completed");
     if (lastError) {
+      errorAutoDismissRef.current = true;
       setError(`${lastError}（已完成 ${completedCount}/${totalCount} 个）`);
     } else if (remainingQueue.length > 0) {
       setError("还有未完成的视频，请重新选择对应原文件后继续上传。");
@@ -5536,7 +5545,14 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
           <i aria-hidden="true" />
         </div>
       )}
-      {error && <div className="error-banner">{error}</div>}
+      {error && (
+        <div className="error-banner" role="alert">
+          <span className="error-banner-message">{error}</span>
+          <button type="button" className="error-banner-close" aria-label="关闭提示" onClick={() => setError(null)}>
+            ×
+          </button>
+        </div>
+      )}
     </div>
   );
 }
