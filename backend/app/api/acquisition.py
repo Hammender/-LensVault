@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterator
 from datetime import datetime
 from threading import BoundedSemaphore
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
@@ -121,28 +121,55 @@ def _category_or_404(db: Session, category_id: int, workspace_id: int) -> Acquis
     return category
 
 
-def _asset_read(
+def _telegram_metadata_by_asset(
     db: Session,
-    asset: AcquisitionAsset,
+    asset_ids: list[str],
+) -> dict[str, tuple[AcquisitionTelegramMessage, list[str]]]:
+    if not asset_ids:
+        return {}
+    messages_by_asset: dict[str, AcquisitionTelegramMessage] = {}
+    message_rows = db.execute(
+        select(AcquisitionRunItem.asset_id, AcquisitionTelegramMessage)
+        .join(AcquisitionTelegramMessage, AcquisitionRunItem.source_item_id == AcquisitionTelegramMessage.source_item_id)
+        .where(AcquisitionRunItem.asset_id.in_(asset_ids))
+        .order_by(AcquisitionRunItem.asset_id, AcquisitionTelegramMessage.created_at.asc(), AcquisitionTelegramMessage.id.asc())
+    ).all()
+    for asset_id, message in message_rows:
+        messages_by_asset.setdefault(asset_id, message)
+    if not messages_by_asset:
+        return {}
+    hashtags_by_message: dict[int, list[str]] = {}
+    hashtag_rows = db.execute(
+        select(AcquisitionTelegramHashtag.telegram_message_id, AcquisitionTelegramHashtag.tag_raw)
+        .where(AcquisitionTelegramHashtag.telegram_message_id.in_([message.id for message in messages_by_asset.values()]))
+        .order_by(AcquisitionTelegramHashtag.id.asc())
+    ).all()
+    for message_id, tag_raw in hashtag_rows:
+        hashtags_by_message.setdefault(message_id, []).append(tag_raw)
+    return {
+        asset_id: (message, hashtags_by_message.get(message.id, []))
+        for asset_id, message in messages_by_asset.items()
+    }
+
+
+def _asset_read(
+    db_or_asset: Session | AcquisitionAsset,
+    asset: AcquisitionAsset | None = None,
     *,
     similarity_quality_score: float | None = None,
     recommended_keep: bool = False,
+    telegram_metadata: tuple[AcquisitionTelegramMessage, list[str]] | None = None,
 ) -> AcquisitionAssetRead:
+    # Keep this small formatter usable by non-request code that only has an asset.
+    db = None if asset is None else cast(Session, db_or_asset)
+    asset = cast(AcquisitionAsset, db_or_asset) if asset is None else asset
     try:
         warnings = json.loads(asset.quality_warnings or "[]")
     except json.JSONDecodeError:
         warnings = []
-    telegram = db.scalar(
-        select(AcquisitionTelegramMessage)
-        .join(AcquisitionRunItem, AcquisitionRunItem.source_item_id == AcquisitionTelegramMessage.source_item_id)
-        .where(AcquisitionRunItem.asset_id == asset.id)
-        .order_by(AcquisitionTelegramMessage.created_at.asc())
-    )
-    hashtags = []
-    if telegram is not None:
-        hashtags = list(db.scalars(
-            select(AcquisitionTelegramHashtag.tag_raw).where(AcquisitionTelegramHashtag.telegram_message_id == telegram.id)
-        ).all())
+    if telegram_metadata is None and db is not None:
+        telegram_metadata = _telegram_metadata_by_asset(db, [asset.id]).get(asset.id)
+    telegram, hashtags = telegram_metadata if telegram_metadata else (None, [])
     return AcquisitionAssetRead(
         id=asset.id,
         filename=asset.filename,
@@ -951,7 +978,13 @@ def list_assets(
     assets = db.scalars(
         query.order_by(AcquisitionAsset.created_at.desc(), AcquisitionAsset.id.desc()).offset(offset).limit(limit)
     ).all()
-    return PaginatedAcquisitionAssets(items=[_asset_read(db, asset) for asset in assets], total=total, offset=offset, limit=limit)
+    telegram_metadata = _telegram_metadata_by_asset(db, [asset.id for asset in assets])
+    return PaginatedAcquisitionAssets(
+        items=[_asset_read(db, asset, telegram_metadata=telegram_metadata.get(asset.id)) for asset in assets],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/assets/ids", response_model=list[str])

@@ -26,11 +26,23 @@ def _configure_sqlite_connection(dbapi_connection: object, _: object) -> None:
         return
     handle = cursor()
     handle.execute("PRAGMA foreign_keys=ON")
-    # SQLite only permits one writer.  Waiting for a short transaction and WAL mode
-    # avoid immediately failing concurrent API/background-task writes.
+    # SQLite only permits one writer. Waiting for a short transaction avoids
+    # immediately failing concurrent API/background-task writes.
     handle.execute("PRAGMA busy_timeout=30000")
-    handle.execute("PRAGMA journal_mode=WAL")
     handle.execute("PRAGMA synchronous=NORMAL")
+    handle.close()
+
+
+@event.listens_for(engine, "first_connect")
+def _enable_sqlite_wal(dbapi_connection: object, _: object) -> None:
+    """Persist WAL once instead of asking every request connection to change it."""
+    if not is_sqlite:
+        return
+    cursor = getattr(dbapi_connection, "cursor", None)
+    if cursor is None:
+        return
+    handle = cursor()
+    handle.execute("PRAGMA journal_mode=WAL")
     handle.close()
 
 

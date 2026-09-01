@@ -203,6 +203,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [importAsRichText, setImportAsRichText] = useState(false);
   const [assetActionBusy, setAssetActionBusy] = useState(false);
   const [runSubmitting, setRunSubmitting] = useState(false);
+  const [currentTabRefreshing, setCurrentTabRefreshing] = useState(false);
   const [exportScope, setExportScope] = useState<"all" | "source" | "category" | "run">("all");
   const [exportScopeId, setExportScopeId] = useState("");
   const [batchDateFrom, setBatchDateFrom] = useState("");
@@ -355,10 +356,14 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     }
   }, [batchDateFrom, batchDateTo, importBatchItemStatus]);
 
-  const loadAssetPage = useCallback(async (status: string, requestedOffset: number): Promise<PaginatedAcquisitionAssets | null> => {
+  const loadAssetPage = useCallback(async (
+    status: string,
+    requestedOffset: number,
+    showLoading = true
+  ): Promise<PaginatedAcquisitionAssets | null> => {
     const requestId = assetRequestIdRef.current + 1;
     assetRequestIdRef.current = requestId;
-    setAssetLoading(true);
+    if (showLoading) setAssetLoading(true);
     try {
       let page = await listAcquisitionAssets(status, Math.max(0, requestedOffset), acquisitionAssetPageSize);
       const validOffset = clampAcquisitionOffset(page.total, requestedOffset, acquisitionAssetPageSize);
@@ -371,7 +376,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       setAssetOffset(page.offset);
       return page;
     } finally {
-      if (requestId === assetRequestIdRef.current) setAssetLoading(false);
+      if (showLoading && requestId === assetRequestIdRef.current) setAssetLoading(false);
     }
   }, []);
 
@@ -399,49 +404,75 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     }
   }, [similarityScanType, similarityScope]);
 
-  const refresh = useCallback(async () => {
-    const requests: Promise<unknown>[] = [
-      refreshReferenceData(),
-      loadSourcePage(sourcePageOffset),
-      loadCategoryPage(categoryPageOffset),
-      loadRunPage(runPageOffset),
-      loadSimilarityPage(similarityOffset),
-      loadImportBatchPage(importBatchOffset)
-    ];
-    if (!lightboxSelection) requests.push(loadAssetPage(assetStatus, assetOffset));
-    if (selectedImportBatchId) {
-      requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset));
+  const refreshCurrentTab = useCallback(async () => {
+    setCurrentTabRefreshing(true);
+    try {
+      if (tab === "sources") {
+        await Promise.all([
+          refreshReferenceData(),
+          loadSourcePage(sourcePageOffset),
+          loadCategoryPage(categoryPageOffset)
+        ]);
+        return;
+      }
+      if (tab === "runs") {
+        await Promise.all([refreshReferenceData(), loadRunPage(runPageOffset)]);
+        return;
+      }
+      if (tab === "review") {
+        const requests: Promise<unknown>[] = [
+          getAcquisitionAssetSummary().then((summary) => setAssetSummary(summary))
+        ];
+        if (reviewMode === "similarity") requests.push(loadSimilarityPage(similarityOffset));
+        else if (!lightboxSelection) requests.push(loadAssetPage(assetStatus, assetOffset, false));
+        await Promise.all(requests);
+        return;
+      }
+      const requests: Promise<unknown>[] = [
+        refreshReferenceData(),
+        loadImportBatchPage(importBatchOffset)
+      ];
+      if (selectedImportBatchId) requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset));
+      await Promise.all(requests);
+    } finally {
+      setCurrentTabRefreshing(false);
     }
-    await Promise.all(requests);
-  }, [assetOffset, assetStatus, categoryPageOffset, importBatchItemOffset, importBatchOffset, lightboxSelection, loadAssetPage, loadCategoryPage, loadImportBatchItemPage, loadImportBatchPage, loadRunPage, loadSimilarityPage, loadSourcePage, refreshReferenceData, runPageOffset, selectedImportBatchId, similarityOffset, sourcePageOffset]);
+  }, [assetOffset, assetStatus, categoryPageOffset, importBatchItemOffset, importBatchOffset, lightboxSelection, loadAssetPage, loadCategoryPage, loadImportBatchItemPage, loadImportBatchPage, loadRunPage, loadSimilarityPage, loadSourcePage, refreshReferenceData, reviewMode, runPageOffset, selectedImportBatchId, similarityOffset, sourcePageOffset, tab]);
 
   useEffect(() => { void refreshReferenceData().catch((error: Error) => setNotice(error.message)); }, [refreshReferenceData]);
 
   useEffect(() => {
+    if (tab !== "sources") return;
     void loadSourcePage(sourcePageOffset).catch((error: Error) => setNotice(error.message));
-  }, [loadSourcePage, sourcePageOffset]);
+  }, [loadSourcePage, sourcePageOffset, tab]);
 
   useEffect(() => {
+    if (tab !== "sources") return;
     void loadCategoryPage(categoryPageOffset).catch((error: Error) => setNotice(error.message));
-  }, [categoryPageOffset, loadCategoryPage]);
+  }, [categoryPageOffset, loadCategoryPage, tab]);
 
   useEffect(() => {
+    if (tab !== "runs") return;
     void loadRunPage(runPageOffset).catch((error: Error) => setNotice(error.message));
-  }, [loadRunPage, runPageOffset]);
+  }, [loadRunPage, runPageOffset, tab]);
 
   useEffect(() => {
+    if (tab !== "review" || reviewMode !== "similarity") return;
     void loadSimilarityPage(similarityOffset).catch((error: Error) => setNotice(error.message));
-  }, [loadSimilarityPage, similarityOffset]);
+  }, [loadSimilarityPage, reviewMode, similarityOffset, tab]);
 
   useEffect(() => {
+    if (tab !== "review" || reviewMode !== "list") return;
     void loadAssetPage(assetStatus, 0).catch((error: Error) => setNotice(error.message));
-  }, [assetStatus, loadAssetPage]);
+  }, [assetStatus, loadAssetPage, reviewMode, tab]);
 
   useEffect(() => {
+    if (tab !== "history") return;
     void loadImportBatchPage(importBatchOffset).catch((error: Error) => setNotice(error.message));
-  }, [importBatchOffset, loadImportBatchPage]);
+  }, [importBatchOffset, loadImportBatchPage, tab]);
 
   useEffect(() => {
+    if (tab !== "history") return;
     if (!selectedImportBatchId) {
       setImportBatchItems([]);
       setImportBatchItemsTotal(0);
@@ -449,33 +480,40 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     }
     void loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset)
       .catch((error: Error) => setNotice(error.message));
-  }, [importBatchItemOffset, loadImportBatchItemPage, selectedImportBatchId]);
+  }, [importBatchItemOffset, loadImportBatchItemPage, selectedImportBatchId, tab]);
 
   useEffect(() => {
-    if (!runPageItems.some((run) => run.status === "pending" || run.status === "running")) return;
+    if (tab !== "runs" || !runPageItems.some((run) => run.status === "pending" || run.status === "running")) return;
     const timer = window.setInterval(() => {
       void Promise.all([listAcquisitionRuns(), loadRunPage(runPageOffset)])
         .then(([nextRuns]) => setRuns(nextRuns))
         .catch((error: Error) => setNotice(error.message));
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [loadRunPage, runPageItems, runPageOffset]);
+  }, [loadRunPage, runPageItems, runPageOffset, tab]);
 
   useEffect(() => {
     if (!importBatches.some((batch) => isAcquisitionImportBatchActive(batch.status))) return;
     const timer = window.setInterval(() => {
-      void refresh().catch((error: Error) => setNotice(error.message));
+      const requests: Promise<unknown>[] = [
+        loadImportBatchPage(importBatchOffset),
+        getAcquisitionAssetSummary().then((summary) => setAssetSummary(summary))
+      ];
+      if (tab === "history" && selectedImportBatchId) {
+        requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset));
+      }
+      void Promise.all(requests).catch((error: Error) => setNotice(error.message));
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [importBatches, refresh]);
+  }, [importBatchItemOffset, importBatchOffset, importBatches, loadImportBatchItemPage, loadImportBatchPage, selectedImportBatchId, tab]);
 
   useEffect(() => {
-    if (!similarity.task || !["pending", "running"].includes(similarity.task.status)) return;
+    if (tab !== "review" || reviewMode !== "similarity" || !similarity.task || !["pending", "running"].includes(similarity.task.status)) return;
     const timer = window.setInterval(() => {
       void loadSimilarityPage(similarityOffset).catch((error: Error) => setNotice(error.message));
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [loadSimilarityPage, similarity.task, similarityOffset]);
+  }, [loadSimilarityPage, reviewMode, similarity.task, similarityOffset, tab]);
 
   useEffect(() => {
     if (availableRunScripts.some((script) => script.key === runScriptKey)) return;
@@ -490,7 +528,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     try {
       await action();
       setNotice(message);
-      await refresh();
+      await refreshCurrentTab();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "操作未完成");
     } finally {
@@ -517,7 +555,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           return { ...current, status_counts: statusCounts };
         });
         setNotice(message);
-        await Promise.all([loadImportBatchPage(importBatchOffset), refreshReferenceData()]);
+        await loadImportBatchPage(importBatchOffset);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "图片入库失败");
       } finally {
@@ -525,11 +563,27 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       }
       return;
     }
-    await perform(async () => {
+    setAssetActionBusy(true);
+    setNotice(null);
+    try {
       await changeAcquisitionAssets(action, assetIds);
       setSelectedAssets((current) => removeAcquisitionSelection(current, assetIds));
+      const rejected = new Set(assetIds);
+      setAssets((current) => current.filter((asset) => !rejected.has(asset.id)));
+      setAssetsTotal((current) => Math.max(0, current - assetIds.length));
+      setAssetSummary((current) => {
+        const statusCounts = { ...current.status_counts };
+        statusCounts[assetStatus] = Math.max(0, (statusCounts[assetStatus] ?? 0) - assetIds.length);
+        statusCounts.rejected = (statusCounts.rejected ?? 0) + assetIds.length;
+        return { ...current, status_counts: statusCounts };
+      });
       if (lightboxAsset && assetIds.includes(lightboxAsset.id)) setLightboxSelection(null);
-    }, message);
+      setNotice(message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "图片丢弃失败");
+    } finally {
+      setAssetActionBusy(false);
+    }
   }
 
   async function startSimilarityScan() {
@@ -558,21 +612,20 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       tone: "danger"
     });
     if (!confirmed) return;
-    setBusy(true);
+    setAssetActionBusy(true);
     setNotice(null);
     try {
       await changeAcquisitionAssets("reject", uniqueIds);
       setSelectedAssets((current) => removeAcquisitionSelection(current, uniqueIds));
       await Promise.all([
         loadSimilarityPage(similarityOffset),
-        loadAssetPage(assetStatus, assetOffset),
-        refreshReferenceData()
+        getAcquisitionAssetSummary().then((summary) => setAssetSummary(summary))
       ]);
       setNotice(`已丢弃 ${uniqueIds.length} 张临时图片`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "图片丢弃失败");
     } finally {
-      setBusy(false);
+      setAssetActionBusy(false);
     }
   }
 
@@ -931,7 +984,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       <div><p className="acquisition-eyebrow">图片采集工作台</p><h1>图片采集中心</h1></div>
       <div className="acquisition-heading-actions">
         <span className="acquisition-counter">采集资产 {assetSummary.total}</span>
-        <button className="icon-button" type="button" onClick={() => void refresh()} title="刷新数据" aria-label="刷新数据" disabled={busy || assetLoading}><LoaderCircle size={17} /></button>
+        <button className="icon-button" type="button" onClick={() => void refreshCurrentTab()} title="刷新当前页" aria-label="刷新当前页" disabled={busy || currentTabRefreshing}><LoaderCircle size={17} /></button>
       </div>
     </header>
 

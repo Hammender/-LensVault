@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from io import BytesIO
 import math
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,10 @@ from app.services.qdrant import QdrantVectorStore
 from app.services.storage import MinioStorage
 from sqlalchemy import delete, func, insert, literal, select, text, update
 from sqlalchemy.orm import Session
+
+
+_opencv_configuration_lock = Lock()
+_opencv_configured = False
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,21 @@ def ensure_perceptual_feature_dependencies() -> None:
     if unavailable:
         packages = "、".join(unavailable)
         raise RuntimeError(f"图片分析依赖不可用：{packages}。请在后端运行环境重新安装 requirements.txt。")
+    _configure_opencv_threads()
+
+
+def _configure_opencv_threads() -> None:
+    """采集任务并发处理图片时，避免 OpenCV 继续为每张图扩展线程。"""
+    global _opencv_configured
+    if _opencv_configured:
+        return
+    with _opencv_configuration_lock:
+        if _opencv_configured:
+            return
+        import cv2
+
+        cv2.setNumThreads(1)
+        _opencv_configured = True
 
 
 def assess_image_quality(image: Image.Image) -> ImageQualityAssessment:
@@ -286,15 +306,13 @@ def assess_primary_face(
         image.close()
 
 
-def compute_perceptual_features(payload: bytes) -> PerceptualFeatures:
+def compute_perceptual_features_from_image(image: Image.Image) -> PerceptualFeatures:
     ensure_perceptual_feature_dependencies()
     import imagehash
 
-    image = open_normalized_image(payload)
     phash = str(imagehash.phash(image))
     dhash = str(imagehash.dhash(image))
     assessment = assess_image_quality(image)
-    image.close()
     return PerceptualFeatures(
         phash=phash,
         dhash=dhash,
@@ -305,6 +323,14 @@ def compute_perceptual_features(payload: bytes) -> PerceptualFeatures:
         artifact_score=assessment.artifact_score,
         exposure_score=assessment.exposure_score,
     )
+
+
+def compute_perceptual_features(payload: bytes) -> PerceptualFeatures:
+    image = open_normalized_image(payload)
+    try:
+        return compute_perceptual_features_from_image(image)
+    finally:
+        image.close()
 
 
 def compute_mirrored_perceptual_hashes(payload: bytes) -> tuple[str, str]:

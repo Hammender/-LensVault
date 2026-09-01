@@ -11,7 +11,6 @@ import subprocess
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable
 from urllib.error import HTTPError
@@ -62,10 +61,12 @@ from app.services.similarity import (
     DinoV2FeatureExtractor,
     GallerySimilarityScanner,
     PrimaryFaceAssessment,
+    PerceptualFeatures,
     assess_primary_face,
     compute_mirrored_perceptual_hashes,
     compute_orb_features,
     compute_perceptual_features,
+    compute_perceptual_features_from_image,
     cosine_similarity,
     ensure_perceptual_feature_dependencies,
     hash_similarity,
@@ -544,8 +545,7 @@ class AcquisitionService:
             resolved_url = remote.source_url
         else:
             payload, content_type, resolved_url = result
-        width, height, blur, warnings = self._quality(payload)
-        features = compute_perceptual_features(payload)
+        width, height, blur, warnings, features = self._analyze_image_payload(payload)
         if resolved_url == remote.source_url or (remote.candidate_urls and resolved_url == remote.candidate_urls[0]):
             candidate = "source"
         elif remote.preview_url and resolved_url == remote.preview_url:
@@ -570,8 +570,13 @@ class AcquisitionService:
         )
 
     def _quality(self, payload: bytes) -> tuple[int, int, float, list[str]]:
-        image = Image.open(BytesIO(payload))
-        image.load()
+        image = open_normalized_image(payload)
+        try:
+            return self._quality_image(image)
+        finally:
+            image.close()
+
+    def _quality_image(self, image: Image.Image) -> tuple[int, int, float, list[str]]:
         width, height = image.size
         grey = np.asarray(image.convert("L"), dtype=np.float32)
         blur = float(np.var(np.diff(grey, axis=0))) if grey.shape[0] > 1 else 0.0
@@ -583,6 +588,16 @@ class AcquisitionService:
         if blur < self.settings.acquisition_quality_blur_threshold:
             warnings.append("可能模糊")
         return width, height, blur, warnings
+
+    def _analyze_image_payload(self, payload: bytes) -> tuple[int, int, float, list[str], PerceptualFeatures]:
+        """一次解码完成审核质量和相似图特征，避免每张图重复读取像素。"""
+        image = open_normalized_image(payload)
+        try:
+            width, height, blur, warnings = self._quality_image(image)
+            features = compute_perceptual_features_from_image(image)
+            return width, height, blur, warnings, features
+        finally:
+            image.close()
 
     def _asset_key(self, workspace_id: int | None, asset_id: str, filename: str) -> str:
         suffix = Path(filename).suffix.lower() or ".bin"
@@ -858,8 +873,7 @@ class AcquisitionService:
             warnings: list[str] = []
             duration = None
             if media_type == "image":
-                width, height, blur, warnings = self._quality(payload)
-                features = compute_perceptual_features(payload)
+                width, height, blur, warnings, features = self._analyze_image_payload(payload)
                 phash, dhash, quality = features.phash, features.dhash, features.quality_score
             else:
                 duration, width, height = self._probe_video_file(path)
@@ -1202,16 +1216,27 @@ class AcquisitionService:
         assets = db.scalars(
             select(AcquisitionAsset).where(AcquisitionAsset.workspace_id == workspace_id, AcquisitionAsset.id.in_(asset_ids))
         ).all()
+        if not assets:
+            return 0
+        asset_ids = [asset.id for asset in assets]
+        run_items = db.scalars(
+            select(AcquisitionRunItem).where(AcquisitionRunItem.asset_id.in_(asset_ids))
+        ).all()
+        source_item_ids = {item.source_item_id for item in run_items}
+        source_items = {
+            item.id: item
+            for item in db.scalars(select(AcquisitionSourceItem).where(AcquisitionSourceItem.id.in_(source_item_ids))).all()
+        }
         for asset in assets:
             if asset.object_key:
                 self.storage.remove_object(asset.object_key)
             asset.object_key = None
             asset.status = "rejected"
-            for run_item in db.scalars(select(AcquisitionRunItem).where(AcquisitionRunItem.asset_id == asset.id)).all():
-                run_item.status = "rejected"
-                source_item = db.get(AcquisitionSourceItem, run_item.source_item_id)
-                if source_item is not None:
-                    source_item.status = "rejected"
+        for run_item in run_items:
+            run_item.status = "rejected"
+            source_item = source_items.get(run_item.source_item_id)
+            if source_item is not None:
+                source_item.status = "rejected"
         db.commit()
         return len(assets)
 
