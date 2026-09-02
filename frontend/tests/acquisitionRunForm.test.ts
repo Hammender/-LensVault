@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   defaultAcquisitionRunParameters,
   getAcquisitionRunFormConfiguration,
-  restoreAcquisitionRunParameters
+  restoreAcquisitionRunParameters,
+  serializeAcquisitionRunParameters
 } from "../src/acquisitionRunForm";
 import type { AcquisitionCategory, AcquisitionRun, AcquisitionScript, AcquisitionSource } from "../src/types";
 
@@ -140,6 +141,43 @@ describe("acquisition run form configuration", () => {
       scriptKey: pageScript.key,
       mode: "full",
       parameters: { start_page: "1", end_page: "8" }
+    });
+  });
+
+  it("serializes datetime parameters as Shanghai offsets and restores local values", () => {
+    const telegramScript: AcquisitionScript = {
+      key: "telegram-channel-mtproto",
+      name: "Telegram 频道",
+      version: "1.1.0",
+      page_format_key: "telegram-channel-v1",
+      description: "",
+      parameters: [
+        { key: "date_from", label: "起始时间（上海时间）", type: "datetime", required: false, default: null, description: null, minimum: null, maximum: null, options: [] },
+        { key: "date_to", label: "结束时间（上海时间）", type: "datetime", required: false, default: null, description: null, minimum: null, maximum: null, options: [] },
+        { key: "scan_order", label: "扫描顺序", type: "select", required: false, default: "newest", description: null, minimum: null, maximum: null, options: [{ value: "newest", label: "从新到旧" }, { value: "oldest", label: "从旧到新" }] },
+        { key: "max_messages", label: "最大扫描消息数", type: "integer", required: false, default: 1000, description: null, minimum: 1, maximum: 10000, options: [] }
+      ]
+    };
+    expect(serializeAcquisitionRunParameters(telegramScript, {
+      date_from: "2026-09-02T00:00",
+      date_to: "2026-09-02T15:30",
+      scan_order: "oldest",
+      max_messages: "10"
+    })).toEqual({
+      date_from: "2026-09-02T00:00:00+08:00",
+      date_to: "2026-09-02T15:30:00+08:00",
+      scan_order: "oldest",
+      max_messages: 10
+    });
+    expect(restoreAcquisitionRunParameters(telegramScript, {
+      date_from: "2026-09-01T16:00:00Z",
+      scan_order: "oldest",
+      max_messages: 10
+    })).toEqual({
+      date_from: "2026-09-02T00:00",
+      date_to: "",
+      scan_order: "oldest",
+      max_messages: "10"
     });
   });
 });

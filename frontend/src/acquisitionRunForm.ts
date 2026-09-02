@@ -5,6 +5,7 @@ import type {
   AcquisitionScriptParameter,
   AcquisitionSource
 } from "./types";
+import { toShanghaiDateTimeLocalValue, toShanghaiDateTimeOffset } from "./utils";
 
 export type AcquisitionRunFormParameters = Record<string, string | boolean>;
 export type AcquisitionRunMode = "incremental" | "full" | "verify";
@@ -50,8 +51,33 @@ export function restoreAcquisitionRunParameters(
     if (!Object.prototype.hasOwnProperty.call(normalizedSnapshot, parameter.key)) return [parameter.key, fallback];
     const value = normalizedSnapshot[parameter.key];
     if (parameter.type === "boolean") return [parameter.key, booleanSnapshotValue(value, Boolean(fallback))];
-    return [parameter.key, value == null ? fallback : String(value)];
+    if (value == null) return [parameter.key, fallback];
+    if (parameter.type === "datetime") return [parameter.key, toShanghaiDateTimeLocalValue(String(value))];
+    return [parameter.key, String(value)];
   }));
+}
+
+export function serializeAcquisitionRunParameters(
+  script: AcquisitionScript | undefined,
+  parameters: AcquisitionRunFormParameters
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const parameter of script?.parameters ?? []) {
+    const value = parameters[parameter.key];
+    if (value === "" && !parameter.required) continue;
+    if (parameter.type === "integer" || parameter.type === "number") result[parameter.key] = Number(value);
+    else if (parameter.type === "string_list") {
+      result[parameter.key] = String(value).split(",").map((item) => item.trim()).filter(Boolean);
+    } else if (parameter.type === "datetime") {
+      result[parameter.key] = toShanghaiDateTimeOffset(String(value));
+    } else {
+      result[parameter.key] = value;
+    }
+  }
+  const startPage = Number(result.start_page ?? 1);
+  const endPage = result.end_page == null ? null : Number(result.end_page);
+  if (endPage != null && endPage < startPage) throw new Error("结束页不能小于起始页");
+  return result;
 }
 
 export function getAcquisitionRunFormConfiguration(

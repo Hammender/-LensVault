@@ -784,11 +784,26 @@ class AcquisitionService:
         run.error_message = None
         db.commit()
         temporary_root = self.settings.data_dir / "acquisition" / "telegram-tmp" / run.id
-        try:
-            records = TelegramService(self.settings).read_channel_media(account, category.crawl_url, parameters, temporary_root)
-            for index, record in enumerate(records, start=1):
-                run.scan_end_page = index
+        persisted = 0
+
+        def persist_batch(batch: list[dict[str, object]]) -> None:
+            nonlocal persisted
+            for record in batch:
+                persisted += 1
+                run.scan_end_page = persisted
                 self._persist_telegram_record(db, run, source, category, record)
+                path = record.get("path")
+                if isinstance(path, Path) and path.is_file():
+                    path.unlink(missing_ok=True)
+
+        try:
+            TelegramService(self.settings).read_channel_media(
+                account,
+                category.crawl_url,
+                parameters,
+                temporary_root,
+                on_records=persist_batch,
+            )
             run.status = "completed"
             run.reached_collection_end = True
             run.stop_reason = "collection_end"

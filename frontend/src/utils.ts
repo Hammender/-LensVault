@@ -73,6 +73,39 @@ export function toShanghaiDateTimeBoundary(date: string, boundary: "start" | "en
   return `${date}T${time}+08:00`;
 }
 
+/** Convert a datetime-local value to an explicit Shanghai offset ISO string. */
+export function toShanghaiDateTimeOffset(value: string): string {
+  const trimmed = value.trim().replace(" ", "T");
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed)) {
+    return trimmed;
+  }
+  const withSeconds = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(trimmed) ? `${trimmed}:00` : trimmed;
+  return `${withSeconds}+08:00`;
+}
+
+/** Convert a stored ISO datetime into a datetime-local value in Shanghai time. */
+export function toShanghaiDateTimeLocalValue(value: string): string {
+  const date = parseShanghaiDateTime(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: appTimeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}
+
 export function formatBytes(value: number | null | undefined): string {
   if (value === null || value === undefined) {
     return "未知";

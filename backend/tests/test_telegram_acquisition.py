@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,14 +13,51 @@ from telethon.errors import FloodWaitError, PhoneNumberInvalidError
 from telethon.tl.types.auth import SentCodeTypeApp, SentCodeTypeSms
 
 from app.core.config import Settings
+from app.services.acquisition_adapters.registry import get_script
 from app.services.telegram import (
     TelegramService,
     code_delivery_from_type,
     extract_hashtags,
     media_matches,
     normalize_phone_number,
+    scan_iter_kwargs,
+    select_matching_media_groups,
     translate_telegram_error,
 )
+
+
+def _photo(
+    message_id: int,
+    published_at: datetime,
+    *,
+    grouped_id: int | None = None,
+    caption: str = "",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=message_id,
+        date=published_at,
+        grouped_id=grouped_id,
+        message=caption,
+        photo=object(),
+        video=None,
+        media=True,
+        noforwards=False,
+        edit_date=None,
+    )
+
+
+def _text(message_id: int, published_at: datetime, caption: str = "纯文本") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=message_id,
+        date=published_at,
+        grouped_id=None,
+        message=caption,
+        photo=None,
+        video=None,
+        media=None,
+        noforwards=False,
+        edit_date=None,
+    )
 
 
 class TelegramAcquisitionTests(unittest.TestCase):
@@ -164,3 +204,240 @@ class TelegramAcquisitionTests(unittest.TestCase):
         self.assertEqual(captured["session_string"], "pending-session")
         self.assertEqual(captured["phone"], "+8613812345678")
         self.assertEqual(account.status, "verification_pending")
+
+    def test_parse_datetime_treats_naive_values_as_shanghai(self) -> None:
+        naive = TelegramService._parse_datetime("2026-09-02T00:00")
+        explicit = TelegramService._parse_datetime("2026-09-02T00:00:00+08:00")
+        self.assertEqual(naive, datetime(2026, 9, 1, 16, 0, tzinfo=timezone.utc))
+        self.assertEqual(explicit, naive)
+
+    def test_scan_iter_kwargs_use_exclusive_offset_dates(self) -> None:
+        date_from = datetime(2026, 9, 1, 16, 0, tzinfo=timezone.utc)
+        date_to = datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
+        newest = scan_iter_kwargs(newest_first=True, date_from=date_from, date_to=date_to)
+        oldest = scan_iter_kwargs(newest_first=False, date_from=date_from, date_to=date_to)
+        self.assertEqual(newest["reverse"], False)
+        self.assertEqual(newest["offset_date"], date_to + timedelta(microseconds=1))
+        self.assertEqual(oldest["reverse"], True)
+        self.assertEqual(oldest["offset_date"], date_from - timedelta(microseconds=1))
+
+    def test_shanghai_morning_messages_match_today_range(self) -> None:
+        # Shanghai 2026-09-02 01:00 == UTC 2026-09-01 17:00
+        message = _photo(10, datetime(2026, 9, 1, 17, 0, tzinfo=timezone.utc), caption="今日")
+        date_from = TelegramService._parse_datetime("2026-09-02T00:00")
+        date_to = TelegramService._parse_datetime("2026-09-02T12:00")
+        groups = select_matching_media_groups(
+            [message],
+            date_from=date_from,
+            date_to=date_to,
+            allowed_media_types={"image"},
+            required_hashtags=[],
+            required_keywords=[],
+            max_messages=10,
+            newest_first=True,
+        )
+        self.assertEqual([[item.id for item in group] for group in groups], [[10]])
+
+    def test_max_messages_counts_albums_not_photos_newest_first(self) -> None:
+        newer = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        older = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
+        album_a = [
+            _photo(109 - index, newer, grouped_id=1001, caption="最新相册" if index == 8 else "")
+            for index in range(9)
+        ]
+        album_b = [
+            _photo(99 - index, older, grouped_id=1002, caption="第二新" if index == 9 else "")
+            for index in range(10)
+        ]
+        # Newest-first stream: album A photos then album B photos.
+        stream = album_a + album_b
+        groups = select_matching_media_groups(
+            stream,
+            date_from=None,
+            date_to=None,
+            allowed_media_types={"image"},
+            required_hashtags=[],
+            required_keywords=[],
+            max_messages=2,
+            newest_first=True,
+        )
+        self.assertEqual(len(groups), 2)
+        self.assertEqual([item.id for item in groups[0]], list(range(101, 110)))
+        self.assertEqual([item.id for item in groups[1]], list(range(90, 100)))
+        self.assertEqual(sum(len(group) for group in groups), 19)
+
+    def test_max_messages_counts_albums_oldest_first(self) -> None:
+        older = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
+        newer = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        album_old = [_photo(90 + index, older, grouped_id=1, caption="旧相册" if index == 0 else "") for index in range(3)]
+        album_new = [_photo(100 + index, newer, grouped_id=2, caption="新相册" if index == 0 else "") for index in range(4)]
+        stream = album_old + album_new
+        groups = select_matching_media_groups(
+            stream,
+            date_from=None,
+            date_to=None,
+            allowed_media_types={"image"},
+            required_hashtags=[],
+            required_keywords=[],
+            max_messages=1,
+            newest_first=False,
+        )
+        self.assertEqual(len(groups), 1)
+        self.assertEqual([item.id for item in groups[0]], [90, 91, 92])
+
+    def test_date_window_stops_and_skips_outside_messages(self) -> None:
+        inside = datetime(2026, 9, 2, 2, 0, tzinfo=timezone.utc)
+        too_new = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
+        too_old = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+        date_from = datetime(2026, 9, 2, 0, 0, tzinfo=timezone.utc)
+        date_to = datetime(2026, 9, 2, 6, 0, tzinfo=timezone.utc)
+        newest_stream = [
+            _photo(3, too_new),
+            _photo(2, inside),
+            _photo(1, too_old),
+        ]
+        newest_groups = select_matching_media_groups(
+            newest_stream,
+            date_from=date_from,
+            date_to=date_to,
+            allowed_media_types={"image"},
+            required_hashtags=[],
+            required_keywords=[],
+            max_messages=10,
+            newest_first=True,
+        )
+        self.assertEqual([[item.id for item in group] for group in newest_groups], [[2]])
+
+        oldest_stream = [
+            _photo(1, too_old),
+            _photo(2, inside),
+            _photo(3, too_new),
+        ]
+        oldest_groups = select_matching_media_groups(
+            oldest_stream,
+            date_from=date_from,
+            date_to=date_to,
+            allowed_media_types={"image"},
+            required_hashtags=[],
+            required_keywords=[],
+            max_messages=10,
+            newest_first=False,
+        )
+        self.assertEqual([[item.id for item in group] for group in oldest_groups], [[2]])
+
+    def test_album_caption_applies_to_whole_group(self) -> None:
+        published = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+        # Newest-first: caption sits on the oldest/lowest id.
+        stream = [
+            _photo(12, published, grouped_id=7, caption=""),
+            _photo(11, published, grouped_id=7, caption=""),
+            _photo(10, published, grouped_id=7, caption="封面 #旅行"),
+            _photo(9, published, caption="无关"),
+        ]
+        matched = select_matching_media_groups(
+            stream,
+            date_from=None,
+            date_to=None,
+            allowed_media_types={"image"},
+            required_hashtags=["旅行"],
+            required_keywords=[],
+            max_messages=10,
+            newest_first=True,
+        )
+        self.assertEqual(len(matched), 1)
+        self.assertEqual([item.id for item in matched[0]], [10, 11, 12])
+
+        skipped = select_matching_media_groups(
+            stream,
+            date_from=None,
+            date_to=None,
+            allowed_media_types={"image"},
+            required_hashtags=["缺失"],
+            required_keywords=[],
+            max_messages=10,
+            newest_first=True,
+        )
+        self.assertEqual(skipped, [])
+
+    def test_text_messages_do_not_consume_message_limit(self) -> None:
+        published = datetime(2026, 9, 2, 4, 0, tzinfo=timezone.utc)
+        stream = [
+            _text(30, published),
+            _photo(29, published),
+            _text(28, published),
+            _photo(27, published),
+        ]
+        groups = select_matching_media_groups(
+            stream,
+            date_from=None,
+            date_to=None,
+            allowed_media_types={"image"},
+            required_hashtags=[],
+            required_keywords=[],
+            max_messages=1,
+            newest_first=True,
+        )
+        self.assertEqual([[item.id for item in group] for group in groups], [[29]])
+
+    def test_telegram_script_exposes_scan_order_and_shanghai_labels(self) -> None:
+        definition = get_script("telegram-channel-mtproto")
+        assert definition is not None
+        self.assertEqual(definition.version, "1.1.0")
+        keys = [parameter.key for parameter in definition.parameters]
+        self.assertIn("scan_order", keys)
+        validated = definition.validate_parameters({})
+        self.assertEqual(validated["scan_order"], "newest")
+        self.assertEqual(validated["max_messages"], 1000)
+        date_from = next(parameter for parameter in definition.parameters if parameter.key == "date_from")
+        self.assertIn("上海", date_from.label)
+
+    def test_album_completed_across_date_boundary(self) -> None:
+        in_range = datetime(2026, 9, 2, 1, 0, tzinfo=timezone.utc)
+        out_of_range = datetime(2026, 9, 1, 23, 0, tzinfo=timezone.utc)
+        date_from = datetime(2026, 9, 2, 0, 0, tzinfo=timezone.utc)
+        # Newest-first: newer album photos first, then older photo of same album past date_from.
+        stream = [
+            _photo(12, in_range, grouped_id=5, caption=""),
+            _photo(11, in_range, grouped_id=5, caption=""),
+            _photo(10, out_of_range, grouped_id=5, caption="跨边界"),
+            _photo(9, out_of_range, caption="更旧"),
+        ]
+        groups = select_matching_media_groups(
+            stream,
+            date_from=date_from,
+            date_to=None,
+            allowed_media_types={"image"},
+            required_hashtags=[],
+            required_keywords=[],
+            max_messages=10,
+            newest_first=True,
+        )
+        self.assertEqual([[item.id for item in group] for group in groups], [[10, 11, 12]])
+
+    def test_download_group_skips_failed_media_and_keeps_the_rest(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(
+            Settings(telegram_session_encryption_key=key, telegram_download_timeout_seconds=2)
+        )
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        messages = [
+            _photo(1, published, grouped_id=8, caption="相册"),
+            _photo(2, published, grouped_id=8),
+            _photo(3, published, grouped_id=8),
+        ]
+        channel = SimpleNamespace(id=99, title="频道", username="demo", noforwards=False)
+
+        class FakeClient:
+            async def download_media(self, message, file):
+                if message.id == 2:
+                    raise ConnectionError("connection closed")
+                Path(file).write_bytes(b"image-bytes")
+                return file
+
+        async def no_sleep(_seconds):
+            return None
+
+        with tempfile.TemporaryDirectory() as raw_dir, patch("app.services.telegram.asyncio.sleep", side_effect=no_sleep):
+            records = asyncio.run(service._download_media_group(FakeClient(), channel, messages, Path(raw_dir)))
+        self.assertEqual([record["message_id"] for record in records], [1, 3])
+        self.assertTrue(all(record["caption"] == "相册" for record in records))

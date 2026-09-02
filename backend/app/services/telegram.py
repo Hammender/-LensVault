@@ -4,8 +4,9 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -35,13 +36,14 @@ from telethon.tl.types.auth import (
 )
 
 from app.core.config import Settings
-from app.core.timezones import as_shanghai_naive, shanghai_now
+from app.core.timezones import SHANGHAI_TZ, as_shanghai_naive, shanghai_now
 from app.models import TelegramAccount
 
 
 HASHTAG_PATTERN = re.compile(r"(?<!\w)#([\w\u4e00-\u9fff-]+)", re.UNICODE)
 PHONE_DIGITS_PATTERN = re.compile(r"[^\d+]")
 LOGGER = logging.getLogger(__name__)
+_MICROSECOND = timedelta(microseconds=1)
 
 
 @dataclass(frozen=True)
@@ -171,6 +173,188 @@ def media_matches(
         return False
     text = (caption or "").casefold()
     return all(value.casefold() in text for value in required_keywords)
+
+
+def message_media_type(message: Any) -> str | None:
+    if getattr(message, "photo", None):
+        return "image"
+    if getattr(message, "video", None):
+        return "video"
+    return None
+
+
+def message_published_at(message: Any) -> datetime:
+    value = message.date
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def grouped_with(buffer: list[Any], message: Any) -> bool:
+    if not buffer:
+        return False
+    grouped_id = getattr(buffer[0], "grouped_id", None)
+    return grouped_id is not None and getattr(message, "grouped_id", None) == grouped_id
+
+
+def scan_iter_kwargs(
+    *,
+    newest_first: bool,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"reverse": not newest_first}
+    if newest_first and date_to is not None:
+        kwargs["offset_date"] = date_to + _MICROSECOND
+    elif not newest_first and date_from is not None:
+        kwargs["offset_date"] = date_from - _MICROSECOND
+    return kwargs
+
+
+def filter_media_group(
+    messages: list[Any],
+    *,
+    allowed_media_types: set[str],
+    required_hashtags: list[str],
+    required_keywords: list[str],
+) -> list[Any]:
+    if not messages:
+        return []
+    caption_source = min(messages, key=lambda item: int(item.id))
+    caption = getattr(caption_source, "message", None) or ""
+    tags = extract_hashtags(caption)
+    kept = [
+        item
+        for item in sorted(messages, key=lambda item: int(item.id))
+        if (media_type := message_media_type(item)) is not None and media_type in allowed_media_types
+    ]
+    if not kept:
+        return []
+    sample_type = message_media_type(kept[0]) or "image"
+    if not media_matches(
+        published_at=message_published_at(caption_source),
+        media_type=sample_type,
+        caption=caption,
+        hashtags=tags,
+        date_from=None,
+        date_to=None,
+        allowed_media_types=allowed_media_types,
+        required_hashtags=required_hashtags,
+        required_keywords=required_keywords,
+    ):
+        return []
+    return kept
+
+
+class MediaGroupScanner:
+    def __init__(
+        self,
+        *,
+        date_from: datetime | None,
+        date_to: datetime | None,
+        allowed_media_types: set[str],
+        required_hashtags: list[str],
+        required_keywords: list[str],
+        max_messages: int,
+        newest_first: bool,
+    ) -> None:
+        self.date_from = date_from
+        self.date_to = date_to
+        self.allowed_media_types = allowed_media_types
+        self.required_hashtags = required_hashtags
+        self.required_keywords = required_keywords
+        self.max_messages = max_messages
+        self.newest_first = newest_first
+        self.buffer: list[Any] = []
+        self.matched = 0
+        self.done = False
+
+    def _past_end(self, published_at: datetime) -> bool:
+        if self.newest_first:
+            return bool(self.date_from and published_at < self.date_from)
+        return bool(self.date_to and published_at > self.date_to)
+
+    def _before_window(self, published_at: datetime) -> bool:
+        if self.newest_first:
+            return bool(self.date_to and published_at > self.date_to)
+        return bool(self.date_from and published_at < self.date_from)
+
+    def push(self, message: Any) -> list[list[Any]]:
+        if self.done:
+            return []
+        published_at = message_published_at(message)
+        completed: list[list[Any]] = []
+        if self._past_end(published_at):
+            if grouped_with(self.buffer, message):
+                self.buffer.append(message)
+                return []
+            completed.extend(self._flush())
+            self.done = True
+            return completed
+        if self._before_window(published_at):
+            return []
+        if self.buffer and not grouped_with(self.buffer, message):
+            completed.extend(self._flush())
+            if self.done:
+                return completed
+        if grouped_with(self.buffer, message):
+            self.buffer.append(message)
+            return completed
+        if message_media_type(message) is None:
+            return completed
+        self.buffer = [message]
+        return completed
+
+    def finish(self) -> list[list[Any]]:
+        return self._flush()
+
+    def _flush(self) -> list[list[Any]]:
+        if not self.buffer:
+            return []
+        kept = filter_media_group(
+            self.buffer,
+            allowed_media_types=self.allowed_media_types,
+            required_hashtags=self.required_hashtags,
+            required_keywords=self.required_keywords,
+        )
+        self.buffer = []
+        if not kept:
+            return []
+        self.matched += 1
+        if self.matched >= self.max_messages:
+            self.done = True
+        return [kept]
+
+
+def select_matching_media_groups(
+    messages: Iterable[Any],
+    *,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    allowed_media_types: set[str],
+    required_hashtags: list[str],
+    required_keywords: list[str],
+    max_messages: int,
+    newest_first: bool,
+    safety_limit: int | None = None,
+) -> list[list[Any]]:
+    scanner = MediaGroupScanner(
+        date_from=date_from,
+        date_to=date_to,
+        allowed_media_types=allowed_media_types,
+        required_hashtags=required_hashtags,
+        required_keywords=required_keywords,
+        max_messages=max_messages,
+        newest_first=newest_first,
+    )
+    cap = safety_limit if safety_limit is not None else max(max_messages * 50, 1000)
+    groups: list[list[Any]] = []
+    for index, message in enumerate(messages, start=1):
+        groups.extend(scanner.push(message))
+        if scanner.done or index >= cap:
+            break
+    groups.extend(scanner.finish())
+    return groups
 
 
 class TelegramService:
@@ -449,8 +633,11 @@ class TelegramService:
         channel_ref: str,
         parameters: dict[str, object],
         target_dir: Path,
+        on_records: Callable[[list[dict[str, object]]], None] | None = None,
     ) -> list[dict[str, object]]:
-        return self._run(self._read_channel_media_async(account, channel_ref, parameters, target_dir))
+        return self._run(
+            self._read_channel_media_async(account, channel_ref, parameters, target_dir, on_records)
+        )
 
     async def _read_channel_media_async(
         self,
@@ -458,6 +645,7 @@ class TelegramService:
         channel_ref: str,
         parameters: dict[str, object],
         target_dir: Path,
+        on_records: Callable[[list[dict[str, object]]], None] | None = None,
     ) -> list[dict[str, object]]:
         client = TelegramClient(
             StringSession(self.decrypt(account.session_encrypted or "")),
@@ -474,42 +662,50 @@ class TelegramService:
             media_types = {str(item) for item in parameters.get("media_types", ["image", "video"])}
             hashtags = [str(item) for item in parameters.get("hashtags", [])]
             keywords = [str(item) for item in parameters.get("caption_keywords", [])]
-            limit = int(parameters.get("max_messages") or 1000)
+            max_messages = int(parameters.get("max_messages") or 1000)
+            newest_first = str(parameters.get("scan_order") or "newest") != "oldest"
+            safety_limit = max(max_messages * 50, 1000)
             target_dir.mkdir(parents=True, exist_ok=True)
+            scanner = MediaGroupScanner(
+                date_from=date_from,
+                date_to=date_to,
+                allowed_media_types=media_types,
+                required_hashtags=hashtags,
+                required_keywords=keywords,
+                max_messages=max_messages,
+                newest_first=newest_first,
+            )
+            LOGGER.info(
+                "Telegram 采集开始 channel=%s max_messages=%s order=%s date_from=%s date_to=%s",
+                channel_ref,
+                max_messages,
+                "newest" if newest_first else "oldest",
+                date_from,
+                date_to,
+            )
             records: list[dict[str, object]] = []
-            async for message in client.iter_messages(channel, limit=limit):
-                if not message.media:
-                    continue
-                media_type = "image" if message.photo else "video" if message.video else None
-                if media_type is None:
-                    continue
-                published_at = message.date.astimezone(timezone.utc)
-                caption = message.message or ""
-                parsed_tags = extract_hashtags(caption)
-                if not media_matches(
-                    published_at=published_at,
-                    media_type=media_type,
-                    caption=caption,
-                    hashtags=parsed_tags,
-                    date_from=date_from,
-                    date_to=date_to,
-                    allowed_media_types=media_types,
-                    required_hashtags=hashtags,
-                    required_keywords=keywords,
-                ):
-                    continue
-                if bool(getattr(channel, "noforwards", False) or getattr(message, "noforwards", False)):
-                    records.append(self._record(message, channel, media_type, caption, parsed_tags, None, True))
-                    continue
-                path = target_dir / f"{getattr(channel, 'id', 'channel')}-{message.id}"
-                downloaded = await client.download_media(message, file=str(path))
-                if not downloaded:
-                    continue
-                media_path = Path(downloaded)
-                if media_path.stat().st_size > self.settings.telegram_max_media_bytes:
-                    media_path.unlink(missing_ok=True)
-                    raise ValueError("Telegram 媒体超过下载大小上限")
-                records.append(self._record(message, channel, media_type, caption, parsed_tags, media_path, False))
+            seen = 0
+
+            async def emit(group: list[Any]) -> None:
+                batch = await self._download_media_group(client, channel, group, target_dir)
+                if not batch:
+                    return
+                if on_records is not None:
+                    on_records(batch)
+                records.extend(batch)
+
+            async for message in client.iter_messages(
+                channel,
+                **scan_iter_kwargs(newest_first=newest_first, date_from=date_from, date_to=date_to),
+            ):
+                seen += 1
+                for group in scanner.push(message):
+                    await emit(group)
+                if scanner.done or seen >= safety_limit:
+                    break
+            for group in scanner.finish():
+                await emit(group)
+            LOGGER.info("Telegram 采集结束 matched_messages=%s media=%s scanned_api=%s", scanner.matched, len(records), seen)
             return records
         except FloodWaitError as exc:
             if exc.seconds > self.settings.telegram_flood_wait_max_seconds:
@@ -519,13 +715,81 @@ class TelegramService:
         finally:
             await client.disconnect()
 
+    async def _download_message_media(self, client: TelegramClient, message: Any, path: Path) -> Path | None:
+        timeout = max(1, int(self.settings.telegram_download_timeout_seconds))
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                downloaded = await asyncio.wait_for(
+                    client.download_media(message, file=str(path)),
+                    timeout=timeout,
+                )
+                return Path(downloaded) if downloaded else None
+            except FloodWaitError as exc:
+                if exc.seconds > self.settings.telegram_flood_wait_max_seconds:
+                    raise
+                LOGGER.warning(
+                    "Telegram 限流 message_id=%s，等待 %s 秒后重试",
+                    getattr(message, "id", None),
+                    exc.seconds,
+                )
+                await asyncio.sleep(exc.seconds)
+            except asyncio.TimeoutError:
+                LOGGER.warning(
+                    "Telegram 媒体下载超时 message_id=%s attempt=%s timeout=%ss",
+                    getattr(message, "id", None),
+                    attempt,
+                    timeout,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep the run going after a single media failure
+                LOGGER.warning(
+                    "Telegram 媒体下载失败 message_id=%s attempt=%s: %s",
+                    getattr(message, "id", None),
+                    attempt,
+                    exc,
+                )
+            if attempt < attempts:
+                await asyncio.sleep(min(2 ** attempt, 8))
+        return None
+
+    async def _download_media_group(
+        self,
+        client: TelegramClient,
+        channel: Any,
+        messages: list[Any],
+        target_dir: Path,
+    ) -> list[dict[str, object]]:
+        caption_source = min(messages, key=lambda item: int(item.id))
+        caption = getattr(caption_source, "message", None) or ""
+        tags = extract_hashtags(caption)
+        protected_channel = bool(getattr(channel, "noforwards", False))
+        records: list[dict[str, object]] = []
+        for message in messages:
+            media_type = message_media_type(message)
+            if media_type is None:
+                continue
+            protected = protected_channel or bool(getattr(message, "noforwards", False))
+            if protected:
+                records.append(self._record(message, channel, media_type, caption, tags, None, True))
+                continue
+            path = target_dir / f"{getattr(channel, 'id', 'channel')}-{message.id}"
+            media_path = await self._download_message_media(client, message, path)
+            if media_path is None or not media_path.is_file():
+                continue
+            if media_path.stat().st_size > self.settings.telegram_max_media_bytes:
+                LOGGER.warning("Telegram 媒体超过大小上限，已跳过 message_id=%s", getattr(message, "id", None))
+                media_path.unlink(missing_ok=True)
+                continue
+            records.append(self._record(message, channel, media_type, caption, tags, media_path, False))
+        return records
+
     @staticmethod
     def _parse_datetime(value: object) -> datetime | None:
         if not value:
             return None
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=SHANGHAI_TZ)
         return parsed.astimezone(timezone.utc)
 
     @staticmethod

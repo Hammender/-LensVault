@@ -54,7 +54,8 @@ import {
 } from "./acquisitionReview";
 import {
   defaultAcquisitionRunParameters,
-  getAcquisitionRunFormConfiguration
+  getAcquisitionRunFormConfiguration,
+  serializeAcquisitionRunParameters
 } from "./acquisitionRunForm";
 import { useConfirm } from "./ConfirmDialog";
 import PhotoLightbox from "./PhotoLightbox";
@@ -803,18 +804,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   }
 
   function runPayloadParameters(): Record<string, unknown> {
-    const result: Record<string, unknown> = {};
-    for (const parameter of selectedRunScript?.parameters ?? []) {
-      const value = runParameters[parameter.key];
-      if (value === "" && !parameter.required) continue;
-      if (parameter.type === "integer" || parameter.type === "number") result[parameter.key] = Number(value);
-      else if (parameter.type === "string_list") result[parameter.key] = String(value).split(",").map((item) => item.trim()).filter(Boolean);
-      else result[parameter.key] = value;
-    }
-    const startPage = Number(result.start_page ?? 1);
-    const endPage = result.end_page == null ? null : Number(result.end_page);
-    if (endPage != null && endPage < startPage) throw new Error("结束页不能小于起始页");
-    return result;
+    return serializeAcquisitionRunParameters(selectedRunScript, runParameters);
   }
 
   function toggleAsset(id: string) {
@@ -1311,7 +1301,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       {reviewMode === "list" && <><div className={assetLoading ? "review-grid loading" : "review-grid"} aria-busy={assetLoading}>
           {assets.map((asset, index) => <article className={selectedAssets.includes(asset.id) ? "review-tile selected" : "review-tile"} key={asset.id}>
           <label className="tile-select"><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={() => toggleAsset(asset.id)} /><span>选择</span></label>
-          {asset.media_type === "video" && asset.original_url ? <video className="review-image-button" src={acquisitionDownloadUrl(asset.original_url)} controls preload="metadata" /> : asset.preview_url ? <button className="review-image-button" type="button" onClick={() => showLightboxAsset(asset)} aria-label={`查看大图 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
+          {asset.media_type === "video" && asset.original_url ? <div className="review-video-frame"><video src={acquisitionDownloadUrl(asset.original_url)} controls preload="metadata" playsInline /></div> : asset.preview_url ? <button className="review-image-button" type="button" onClick={() => showLightboxAsset(asset)} aria-label={`查看大图 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
           <div className="tile-meta"><strong title={asset.filename}>{asset.media_type === "video" && <Video size={14} />} {asset.filename}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "尺寸未知"}{asset.duration_seconds != null ? ` · ${Math.round(asset.duration_seconds)} 秒` : ""} · {formatBytes(asset.size_bytes)}</small>{asset.source_caption && <p>{asset.source_caption}</p>}{asset.source_hashtags.length > 0 && <small>#{asset.source_hashtags.join(" #")}</small>}{asset.quality_warnings.length > 0 && <p>{asset.quality_warnings.join(" / ")}</p>}</div>
         </article>)}
       </div>

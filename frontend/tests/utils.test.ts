@@ -9,6 +9,8 @@ import {
   isSupportedVideoFile,
   splitCommaList,
   toShanghaiDateTimeBoundary,
+  toShanghaiDateTimeLocalValue,
+  toShanghaiDateTimeOffset,
   toWorkspacePermissions
 } from "../src/utils";
 
@@ -45,5 +47,12 @@ describe("frontend utilities", () => {
     expect(formatPhotoDate("2020-01-02 09:15:00", "2026-07-29T15:30:00+08:00")).toContain("09:15");
     expect(toShanghaiDateTimeBoundary("2026-07-29", "start")).toBe("2026-07-29T00:00:00+08:00");
     expect(toShanghaiDateTimeBoundary("2026-07-29", "end")).toBe("2026-07-29T23:59:59.999999+08:00");
+  });
+
+  it("round-trips datetime-local values through Shanghai offsets", () => {
+    expect(toShanghaiDateTimeOffset("2026-09-02T00:00")).toBe("2026-09-02T00:00:00+08:00");
+    expect(toShanghaiDateTimeOffset("2026-09-02T00:00:00+08:00")).toBe("2026-09-02T00:00:00+08:00");
+    expect(toShanghaiDateTimeLocalValue("2026-09-02T00:00:00+08:00")).toBe("2026-09-02T00:00");
+    expect(toShanghaiDateTimeLocalValue("2026-09-01T16:00:00Z")).toBe("2026-09-02T00:00");
   });
 });
