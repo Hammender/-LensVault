@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import base64
+import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,10 +12,27 @@ from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet, InvalidToken
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import (
+    ApiIdInvalidError,
+    FloodWaitError,
+    PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+    PhoneNumberBannedError,
+    PhoneNumberFloodError,
+    PhoneNumberInvalidError,
+    RPCError,
+    SessionPasswordNeededError,
+)
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
+from telethon.tl.types.auth import (
+    SentCodeTypeApp,
+    SentCodeTypeCall,
+    SentCodeTypeFlashCall,
+    SentCodeTypeMissedCall,
+    SentCodeTypeSms,
+)
 
 from app.core.config import Settings
 from app.core.timezones import as_shanghai_naive, shanghai_now
@@ -22,12 +40,98 @@ from app.models import TelegramAccount
 
 
 HASHTAG_PATTERN = re.compile(r"(?<!\w)#([\w\u4e00-\u9fff-]+)", re.UNICODE)
+PHONE_DIGITS_PATTERN = re.compile(r"[^\d+]")
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class TelegramLoginStart:
     phone_code_hash: str
     phone_number: str
+    session: str
+    code_delivery: str
+
+
+def _to_ascii_phone_chars(value: str) -> str:
+    translated = []
+    for char in value:
+        code = ord(char)
+        if 0xFF10 <= code <= 0xFF19:
+            translated.append(chr(code - 0xFF10 + 48))
+        elif char == "＋":
+            translated.append("+")
+        else:
+            translated.append(char)
+    return "".join(translated)
+
+
+def normalize_phone_number(value: str) -> str:
+    compact = PHONE_DIGITS_PATTERN.sub("", _to_ascii_phone_chars(value or "").strip())
+    if not compact:
+        raise ValueError("请输入手机号，例如 +86138xxxx 或 138xxxx")
+    if compact.startswith("00"):
+        compact = f"+{compact[2:]}"
+    if compact.startswith("+"):
+        digits = compact[1:]
+        if not digits.isdigit() or len(digits) < 8 or len(digits) > 15:
+            raise ValueError("国际手机号格式无效，请使用例如 +86138xxxx")
+        if len(digits) == 11 and digits.startswith("1"):
+            return f"+86{digits}"
+        return f"+{digits}"
+    if not compact.isdigit():
+        raise ValueError("手机号只能包含数字和可选的 + 号，例如 +86138xxxx")
+    if len(compact) == 11 and compact.startswith("1"):
+        return f"+86{compact}"
+    if compact.startswith("86") and 12 <= len(compact) <= 13:
+        return f"+{compact}"
+    if 8 <= len(compact) <= 15:
+        raise ValueError("请填写含国家区号的手机号，例如 +86138xxxx")
+    raise ValueError("手机号长度无效，请使用例如 +86138xxxx 或 11 位国内手机号")
+
+
+def code_delivery_from_type(type_obj: object) -> str:
+    if isinstance(type_obj, SentCodeTypeApp):
+        return "app"
+    if isinstance(type_obj, (SentCodeTypeSms,)):
+        return "sms"
+    if isinstance(type_obj, (SentCodeTypeCall, SentCodeTypeFlashCall, SentCodeTypeMissedCall)):
+        return "call"
+    return "unknown"
+
+
+def delivery_hint(code_delivery: str | None) -> str:
+    if code_delivery == "app":
+        return "验证码已发到 Telegram App：打开与官方账号「Telegram」（777000）的对话，也可检查已登录的电脑端"
+    if code_delivery == "sms":
+        return "请查收手机短信中的登录验证码；国内号有时收不到短信，可改在 App 中查看"
+    if code_delivery == "call":
+        return "请留意来电或未接来电中的验证码"
+    return "请打开 Telegram App 与官方账号「Telegram」（777000）的对话查看验证码，国内号通常不会发短信"
+
+
+def translate_telegram_error(exc: BaseException) -> str:
+    if isinstance(exc, ValueError):
+        return str(exc)
+    if isinstance(exc, FloodWaitError):
+        return f"Telegram 请求过于频繁，请等待 {exc.seconds} 秒后再试"
+    if isinstance(exc, PhoneNumberInvalidError):
+        return "手机号无效，请确认已填写正确的国家区号，例如 +86138xxxx"
+    if isinstance(exc, PhoneNumberBannedError):
+        return "该手机号已被 Telegram 限制登录"
+    if isinstance(exc, PhoneNumberFloodError):
+        return "该手机号发送验证码过于频繁，请稍后再试"
+    if isinstance(exc, PhoneCodeInvalidError):
+        return "验证码错误，请重新输入"
+    if isinstance(exc, PhoneCodeExpiredError):
+        return "验证码已过期，请重新发送"
+    if isinstance(exc, ApiIdInvalidError):
+        return "API ID 或 API Hash 无效，请到 my.telegram.org 核对"
+    if isinstance(exc, SessionPasswordNeededError):
+        return "该账号已开启两步验证，请输入密码"
+    if isinstance(exc, RPCError):
+        message = (getattr(exc, "message", None) or str(exc)).strip()
+        return f"Telegram 接口错误：{message or exc.__class__.__name__}"
+    return str(exc) or exc.__class__.__name__
 
 
 def normalize_hashtag(value: str) -> str:
@@ -102,35 +206,170 @@ class TelegramService:
     def _run(coro: Any) -> Any:
         return asyncio.run(coro)
 
-    async def _start_login_async(self, api_id: int, api_hash: str, phone: str) -> TelegramLoginStart:
-        client = TelegramClient(StringSession(), api_id, api_hash)
+    def _encode_pending(
+        self,
+        *,
+        phone_number: str,
+        phone_code_hash: str,
+        session: str,
+        code_delivery: str,
+    ) -> str:
+        payload = {
+            "phone_number": phone_number,
+            "phone_code_hash": phone_code_hash,
+            "session": session,
+            "code_delivery": code_delivery,
+        }
+        return self.encrypt(json.dumps(payload, ensure_ascii=False))
+
+    def _decode_pending(self, encrypted: str | None) -> dict[str, str]:
+        if not encrypted:
+            raise ValueError("登录事务已失效，请重新发送验证码")
+        raw = self.decrypt(encrypted)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            phone, separator, code_hash = raw.partition("\n")
+            if not separator or not phone or not code_hash:
+                raise ValueError("登录事务已失效，请重新发送验证码")
+            return {
+                "phone_number": phone,
+                "phone_code_hash": code_hash,
+                "session": "",
+                "code_delivery": "unknown",
+            }
+        phone_number = str(payload.get("phone_number") or "").strip()
+        phone_code_hash = str(payload.get("phone_code_hash") or "").strip()
+        session = str(payload.get("session") or "")
+        code_delivery = str(payload.get("code_delivery") or "unknown")
+        if not phone_number or not phone_code_hash:
+            raise ValueError("登录事务已失效，请重新发送验证码")
+        return {
+            "phone_number": phone_number,
+            "phone_code_hash": phone_code_hash,
+            "session": session,
+            "code_delivery": code_delivery,
+        }
+
+    def read_pending_code_delivery(self, account: TelegramAccount | None) -> str | None:
+        if account is None or not account.pending_login_state_encrypted:
+            return None
+        try:
+            return self._decode_pending(account.pending_login_state_encrypted).get("code_delivery") or None
+        except ValueError:
+            return None
+
+    async def _start_login_async(
+        self,
+        api_id: int,
+        api_hash: str,
+        phone: str,
+        session_string: str = "",
+    ) -> TelegramLoginStart:
+        session = StringSession(session_string or "")
+        client = TelegramClient(session, api_id, api_hash)
         await client.connect()
         try:
             sent = await client.send_code_request(phone)
-            return TelegramLoginStart(phone_code_hash=sent.phone_code_hash, phone_number=phone)
+            delivery = code_delivery_from_type(getattr(sent, "type", None))
+            LOGGER.info(
+                "Telegram 验证码已请求 phone=%s delivery=%s type=%s",
+                self.mask_phone(phone),
+                delivery,
+                type(getattr(sent, "type", None)).__name__,
+            )
+            return TelegramLoginStart(
+                phone_code_hash=sent.phone_code_hash,
+                phone_number=phone,
+                session=session.save(),
+                code_delivery=delivery,
+            )
         finally:
             await client.disconnect()
 
-    def start_login(self, account: TelegramAccount | None, workspace_id: int, api_id: int, api_hash: str, phone: str) -> TelegramAccount:
-        result = self._run(self._start_login_async(api_id, api_hash, phone))
-        pending = f"{result.phone_number}\n{result.phone_code_hash}"
+    def start_login(
+        self,
+        account: TelegramAccount | None,
+        workspace_id: int,
+        api_id: int,
+        api_hash: str,
+        phone: str,
+    ) -> TelegramAccount:
+        phone_number = normalize_phone_number(phone)
+        LOGGER.info("Telegram 登录手机号已规范化 raw=%s normalized=%s", self.mask_phone(phone), self.mask_phone(phone_number))
+        try:
+            result = self._run(self._start_login_async(api_id, api_hash.strip(), phone_number))
+        except Exception as exc:  # noqa: BLE001 - translate all telethon failures
+            raise ValueError(translate_telegram_error(exc)) from exc
+        pending = self._encode_pending(
+            phone_number=result.phone_number,
+            phone_code_hash=result.phone_code_hash,
+            session=result.session,
+            code_delivery=result.code_delivery,
+        )
         if account is None:
             account = TelegramAccount(
                 workspace_id=workspace_id,
                 api_id=api_id,
-                api_hash_encrypted=self.encrypt(api_hash),
+                api_hash_encrypted=self.encrypt(api_hash.strip()),
             )
         else:
             account.api_id = api_id
-            account.api_hash_encrypted = self.encrypt(api_hash)
-        account.pending_login_state_encrypted = self.encrypt(pending)
-        account.phone_masked = self.mask_phone(phone)
+            account.api_hash_encrypted = self.encrypt(api_hash.strip())
+        account.pending_login_state_encrypted = pending
+        account.phone_masked = self.mask_phone(phone_number)
+        account.session_encrypted = None
+        account.telegram_user_id = None
+        account.username = None
+        account.status = "verification_pending"
+        return account
+
+    def resend_login_code(self, account: TelegramAccount) -> TelegramAccount:
+        if not account.api_hash_encrypted:
+            raise ValueError("尚未保存 API 凭证，请重新填写后发送验证码")
+        pending = self._decode_pending(account.pending_login_state_encrypted)
+        phone_number = normalize_phone_number(pending["phone_number"])
+        api_hash = self.decrypt(account.api_hash_encrypted)
+        try:
+            result = self._run(
+                self._start_login_async(
+                    account.api_id,
+                    api_hash,
+                    phone_number,
+                    session_string=pending.get("session") or "",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(translate_telegram_error(exc)) from exc
+        account.pending_login_state_encrypted = self._encode_pending(
+            phone_number=result.phone_number,
+            phone_code_hash=result.phone_code_hash,
+            session=result.session,
+            code_delivery=result.code_delivery,
+        )
+        account.phone_masked = self.mask_phone(result.phone_number)
         account.session_encrypted = None
         account.status = "verification_pending"
         return account
 
-    async def _verify_login_async(self, api_id: int, api_hash: str, phone: str, code_hash: str, code: str, password: str | None) -> tuple[str, int, str | None]:
-        session = StringSession()
+    def clear_pending_login(self, account: TelegramAccount) -> None:
+        account.pending_login_state_encrypted = None
+        if account.session_encrypted:
+            account.status = "active"
+        else:
+            account.status = "logged_out" if account.api_id else "unconfigured"
+
+    async def _verify_login_async(
+        self,
+        api_id: int,
+        api_hash: str,
+        phone: str,
+        code_hash: str,
+        code: str,
+        password: str | None,
+        session_string: str,
+    ) -> tuple[str, int, str | None]:
+        session = StringSession(session_string or "")
         client = TelegramClient(session, api_id, api_hash)
         await client.connect()
         try:
@@ -148,13 +387,21 @@ class TelegramService:
             await client.disconnect()
 
     def verify_login(self, account: TelegramAccount, code: str, password: str | None) -> None:
-        pending = self.decrypt(account.pending_login_state_encrypted or "")
-        phone, separator, code_hash = pending.partition("\n")
-        if not separator or not phone or not code_hash:
-            raise ValueError("登录事务已失效，请重新发送验证码")
-        session, user_id, username = self._run(self._verify_login_async(
-            account.api_id, self.decrypt(account.api_hash_encrypted), phone, code_hash, code, password
-        ))
+        pending = self._decode_pending(account.pending_login_state_encrypted)
+        try:
+            session, user_id, username = self._run(
+                self._verify_login_async(
+                    account.api_id,
+                    self.decrypt(account.api_hash_encrypted),
+                    pending["phone_number"],
+                    pending["phone_code_hash"],
+                    code,
+                    password,
+                    pending.get("session") or "",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(translate_telegram_error(exc)) from exc
         account.session_encrypted = self.encrypt(session)
         account.pending_login_state_encrypted = None
         account.telegram_user_id = user_id
@@ -163,7 +410,11 @@ class TelegramService:
         account.last_login_at = shanghai_now()
 
     async def _test_async(self, account: TelegramAccount) -> tuple[int, str | None]:
-        client = TelegramClient(StringSession(self.decrypt(account.session_encrypted or "")), account.api_id, self.decrypt(account.api_hash_encrypted))
+        client = TelegramClient(
+            StringSession(self.decrypt(account.session_encrypted or "")),
+            account.api_id,
+            self.decrypt(account.api_hash_encrypted),
+        )
         await client.connect()
         try:
             if not await client.is_user_authorized():
@@ -176,7 +427,10 @@ class TelegramService:
             await client.disconnect()
 
     def test_account(self, account: TelegramAccount) -> None:
-        user_id, username = self._run(self._test_async(account))
+        try:
+            user_id, username = self._run(self._test_async(account))
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(translate_telegram_error(exc)) from exc
         account.telegram_user_id = user_id
         account.username = username
         account.status = "active"
@@ -198,8 +452,18 @@ class TelegramService:
     ) -> list[dict[str, object]]:
         return self._run(self._read_channel_media_async(account, channel_ref, parameters, target_dir))
 
-    async def _read_channel_media_async(self, account: TelegramAccount, channel_ref: str, parameters: dict[str, object], target_dir: Path) -> list[dict[str, object]]:
-        client = TelegramClient(StringSession(self.decrypt(account.session_encrypted or "")), account.api_id, self.decrypt(account.api_hash_encrypted))
+    async def _read_channel_media_async(
+        self,
+        account: TelegramAccount,
+        channel_ref: str,
+        parameters: dict[str, object],
+        target_dir: Path,
+    ) -> list[dict[str, object]]:
+        client = TelegramClient(
+            StringSession(self.decrypt(account.session_encrypted or "")),
+            account.api_id,
+            self.decrypt(account.api_hash_encrypted),
+        )
         await client.connect()
         try:
             if not await client.is_user_authorized():
@@ -223,9 +487,15 @@ class TelegramService:
                 caption = message.message or ""
                 parsed_tags = extract_hashtags(caption)
                 if not media_matches(
-                    published_at=published_at, media_type=media_type, caption=caption, hashtags=parsed_tags,
-                    date_from=date_from, date_to=date_to, allowed_media_types=media_types,
-                    required_hashtags=hashtags, required_keywords=keywords,
+                    published_at=published_at,
+                    media_type=media_type,
+                    caption=caption,
+                    hashtags=parsed_tags,
+                    date_from=date_from,
+                    date_to=date_to,
+                    allowed_media_types=media_types,
+                    required_hashtags=hashtags,
+                    required_keywords=keywords,
                 ):
                     continue
                 if bool(getattr(channel, "noforwards", False) or getattr(message, "noforwards", False)):
@@ -276,7 +546,15 @@ class TelegramService:
         return await client.get_entity(normalized)
 
     @staticmethod
-    def _record(message: Any, channel: Any, media_type: str, caption: str, tags: list[tuple[str, str]], path: Path | None, protected: bool) -> dict[str, object]:
+    def _record(
+        message: Any,
+        channel: Any,
+        media_type: str,
+        caption: str,
+        tags: list[tuple[str, str]],
+        path: Path | None,
+        protected: bool,
+    ) -> dict[str, object]:
         username = getattr(channel, "username", None)
         channel_id = str(getattr(channel, "id", ""))
         return {

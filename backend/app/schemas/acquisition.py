@@ -11,8 +11,9 @@ from .gallery import GalleryPhotoListItem, TaskRead
 
 class AcquisitionSourceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    base_url: str = Field(min_length=1, max_length=1024)
+    base_url: str | None = Field(default=None, min_length=1, max_length=1024)
     notes: str | None = Field(default=None, max_length=2000)
+    script_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AcquisitionSourceUpdate(BaseModel):

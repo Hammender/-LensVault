@@ -234,18 +234,32 @@ class AcquisitionService:
         db: Session,
         workspace_id: int | None,
         name: str,
-        base_url: str,
+        base_url: str | None = None,
         notes: str | None = None,
+        script_key: str | None = None,
     ) -> AcquisitionSource:
-        self._validate_http_url(base_url, "网站 URL")
+        selected_script = (script_key or "").strip() or None
+        definition = get_script(selected_script) if selected_script else None
+        if selected_script and definition is None:
+            raise ValueError("采集脚本不存在或未注册")
+        if definition and definition.key == "telegram-channel-mtproto":
+            resolved_url = "https://t.me"
+        else:
+            if not (base_url or "").strip():
+                raise ValueError("网站 URL 不能为空")
+            self._validate_http_url(str(base_url), "网站 URL")
+            resolved_url = str(base_url).strip()
         source = AcquisitionSource(
             workspace_id=workspace_id,
             name=name.strip(),
             adapter_key="",
-            base_url=base_url.strip(),
+            base_url=resolved_url,
             notes=(notes or "").strip() or None,
         )
         db.add(source)
+        db.flush()
+        if definition is not None:
+            self.bind_script(db, source, definition.key, commit=False)
         db.commit()
         db.refresh(source)
         return source
@@ -272,18 +286,12 @@ class AcquisitionService:
         source: AcquisitionSource,
         script_key: str,
         default_parameters: dict[str, object] | None = None,
+        *,
+        commit: bool = True,
     ) -> AcquisitionSourceScript:
         definition = get_script(script_key)
         if definition is None:
             raise ValueError("采集脚本不存在或未注册")
-        if definition.key == "telegram-channel-mtproto" and db.scalar(
-            select(AcquisitionRun.id).where(
-                AcquisitionRun.workspace_id == workspace_id,
-                AcquisitionRun.script_key == definition.key,
-                AcquisitionRun.status.in_(("pending", "running")),
-            )
-        ) is not None:
-            raise ValueError("当前工作区已有正在运行的 Telegram 采集任务")
         if source.page_format_key and source.page_format_key != definition.page_format_key:
             raise ValueError("该脚本的网页格式与站点已绑定脚本不一致")
         parameters = definition.validate_parameters(default_parameters)
@@ -299,8 +307,11 @@ class AcquisitionService:
         binding.enabled = True
         binding.default_parameters_json = json.dumps(parameters, ensure_ascii=False)
         source.page_format_key = definition.page_format_key
-        db.commit()
-        db.refresh(binding)
+        if commit:
+            db.commit()
+            db.refresh(binding)
+        else:
+            db.flush()
         return binding
 
     def unbind_script(self, db: Session, source: AcquisitionSource, script_key: str) -> None:

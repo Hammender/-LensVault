@@ -117,8 +117,12 @@ def _telegram_account_or_404(db: Session, workspace_id: int) -> TelegramAccount:
     return account
 
 
-def _telegram_account_read(account: TelegramAccount) -> TelegramAccountRead:
-    return TelegramAccountRead.model_validate(account)
+def _telegram_account_read(account: TelegramAccount, request: Request | None = None) -> TelegramAccountRead:
+    code_delivery = None
+    if request is not None and account.status == "verification_pending":
+        code_delivery = _telegram_service(request).read_pending_code_delivery(account)
+    payload = TelegramAccountRead.model_validate(account)
+    return payload.model_copy(update={"api_id": account.api_id, "code_delivery": code_delivery})
 
 
 def _source_or_404(db: Session, source_id: int, workspace_id: int) -> AcquisitionSource:
@@ -215,11 +219,12 @@ def _asset_read(
 
 @router.get("/telegram/account", response_model=TelegramAccountRead | None)
 def get_telegram_account(
+    request: Request,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> TelegramAccountRead | None:
     account = db.scalar(select(TelegramAccount).where(TelegramAccount.workspace_id == current.workspace_id))
-    return _telegram_account_read(account) if account else None
+    return _telegram_account_read(account, request) if account else None
 
 
 @router.post("/telegram/account/login/start", response_model=TelegramAccountRead)
@@ -240,7 +245,37 @@ def start_telegram_login(
         db.add(account)
     db.commit()
     db.refresh(account)
-    return _telegram_account_read(account)
+    return _telegram_account_read(account, request)
+
+
+@router.post("/telegram/account/login/resend", response_model=TelegramAccountRead)
+def resend_telegram_login(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_workspace_owner),
+) -> TelegramAccountRead:
+    account = _telegram_account_or_404(db, current.workspace_id)
+    try:
+        account = _telegram_service(request).resend_login_code(account)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.refresh(account)
+    return _telegram_account_read(account, request)
+
+
+@router.post("/telegram/account/login/cancel", response_model=TelegramAccountRead)
+def cancel_telegram_login(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_workspace_owner),
+) -> TelegramAccountRead:
+    account = _telegram_account_or_404(db, current.workspace_id)
+    _telegram_service(request).clear_pending_login(account)
+    db.commit()
+    db.refresh(account)
+    return _telegram_account_read(account, request)
 
 
 @router.post("/telegram/account/login/verify", response_model=TelegramAccountRead)
@@ -258,7 +293,7 @@ def verify_telegram_login(
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.refresh(account)
-    return _telegram_account_read(account)
+    return _telegram_account_read(account, request)
 
 
 @router.post("/telegram/account/test", response_model=TelegramAccountRead)
@@ -275,7 +310,7 @@ def test_telegram_account(
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.refresh(account)
-    return _telegram_account_read(account)
+    return _telegram_account_read(account, request)
 
 
 @router.post("/telegram/account/logout", response_model=TelegramAccountRead)
@@ -288,7 +323,7 @@ def logout_telegram_account(
     _telegram_service(request).logout(account)
     db.commit()
     db.refresh(account)
-    return _telegram_account_read(account)
+    return _telegram_account_read(account, request)
 
 
 def _source_read(db: Session, source: AcquisitionSource) -> AcquisitionSourceRead:
@@ -756,7 +791,18 @@ def create_source(
     current: CurrentContext = Depends(require_context),
 ) -> AcquisitionSourceRead:
     try:
-        source = _service(request).create_source(db, current.workspace_id, payload.name, payload.base_url, payload.notes)
+        if (payload.script_key or "").strip() == "telegram-channel-mtproto":
+            account = db.scalar(select(TelegramAccount).where(TelegramAccount.workspace_id == current.workspace_id))
+            if account is None or account.status != "active":
+                raise ValueError("请先完成 Telegram 账号登录后再创建 Telegram 站点")
+        source = _service(request).create_source(
+            db,
+            current.workspace_id,
+            payload.name,
+            payload.base_url,
+            payload.notes,
+            payload.script_key,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _source_read(db, source)

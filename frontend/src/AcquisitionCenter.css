@@ -63,6 +63,15 @@
 .acquisition-forms { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 .acquisition-forms form, .run-launcher, .export-builder { display: grid; align-content: start; gap: 8px; }
 .acquisition-forms form + form { border-left: 1px solid var(--acq-line); padding-left: 15px; }
+.telegram-account-panel { display: grid; gap: 8px; margin-top: 4px; border: 1px dashed var(--acq-line); background: rgba(229, 240, 237, .45); padding: 10px; }
+.telegram-account-panel.compact { margin-top: 10px; gap: 0; padding: 8px 10px; }
+.telegram-account-panel.compact small { color: var(--muted); font-size: .74rem; line-height: 1.45; }
+.telegram-account-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.telegram-account-line small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acquisition-page button.mini-command { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--acq-line); background: transparent; color: var(--acq-ink); font-size: .72rem; font-weight: 700; padding: 3px 8px; }
+.telegram-account-summary { display: grid; gap: 4px; }
+.telegram-account-summary small { color: var(--muted); font-size: .74rem; line-height: 1.45; }
+.telegram-login-actions { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .acquisition-page input, .acquisition-page select, .acquisition-page textarea { width: 100%; border: 1px solid #8fa49e; border-radius: 0; background: #fffdf8; color: var(--text); padding: 8px 9px; font: inherit; font-size: .84rem; }
 .acquisition-page textarea { resize: vertical; }
 .form-command-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; }

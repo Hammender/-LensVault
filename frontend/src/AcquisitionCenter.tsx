@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Archive, Check, CheckCheck, ChevronLeft, ChevronRight, Download, FolderPlus, Images, Link2, LoaderCircle, Pencil, Play, Plus, RotateCcw, ScanSearch, Square, Trash2, Video, X } from "lucide-react";
+import { Archive, Check, CheckCheck, ChevronLeft, ChevronRight, Download, FolderPlus, Images, Link2, LoaderCircle, LogOut, Pencil, Play, Plus, RotateCcw, ScanSearch, Square, Trash2, Video, X } from "lucide-react";
 
 import {
   acquisitionDownloadUrl,
@@ -31,6 +31,8 @@ import {
   startAcquisitionSimilarityScan,
   stopAcquisitionRun,
   startTelegramLogin,
+  resendTelegramLogin,
+  cancelTelegramLogin,
   unbindAcquisitionScript,
   updateAcquisitionCategory,
   updateAcquisitionSource,
@@ -182,7 +184,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [sourceName, setSourceName] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceNotes, setSourceNotes] = useState("");
+  const [sourceScriptKey, setSourceScriptKey] = useState("");
   const [editingSourceId, setEditingSourceId] = useState<number | null>(null);
+  const [telegramCredentialEditing, setTelegramCredentialEditing] = useState(false);
   const [sourceScriptChoices, setSourceScriptChoices] = useState<Record<number, string>>({});
   const [categorySourceId, setCategorySourceId] = useState("");
   const [categoryName, setCategoryName] = useState("");
@@ -640,6 +644,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setSourceName("");
     setSourceUrl("");
     setSourceNotes("");
+    setSourceScriptKey("");
+    setTelegramCredentialEditing(false);
   }
 
   function editSource(source: AcquisitionSource) {
@@ -647,15 +653,72 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setSourceName(source.name);
     setSourceUrl(source.base_url);
     setSourceNotes(source.notes ?? "");
+    setSourceScriptKey(source.script_keys[0] ?? "");
+    setTelegramCredentialEditing(false);
+  }
+
+  function isTelegramScript(scriptKey: string) {
+    return scriptKey === "telegram-channel-mtproto" || scriptByKey.get(scriptKey)?.page_format_key === "telegram-channel-v1";
+  }
+
+  function telegramDeliveryMessage(delivery: string | null | undefined) {
+    if (delivery === "app") return "验证码已发到 Telegram App：打开与官方账号「Telegram」（777000）的对话，也可检查已登录的电脑端";
+    if (delivery === "sms") return "请查收手机短信中的登录验证码；国内号有时收不到短信，可改在 App 中查看";
+    if (delivery === "call") return "请留意来电或未接来电中的验证码";
+    return "请打开 Telegram App 与官方账号「Telegram」（777000）的对话查看验证码，国内号通常不会发短信";
+  }
+
+  function normalizeTelegramPhone(value: string): string {
+    const compact = Array.from(value.trim()).map((char) => {
+      const code = char.charCodeAt(0);
+      if (code >= 0xff10 && code <= 0xff19) return String.fromCharCode(code - 0xff10 + 48);
+      return char === "＋" ? "+" : char;
+    }).join("").replace(/[^\d+]/g, "");
+    if (!compact) throw new Error("请输入手机号，例如 +86138xxxx 或 11 位国内手机号");
+    const phone = compact.startsWith("00") ? `+${compact.slice(2)}` : compact;
+    if (phone.startsWith("+")) {
+      const digits = phone.slice(1);
+      if (!/^\d{8,15}$/.test(digits)) throw new Error("国际手机号格式无效，请使用例如 +86138xxxx");
+      if (digits.length === 11 && digits.startsWith("1")) return `+86${digits}`;
+      return `+${digits}`;
+    }
+    if (!/^\d+$/.test(phone)) throw new Error("手机号只能包含数字和可选的 + 号");
+    if (phone.length === 11 && phone.startsWith("1")) return `+86${phone}`;
+    if (phone.startsWith("86") && phone.length >= 12 && phone.length <= 13) return `+${phone}`;
+    throw new Error("请填写含国家区号的手机号，例如 +86138xxxx 或 11 位国内手机号");
   }
 
   async function submitSource(event: FormEvent) {
     event.preventDefault();
-    if (!sourceName.trim() || !sourceUrl.trim()) return;
+    if (!sourceName.trim()) return;
+    const creatingTelegram = !editingSourceId && isTelegramScript(sourceScriptKey);
+    if (!editingSourceId && !sourceScriptKey) {
+      setNotice("请选择采集脚本");
+      return;
+    }
+    if (!creatingTelegram && !sourceUrl.trim()) {
+      setNotice("请填写站点 URL");
+      return;
+    }
+    if (creatingTelegram && telegramAccount?.status !== "active") {
+      setNotice("请先完成 Telegram 账号登录后再创建站点");
+      return;
+    }
     await perform(async () => {
-      const payload = { name: sourceName.trim(), base_url: sourceUrl.trim(), notes: sourceNotes.trim() || null };
-      if (editingSourceId) await updateAcquisitionSource(editingSourceId, payload);
-      else await createAcquisitionSource(payload);
+      if (editingSourceId) {
+        await updateAcquisitionSource(editingSourceId, {
+          name: sourceName.trim(),
+          base_url: sourceUrl.trim(),
+          notes: sourceNotes.trim() || null
+        });
+      } else {
+        await createAcquisitionSource({
+          name: sourceName.trim(),
+          base_url: creatingTelegram ? null : sourceUrl.trim(),
+          notes: sourceNotes.trim() || null,
+          script_key: sourceScriptKey
+        });
+      }
       resetSourceForm();
     }, editingSourceId ? "站点信息已更新" : "站点已创建");
   }
@@ -758,22 +821,70 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setSelectedAssets((items) => toggleAcquisitionSelection(items, id));
   }
 
-  async function submitTelegramLogin(event: FormEvent) {
-    event.preventDefault();
-    await perform(async () => {
-      const account = await startTelegramLogin({ api_id: Number(telegramApiId), api_hash: telegramApiHash.trim(), phone_number: telegramPhone.trim() });
+  async function submitTelegramLogin(event?: FormEvent) {
+    event?.preventDefault();
+    setBusy(true);
+    setNotice(null);
+    try {
+      const phoneNumber = normalizeTelegramPhone(telegramPhone);
+      setTelegramPhone(phoneNumber);
+      const account = await startTelegramLogin({
+        api_id: Number(telegramApiId),
+        api_hash: telegramApiHash.trim(),
+        phone_number: phoneNumber
+      });
       setTelegramAccount(account);
-    }, "Telegram 验证码已发送");
+      setTelegramCredentialEditing(false);
+      setTelegramCode("");
+      setTelegramPassword("");
+      setNotice(telegramDeliveryMessage(account.code_delivery));
+      await refreshCurrentTab();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "操作未完成");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function submitTelegramVerify(event: FormEvent) {
-    event.preventDefault();
+  async function submitTelegramVerify(event?: FormEvent) {
+    event?.preventDefault();
+    if (!telegramCode.trim()) {
+      setNotice("请输入登录验证码");
+      return;
+    }
     await perform(async () => {
       const account = await verifyTelegramLogin({ code: telegramCode.trim(), password: telegramPassword.trim() || undefined });
       setTelegramAccount(account);
       setTelegramCode("");
       setTelegramPassword("");
+      setTelegramCredentialEditing(false);
     }, "Telegram 账号已连接");
+  }
+
+  async function resendTelegramCode() {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const account = await resendTelegramLogin();
+      setTelegramAccount(account);
+      setTelegramCode("");
+      setNotice(telegramDeliveryMessage(account.code_delivery));
+      await refreshCurrentTab();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "操作未完成");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelPendingTelegramLogin() {
+    await perform(async () => {
+      const account = await cancelTelegramLogin();
+      setTelegramAccount(account);
+      setTelegramCredentialEditing(true);
+      setTelegramCode("");
+      setTelegramPassword("");
+    }, "已返回修改 Telegram 凭证");
   }
 
   function showLightboxAsset(asset: AcquisitionAsset) {
@@ -1031,6 +1142,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
                 <button type="button" className="icon-button" title="绑定脚本" aria-label={`为 ${source.name} 绑定脚本`} disabled={busy || !selectedKey} onClick={() => void perform(async () => { await bindAcquisitionScript(source.id, selectedKey); }, "脚本已绑定")}><Link2 size={16} /></button>
               </div>}
               <small className="source-summary">{categories.filter((category) => category.source_id === source.id).length} 个分类 · {source.enabled ? "启用" : "停用"}</small>
+              {source.page_format_key === "telegram-channel-v1" && <div className="telegram-account-panel compact">
+                {telegramAccount?.status === "active" ? <div className="telegram-account-line">
+                  <small>已连接 {telegramAccount.username ? `@${telegramAccount.username}` : telegramAccount.phone_masked}</small>
+                  {canEdit && <button type="button" className="mini-command" title="退出 Telegram 账号" aria-label="退出 Telegram 账号" disabled={busy} onClick={() => void perform(async () => { setTelegramAccount(await logoutTelegramAccount()); setTelegramCredentialEditing(true); }, "Telegram 账号已退出")}><LogOut size={13} />退出</button>}
+                </div> : <small>Telegram 未登录，请在上方表单完成登录。</small>}
+              </div>}
             </article>;
           })}
           {!sourcePageLoading && !sourcePageItems.length && <p className="acquisition-empty">尚未维护采集站点。</p>}
@@ -1043,28 +1160,48 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       </div>
 
       {canEdit && <div className="acquisition-section acquisition-forms">
-        <div>
-          <div className="acquisition-section-title"><span>Telegram 账号</span><Link2 size={17} /></div>
-          {telegramAccount?.status === "active" ? <>
-            <p className="source-notes">已连接 {telegramAccount.username ? `@${telegramAccount.username}` : telegramAccount.phone_masked}</p>
-            <button type="button" className="secondary-command" disabled={busy} onClick={() => void perform(async () => { setTelegramAccount(await logoutTelegramAccount()); }, "Telegram 账号已退出")}>退出账号</button>
-          </> : telegramAccount?.status === "verification_pending" ? <form onSubmit={(event) => void submitTelegramVerify(event)}>
-            <input value={telegramCode} onChange={(event) => setTelegramCode(event.target.value)} placeholder="登录验证码" required />
-            <input type="password" value={telegramPassword} onChange={(event) => setTelegramPassword(event.target.value)} placeholder="两步验证密码（如有）" />
-            <button type="submit" disabled={busy}>验证登录</button>
-          </form> : <form onSubmit={(event) => void submitTelegramLogin(event)}>
-            <input type="number" value={telegramApiId} onChange={(event) => setTelegramApiId(event.target.value)} placeholder="API ID" required />
-            <input value={telegramApiHash} onChange={(event) => setTelegramApiHash(event.target.value)} placeholder="API Hash" required />
-            <input value={telegramPhone} onChange={(event) => setTelegramPhone(event.target.value)} placeholder="手机号（含国家区号）" required />
-            <button type="submit" disabled={busy}>发送验证码</button>
-          </form>}
-        </div>
         <form onSubmit={(event) => void submitSource(event)}>
           <div className="acquisition-section-title"><span>{editingSourceId ? "编辑站点" : "新增站点"}</span><Plus size={17} /></div>
           <input value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="站点名称" required />
-          <input type="url" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="总站或首页 URL" required />
+          {!editingSourceId && <select value={sourceScriptKey} onChange={(event) => setSourceScriptKey(event.target.value)} required aria-label="选择采集脚本">
+            <option value="">选择采集脚本</option>
+            {scripts.map((script) => <option key={script.key} value={script.key}>{script.name}</option>)}
+          </select>}
+          {(editingSourceId || !isTelegramScript(sourceScriptKey)) && <input type="url" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="总站或首页 URL" required={!isTelegramScript(sourceScriptKey)} />}
           <textarea value={sourceNotes} onChange={(event) => setSourceNotes(event.target.value)} placeholder="备注（选填）" rows={3} />
-          <div className="form-command-row"><button type="submit" disabled={busy}>{editingSourceId ? "保存站点" : "新建站点"}</button>{editingSourceId && <button type="button" className="secondary-command" onClick={resetSourceForm}>取消</button>}</div>
+          {!editingSourceId && isTelegramScript(sourceScriptKey) && <div className="telegram-account-panel">
+            <div className="acquisition-section-title"><span>Telegram 账号</span><Link2 size={17} /></div>
+            {telegramAccount?.status === "active" && !telegramCredentialEditing ? <>
+              <p className="source-notes">将使用已连接账号 {telegramAccount.username ? `@${telegramAccount.username}` : telegramAccount.phone_masked}</p>
+              <button type="button" className="secondary-command" disabled={busy} onClick={() => void perform(async () => { setTelegramAccount(await logoutTelegramAccount()); setTelegramCredentialEditing(true); }, "Telegram 账号已退出")}>退出并更换账号</button>
+            </> : telegramAccount?.status === "verification_pending" && !telegramCredentialEditing ? <>
+              <div className="telegram-account-summary">
+                <small>API ID：{telegramAccount.api_id ?? "—"}</small>
+                <small>API Hash：已保存</small>
+                <small>手机号：{telegramAccount.phone_masked ?? "—"}</small>
+                <small>{telegramDeliveryMessage(telegramAccount.code_delivery)}</small>
+              </div>
+              <input value={telegramCode} onChange={(event) => setTelegramCode(event.target.value)} placeholder="登录验证码" />
+              <input type="password" value={telegramPassword} onChange={(event) => setTelegramPassword(event.target.value)} placeholder="两步验证密码（如有）" />
+              <div className="telegram-login-actions">
+                <button type="button" disabled={busy || !telegramCode.trim()} onClick={() => void submitTelegramVerify()}>验证登录</button>
+                <button type="button" className="secondary-command" disabled={busy} onClick={() => void resendTelegramCode()}>重发验证码</button>
+                <button type="button" className="secondary-command" disabled={busy} onClick={() => void cancelPendingTelegramLogin()}>修改凭证</button>
+              </div>
+            </> : <>
+              <input type="number" value={telegramApiId} onChange={(event) => setTelegramApiId(event.target.value)} placeholder="API ID" />
+              <input value={telegramApiHash} onChange={(event) => setTelegramApiHash(event.target.value)} placeholder="API Hash" />
+              <input value={telegramPhone} onChange={(event) => setTelegramPhone(event.target.value)} onBlur={() => { try { if (telegramPhone.trim()) setTelegramPhone(normalizeTelegramPhone(telegramPhone)); } catch { /* 保持原输入，提交时再校验 */ } }} placeholder="11 位国内手机号，将自动加 +86" />
+              <button type="button" disabled={busy || !telegramApiId || !telegramApiHash.trim() || !telegramPhone.trim()} onClick={() => void submitTelegramLogin()}>发送验证码</button>
+            </>}
+          </div>}
+          <div className="form-command-row">
+            <button
+              type="submit"
+              disabled={busy || (!editingSourceId && isTelegramScript(sourceScriptKey) && telegramAccount?.status !== "active")}
+            >{editingSourceId ? "保存站点" : "新建站点"}</button>
+            {editingSourceId && <button type="button" className="secondary-command" onClick={resetSourceForm}>取消</button>}
+          </div>
         </form>
         <form onSubmit={(event) => void submitCategory(event)}>
           <div className="acquisition-section-title"><span>{editingCategoryId ? "编辑分类" : "新增分类"}</span><FolderPlus size={17} /></div>

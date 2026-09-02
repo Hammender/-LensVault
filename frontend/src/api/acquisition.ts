@@ -39,6 +39,14 @@ export async function startTelegramLogin(payload: { api_id: number; api_hash: st
   return parse<TelegramAccount>(await fetch("/api/acquisition/telegram/account/login/start", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }));
 }
 
+export async function resendTelegramLogin(): Promise<TelegramAccount> {
+  return parse<TelegramAccount>(await fetch("/api/acquisition/telegram/account/login/resend", { method: "POST" }));
+}
+
+export async function cancelTelegramLogin(): Promise<TelegramAccount> {
+  return parse<TelegramAccount>(await fetch("/api/acquisition/telegram/account/login/cancel", { method: "POST" }));
+}
+
 export async function verifyTelegramLogin(payload: { code: string; password?: string }): Promise<TelegramAccount> {
   return parse<TelegramAccount>(await fetch("/api/acquisition/telegram/account/login/verify", { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }));
 }
@@ -56,7 +64,12 @@ export async function listAcquisitionSourcePage(offset = 0, limit = 10): Promise
   return parse<PaginatedAcquisitionSources>(await fetch(`/api/acquisition/sources/page?${params.toString()}`));
 }
 
-export async function createAcquisitionSource(payload: { name: string; base_url: string; notes?: string | null }): Promise<AcquisitionSource> {
+export async function createAcquisitionSource(payload: {
+  name: string;
+  base_url?: string | null;
+  notes?: string | null;
+  script_key?: string | null;
+}): Promise<AcquisitionSource> {
   return parse<AcquisitionSource>(await fetch("/api/acquisition/sources", {
     method: "POST",
     headers: jsonHeaders,

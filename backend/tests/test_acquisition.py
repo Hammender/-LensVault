@@ -15,7 +15,7 @@ from zipfile import ZipFile
 
 import numpy as np
 from PIL import Image
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session
 
 from app.db import Base
@@ -331,6 +331,45 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertEqual(run.category_name_snapshot, "这个名字仅用于展示")
         self.assertEqual(run.category_url_snapshot, category.crawl_url)
         self.assertEqual(json.loads(run.parameters_json), {"max_pages": 2})
+
+    def test_create_source_can_bind_script_inline(self) -> None:
+        from app.models import AcquisitionSourceScript
+
+        source = self.service.create_source(
+            self.db,
+            None,
+            "一次创建并绑定",
+            "https://raindrop.ftxsri.workers.dev",
+            None,
+            "raindrop-ftxsri-workers-dev",
+        )
+        keys = list(
+            self.db.scalars(
+                select(AcquisitionSourceScript.script_key).where(AcquisitionSourceScript.source_id == source.id)
+            )
+        )
+        self.assertEqual(source.page_format_key, "raindrop-workers-json-v1")
+        self.assertEqual(keys, ["raindrop-ftxsri-workers-dev"])
+
+    def test_create_telegram_source_uses_default_base_url(self) -> None:
+        from app.models import AcquisitionSourceScript
+
+        source = self.service.create_source(
+            self.db,
+            None,
+            "Telegram 主站",
+            None,
+            None,
+            "telegram-channel-mtproto",
+        )
+        keys = list(
+            self.db.scalars(
+                select(AcquisitionSourceScript.script_key).where(AcquisitionSourceScript.source_id == source.id)
+            )
+        )
+        self.assertEqual(source.base_url, "https://t.me")
+        self.assertEqual(source.page_format_key, "telegram-channel-v1")
+        self.assertEqual(keys, ["telegram-channel-mtproto"])
 
     def test_management_pages_return_ordered_workspace_records(self) -> None:
         sources = [

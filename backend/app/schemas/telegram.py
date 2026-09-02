@@ -7,10 +7,12 @@ from app.schemas.base import BaseModel, ShanghaiDateTime as datetime
 
 class TelegramAccountRead(BaseModel):
     workspace_id: int
+    api_id: int | None = None
     phone_masked: str | None
     telegram_user_id: int | None
     username: str | None
     status: str
+    code_delivery: str | None = None
     last_login_at: datetime | None
     updated_at: datetime
 
