@@ -12,6 +12,7 @@ from app.core.config import Settings
 from app.core.timezones import shanghai_now
 from app.db import Base
 from app.models import VideoItem, Workspace
+from app.native_runtime import configure_native_compute_runtime
 from app.services.container import ServiceContainer
 from app.services.tasks import fail_incomplete_tasks
 from app.services.timezone_migration import mark_timezone_baseline, migrate_system_timestamps
@@ -856,6 +857,8 @@ def initialize_runtime(
     logger: logging.Logger,
 ) -> None:
     logger.info("应用启动：开始检查存储、向量库、人脸识别和 OCR 依赖")
+    library_threads = configure_native_compute_runtime(settings.image_compute_library_threads)
+    logger.info("原生计算线程已封顶：library_threads=%s", library_threads)
     services.storage.ensure_bucket()
     services.vector_store.ensure_collections()
     services.face.warmup()

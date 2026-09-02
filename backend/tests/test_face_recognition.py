@@ -65,6 +65,9 @@ class NoopFaceService:
     def detect_faces(self, _payload: bytes) -> list[DetectedFace]:
         return []
 
+    def detect_faces_bgr(self, _array: np.ndarray) -> list[DetectedFace]:
+        return []
+
 
 class NoopOcrService:
     def extract_text(self, _payload: bytes) -> str:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from datetime import datetime
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
@@ -78,7 +78,22 @@ from app.services.thumbnails import render_acquisition_preview
 
 
 router = APIRouter(prefix="/api/acquisition", tags=["图片采集"])
-_preview_render_slots = BoundedSemaphore(value=2)
+_preview_render_slots: BoundedSemaphore | None = None
+_preview_render_slots_lock = Lock()
+
+
+def _preview_slots() -> BoundedSemaphore:
+    global _preview_render_slots
+    if _preview_render_slots is not None:
+        return _preview_render_slots
+    with _preview_render_slots_lock:
+        if _preview_render_slots is None:
+            _preview_render_slots = BoundedSemaphore(
+                max(1, int(get_settings().image_compute_thumbnail_parallel))
+            )
+        return _preview_render_slots
+
+
 _SIMILARITY_TASK_KINDS = {
     ("normal", "pending_only"): "acquisition_similarity_scan",
     ("mirror", "pending_only"): "acquisition_similarity_scan_mirror_pending",
@@ -1056,7 +1071,7 @@ def get_asset_preview(
     if asset is None or asset.workspace_id != current.workspace_id or not asset.object_key:
         raise HTTPException(status_code=404, detail="采集临时图片不存在")
 
-    with _preview_render_slots:
+    with _preview_slots():
         payload = request.app.state.services.storage.get_bytes(asset.object_key)
         preview = render_acquisition_preview(payload, max_edge)
     return Response(

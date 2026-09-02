@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 import logging
 import math
 import time
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -66,6 +69,8 @@ class FaceRuntime:
         roll_correction_min_angle: float = 30.0,
         detector: object | None = None,
         adapter: OnnxFaceAdapter | None = None,
+        create_session: Callable[..., Any] | None = None,
+        detector_session_guard: Callable[[], AbstractContextManager[Any]] | None = None,
     ) -> None:
         if detection_size <= 0:
             raise RuntimeError("检测尺寸必须大于 0。")
@@ -81,6 +86,8 @@ class FaceRuntime:
         self.roll_correction_min_angle = roll_correction_min_angle
         self._detector = detector
         self._adapter = adapter
+        self._create_session = create_session
+        self._detector_session_guard = detector_session_guard
 
     @property
     def adapter(self) -> OnnxFaceAdapter:
@@ -90,6 +97,7 @@ class FaceRuntime:
                 model_path=self.model_path,
                 detector_pack=self.detector_pack,
                 providers=self.providers,
+                create_session=self._create_session,
             )
         return self._adapter
 
@@ -100,12 +108,14 @@ class FaceRuntime:
                 from insightface.app import FaceAnalysis
             except Exception as exc:
                 raise RuntimeError("InsightFace 未安装或加载失败。") from exc
-            self._detector = FaceAnalysis(
-                name=self.detector_pack,
-                providers=self.providers,
-                allowed_modules=["detection"],
-            )
-            self._detector.prepare(ctx_id=0, det_size=(self.detection_size, self.detection_size))
+            guard = self._detector_session_guard() if self._detector_session_guard is not None else nullcontext()
+            with guard:
+                self._detector = FaceAnalysis(
+                    name=self.detector_pack,
+                    providers=self.providers,
+                    allowed_modules=["detection"],
+                )
+                self._detector.prepare(ctx_id=0, det_size=(self.detection_size, self.detection_size))
         return self._detector
 
     def detector_metadata(self) -> dict[str, object]:

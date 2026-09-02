@@ -31,8 +31,7 @@ from sqlalchemy import delete, func, insert, literal, select, text, update
 from sqlalchemy.orm import Session
 
 
-_opencv_configuration_lock = Lock()
-_opencv_configured = False
+_dino_encode_lock = Lock()
 
 
 @dataclass(frozen=True)
@@ -138,21 +137,6 @@ def ensure_perceptual_feature_dependencies() -> None:
     if unavailable:
         packages = "、".join(unavailable)
         raise RuntimeError(f"图片分析依赖不可用：{packages}。请在后端运行环境重新安装 requirements.txt。")
-    _configure_opencv_threads()
-
-
-def _configure_opencv_threads() -> None:
-    """采集任务并发处理图片时，避免 OpenCV 继续为每张图扩展线程。"""
-    global _opencv_configured
-    if _opencv_configured:
-        return
-    with _opencv_configuration_lock:
-        if _opencv_configured:
-            return
-        import cv2
-
-        cv2.setNumThreads(1)
-        _opencv_configured = True
 
 
 def assess_image_quality(image: Image.Image) -> ImageQualityAssessment:
@@ -465,30 +449,31 @@ class DinoV2FeatureExtractor:
         batch_size = max(1, self.settings.gallery_similarity_batch_size)
         output: list[np.ndarray] = []
         offset = 0
-        while offset < len(images):
-            current_size = min(batch_size, len(images) - offset)
-            while True:
-                try:
-                    batch = self._processor(images=images[offset : offset + current_size], return_tensors="pt")
-                    batch = {key: value.to(self._device) for key, value in batch.items()}
-                    with self._torch.inference_mode():
-                        autocast_enabled = self._device == "cuda"
-                        with self._torch.autocast(device_type=self._device, dtype=self._torch.float16, enabled=autocast_enabled):
-                            vectors = self._model(**batch).last_hidden_state[:, 0, :]
-                        vectors = self._torch.nn.functional.normalize(vectors.float(), dim=1).cpu().numpy()
-                    if vectors.shape[1] != self.settings.gallery_similarity_vector_dimension:
-                        raise RuntimeError(
-                            f"DINOv2 输出维度为 {vectors.shape[1]}，预期 "
-                            f"{self.settings.gallery_similarity_vector_dimension}"
-                        )
-                    output.extend(np.asarray(vector, dtype=np.float32) for vector in vectors)
-                    offset += current_size
-                    break
-                except self._torch.cuda.OutOfMemoryError:
-                    if self._device != "cuda" or current_size == 1:
-                        raise
-                    self._torch.cuda.empty_cache()
-                    current_size = max(1, current_size // 2)
+        with _dino_encode_lock:
+            while offset < len(images):
+                current_size = min(batch_size, len(images) - offset)
+                while True:
+                    try:
+                        batch = self._processor(images=images[offset : offset + current_size], return_tensors="pt")
+                        batch = {key: value.to(self._device) for key, value in batch.items()}
+                        with self._torch.inference_mode():
+                            autocast_enabled = self._device == "cuda"
+                            with self._torch.autocast(device_type=self._device, dtype=self._torch.float16, enabled=autocast_enabled):
+                                vectors = self._model(**batch).last_hidden_state[:, 0, :]
+                            vectors = self._torch.nn.functional.normalize(vectors.float(), dim=1).cpu().numpy()
+                        if vectors.shape[1] != self.settings.gallery_similarity_vector_dimension:
+                            raise RuntimeError(
+                                f"DINOv2 输出维度为 {vectors.shape[1]}，预期 "
+                                f"{self.settings.gallery_similarity_vector_dimension}"
+                            )
+                        output.extend(np.asarray(vector, dtype=np.float32) for vector in vectors)
+                        offset += current_size
+                        break
+                    except self._torch.cuda.OutOfMemoryError:
+                        if self._device != "cuda" or current_size == 1:
+                            raise
+                        self._torch.cuda.empty_cache()
+                        current_size = max(1, current_size // 2)
         return output
 
 

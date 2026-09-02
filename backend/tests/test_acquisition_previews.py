@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from io import BytesIO
+from threading import Barrier, BoundedSemaphore, Lock, Thread
 from types import SimpleNamespace
 
 from PIL import Image
@@ -110,3 +111,56 @@ def test_preview_endpoint_reads_source_without_persisting_derivative() -> None:
     assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
     with Image.open(BytesIO(response.body)) as image:
         assert max(image.size) == 480
+
+
+def test_preview_endpoint_limits_parallel_renders(monkeypatch) -> None:
+    import app.api.acquisition as acquisition_api
+
+    payload = _static_image_bytes()
+    asset = SimpleNamespace(
+        id="asset-1",
+        workspace_id=7,
+        object_key="acquisition/photo.png",
+        filename="photo.png",
+        content_type="image/png",
+    )
+    current = 0
+    peak = 0
+    lock = Lock()
+    original = render_acquisition_preview
+
+    def counting_render(source: bytes, max_edge: int):
+        nonlocal current, peak
+        with lock:
+            current += 1
+            peak = max(peak, current)
+        try:
+            return original(source, max_edge)
+        finally:
+            with lock:
+                current -= 1
+
+    monkeypatch.setattr(acquisition_api, "_preview_render_slots", BoundedSemaphore(2))
+    monkeypatch.setattr(acquisition_api, "render_acquisition_preview", counting_render)
+
+    class FakeStorage:
+        def get_bytes(self, _object_key: str) -> bytes:
+            return payload
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(services=SimpleNamespace(storage=FakeStorage())))
+    )
+    db = SimpleNamespace(get=lambda model, asset_id: asset if model is AcquisitionAsset and asset_id == asset.id else None)
+    barrier = Barrier(4)
+
+    def worker() -> None:
+        barrier.wait()
+        get_asset_preview("asset-1", request, max_edge=480, db=db, current=SimpleNamespace(workspace_id=7))
+
+    threads = [Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert 1 <= peak <= 2

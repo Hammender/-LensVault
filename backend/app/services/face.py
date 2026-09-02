@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import logging
 import math
+from contextlib import contextmanager
 from pathlib import Path
+from threading import BoundedSemaphore, local
 import time
 
 import numpy as np
 
 from app.core.config import Settings, get_settings
+from app.native_runtime import create_onnx_inference_session, insightface_session_options
 from face_runtime import DetectedFace, FaceRuntime, decode_image_bytes
 from face_runtime.providers import validate_configured_providers
 
@@ -19,6 +22,21 @@ class FaceService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._runtime: FaceRuntime | None = None
+        self._detect_slots = BoundedSemaphore(max(1, int(self.settings.gallery_recognition_workers)))
+        self._detect_depth = local()
+
+    @contextmanager
+    def _hold_detect_slot(self):
+        depth = getattr(self._detect_depth, "value", 0)
+        if depth == 0:
+            self._detect_slots.acquire()
+        self._detect_depth.value = depth + 1
+        try:
+            yield
+        finally:
+            self._detect_depth.value = depth
+            if depth == 0:
+                self._detect_slots.release()
 
     def _get_runtime(self) -> FaceRuntime:
         if self._runtime is None:
@@ -48,6 +66,8 @@ class FaceService:
                 flip_tta=self.settings.face_flip_augmentation,
                 roll_correction_enabled=self.settings.face_roll_correction_enabled,
                 roll_correction_min_angle=self.settings.face_roll_correction_min_angle,
+                create_session=create_onnx_inference_session,
+                detector_session_guard=insightface_session_options,
             )
             self._runtime.warmup()
             elapsed_ms = (time.perf_counter() - started_at) * 1000
@@ -60,15 +80,19 @@ class FaceService:
 
     def detect_faces(self, payload: bytes) -> list[DetectedFace]:
         logger.info("Start detect_faces payload_bytes=%d", len(payload))
-        started_at = time.perf_counter()
         array = decode_image_bytes(payload)
         logger.info("Decoded image size=%sx%s", array.shape[1], array.shape[0])
-        runtime = self._get_runtime()
-        results = runtime.analyze_bgr(array)
-        if not results and self.settings.face_rotation_fallback_enabled:
-            analyze_rotations = getattr(runtime, "analyze_rotations_bgr", None)
-            if callable(analyze_rotations):
-                results = analyze_rotations(array, self._rotation_fallback_angles())
+        return self.detect_faces_bgr(array)
+
+    def detect_faces_bgr(self, array: np.ndarray) -> list[DetectedFace]:
+        started_at = time.perf_counter()
+        with self._hold_detect_slot():
+            runtime = self._get_runtime()
+            results = runtime.analyze_bgr(array)
+            if not results and self.settings.face_rotation_fallback_enabled:
+                analyze_rotations = getattr(runtime, "analyze_rotations_bgr", None)
+                if callable(analyze_rotations):
+                    results = analyze_rotations(array, self._rotation_fallback_angles())
         logger.info("Face detection finished detected_faces=%d", len(results))
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info("detect_faces completed in %.1fms", elapsed_ms)
@@ -76,13 +100,16 @@ class FaceService:
 
     def detect_faces_with_rotation_fallback(self, payload: bytes) -> list[DetectedFace]:
         logger.info("Start detect_faces_with_rotation_fallback payload_bytes=%d", len(payload))
-        array = decode_image_bytes(payload)
-        runtime = self._get_runtime()
-        primary_faces = runtime.analyze_bgr(array)
-        if not self.settings.face_rotation_fallback_enabled:
-            return primary_faces
-        rotated_faces = runtime.analyze_rotations_bgr(array, self._rotation_fallback_angles())
-        results = runtime.prefer_rotated_faces(primary_faces, rotated_faces)
+        return self.detect_faces_with_rotation_fallback_bgr(decode_image_bytes(payload))
+
+    def detect_faces_with_rotation_fallback_bgr(self, array: np.ndarray) -> list[DetectedFace]:
+        with self._hold_detect_slot():
+            runtime = self._get_runtime()
+            primary_faces = runtime.analyze_bgr(array)
+            if not self.settings.face_rotation_fallback_enabled:
+                return primary_faces
+            rotated_faces = runtime.analyze_rotations_bgr(array, self._rotation_fallback_angles())
+            results = runtime.prefer_rotated_faces(primary_faces, rotated_faces)
         logger.info(
             "Rotation fallback finished primary_faces=%d rotated_faces=%d merged_faces=%d",
             len(primary_faces),

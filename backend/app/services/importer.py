@@ -19,7 +19,7 @@ from app.core.config import Settings, get_settings
 from app.core.timezones import as_shanghai_naive, shanghai_now
 from app.models import FaceRecognitionCorrection, FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
 from app.services.face import DetectedFace, FaceRuntime, FaceService
-from app.services.image_metadata import parse_image_metadata
+from app.services.image_metadata import load_rgb_image, parse_image_metadata, parse_image_metadata_from_image
 from app.services.qdrant import FaceSearchHit, QdrantVectorStore
 from app.services.ocr import OcrService
 from app.services.storage import MinioStorage
@@ -137,6 +137,8 @@ class PictureService:
         db: Session,
         payload: bytes,
         workspace_id: int | None,
+        *,
+        image_bgr: np.ndarray | None = None,
     ) -> list[tuple[DetectedFace, PersonMatch]]:
         def selected_plan(
             source: str,
@@ -160,7 +162,11 @@ class PictureService:
             )
             return selected
 
-        detected_faces = self.face_service.detect_faces(payload)
+        if image_bgr is not None:
+            detect_bgr = getattr(self.face_service, "detect_faces_bgr", None)
+            detected_faces = detect_bgr(image_bgr) if callable(detect_bgr) else self.face_service.detect_faces(payload)
+        else:
+            detected_faces = self.face_service.detect_faces(payload)
         plan = [(detected, self._match_face(detected, workspace_id)) for detected in detected_faces]
         if not plan:
             return selected_plan("primary", plan, reason="no_faces")
@@ -178,7 +184,11 @@ class PictureService:
         if not callable(fallback):
             return selected_plan("primary", plan, reason="fallback_unavailable")
         logger.info("Rotation fallback triggered reason=has_rejected_face faces=%d", len(plan))
-        fallback_faces = fallback(payload)
+        if image_bgr is not None:
+            fallback_bgr = getattr(self.face_service, "detect_faces_with_rotation_fallback_bgr", None)
+            fallback_faces = fallback_bgr(image_bgr) if callable(fallback_bgr) else fallback(payload)
+        else:
+            fallback_faces = fallback(payload)
         fallback_plan = [(detected, self._match_face(detected, workspace_id)) for detected in fallback_faces]
         merged = self._merge_fallback_plan(db, plan, fallback_plan, workspace_id)
         logger.info(
@@ -747,7 +757,12 @@ class PictureService:
             )
             return existing, summary
 
-        width, height, taken_at = parse_image_metadata(payload)
+        image = load_rgb_image(payload)
+        try:
+            width, height, taken_at = parse_image_metadata_from_image(image)
+            image_bgr = np.ascontiguousarray(np.asarray(image)[:, :, ::-1])
+        finally:
+            image.close()
         object_key = self._build_object_key(workspace_id, "gallery", filename)
         if source_object_key:
             self.storage.copy_object(object_key, source_object_key)
@@ -804,7 +819,7 @@ class PictureService:
 
         if recognition_plan is _RECOGNITION_NOT_PRECOMPUTED:
             try:
-                recognition_plan = self._recognition_plan(db, payload, workspace_id)
+                recognition_plan = self._recognition_plan(db, payload, workspace_id, image_bgr=image_bgr)
             except Exception:
                 logger.exception(
                     "Gallery face detection failed, keep photo without faces photo_id=%s filename=%s",

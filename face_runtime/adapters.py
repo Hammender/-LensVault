@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -210,10 +211,13 @@ def create_adapter(
     detector_pack: str,
     providers: list[str],
     session: object | None = None,
+    create_session: Callable[..., Any] | None = None,
 ) -> OnnxFaceAdapter:
     try:
         manifest = ADAPTERS[adapter_id]
     except KeyError as exc:
         raise RuntimeError(f"未知适配器：{adapter_id}；可用值：{', '.join(available_adapters())}") from exc
     resolved = _resolve_model_path(manifest, model_path, detector_pack)
+    if session is None and create_session is not None:
+        session = create_session(resolved, providers=providers)
     return OnnxFaceAdapter(manifest, resolved, providers, session=session)

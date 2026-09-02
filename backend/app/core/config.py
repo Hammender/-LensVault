@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     telegram_download_timeout_seconds: int = 600
     telegram_flood_wait_max_seconds: int = 3600
     gallery_recognition_workers: int = Field(default=2, ge=1, le=8)
+    image_compute_library_threads: int = Field(default=4, ge=1, le=32)
+    image_compute_thumbnail_parallel: int = Field(default=2, ge=1, le=8)
 
     face_model_name: str = "buffalo_l"
     face_adapter_id: str = "buffalo_l"

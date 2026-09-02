@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from app.native_runtime import apply_native_thread_environment
+
+apply_native_thread_environment()
+
 import logging
 
 from app.application import create_app
