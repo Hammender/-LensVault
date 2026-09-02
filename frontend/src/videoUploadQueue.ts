@@ -122,6 +122,10 @@ export function normalizeVideoQueueItem(source: Partial<VideoUploadQueueItem>): 
   };
 }
 
+export function shouldPersistVideoQueueItem(item: VideoUploadQueueItem): boolean {
+  return item.status !== "completed" && item.status !== "failed";
+}
+
 export function loadStoredVideoUploadQueue(storage: Storage = window.localStorage): VideoUploadQueueItem[] {
   try {
     const raw = storage.getItem(videoUploadQueueStorageKey);
@@ -130,7 +134,8 @@ export function loadStoredVideoUploadQueue(storage: Storage = window.localStorag
     if (!Array.isArray(parsed)) return [];
     return parsed
       .map((item) => normalizeVideoQueueItem(item as Partial<VideoUploadQueueItem>))
-      .filter((item): item is VideoUploadQueueItem => Boolean(item));
+      .filter((item): item is VideoUploadQueueItem => item !== null)
+      .filter(shouldPersistVideoQueueItem);
   } catch {
     storage.removeItem(videoUploadQueueStorageKey);
     return [];
@@ -141,7 +146,7 @@ export function saveStoredVideoUploadQueue(
   queue: VideoUploadQueueItem[],
   storage: Storage = window.localStorage
 ): void {
-  const visibleQueue = queue.filter((item) => item.status !== "completed");
+  const visibleQueue = queue.filter(shouldPersistVideoQueueItem);
   if (visibleQueue.length === 0) {
     storage.removeItem(videoUploadQueueStorageKey);
     return;

@@ -38,12 +38,24 @@ describe("video upload queue", () => {
     expect(normalizeVideoQueueItem({ filename: "missing-id.mp4" })).toBeNull();
   });
 
-  it("persists only incomplete queue records and handles malformed storage", () => {
+  it("persists only resumable queue records and ignores failed history", () => {
     const store = storage();
-    const item = normalizeVideoQueueItem({ id: "a", filename: "a.mp4", size: 1, lastModified: 1, status: "failed" })!;
-    const completed = { ...item, id: "b", status: "completed" as const };
-    saveStoredVideoUploadQueue([item, completed], store);
+    const resumable = normalizeVideoQueueItem({
+      id: "a",
+      filename: "a.mp4",
+      size: 1,
+      lastModified: 1,
+      uploadedParts: [0],
+      totalParts: 2,
+      progress: 50,
+      status: "uploading"
+    })!;
+    const failed = { ...resumable, id: "b", status: "failed" as const, error: "视频库已存在相同文件" };
+    const completed = { ...resumable, id: "c", status: "completed" as const };
+    saveStoredVideoUploadQueue([resumable, failed, completed], store);
     expect(loadStoredVideoUploadQueue(store).map((entry) => entry.id)).toEqual(["a"]);
+    store.setItem("pictureshow-video-upload-queue", JSON.stringify([failed]));
+    expect(loadStoredVideoUploadQueue(store)).toEqual([]);
     store.setItem("pictureshow-video-upload-queue", "not-json");
     expect(loadStoredVideoUploadQueue(store)).toEqual([]);
   });
