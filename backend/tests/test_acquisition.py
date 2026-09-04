@@ -31,7 +31,6 @@ from app.api.acquisition import (
     list_source_page,
     list_sources,
 )
-from app.lifecycle import ensure_acquisition_schema
 from app.models import (
     AcquisitionAsset,
     AcquisitionCategory,
@@ -612,95 +611,6 @@ class AcquisitionModelTests(unittest.TestCase):
             self.service.bind_script(self.db, source, "shfwzwz-raindrop-page")
         with self.assertRaisesRegex(ValueError, "当前站点"):
             self.service.create_category(self.db, source, "错误分类", "https://example.com/collection")
-
-    def test_legacy_adapter_binding_is_migrated_without_deleting_site(self) -> None:
-        engine = create_engine("sqlite+pysqlite:///:memory:")
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "CREATE TABLE acquisition_sources ("
-                    "id INTEGER PRIMARY KEY, workspace_id INTEGER, name VARCHAR(128) NOT NULL, "
-                    "adapter_key VARCHAR(64) NOT NULL, base_url VARCHAR(1024), enabled BOOLEAN NOT NULL DEFAULT 1, "
-                    "settings_json TEXT, created_at DATETIME, updated_at DATETIME)"
-                )
-            )
-            connection.execute(
-                text(
-                    "INSERT INTO acquisition_sources (id, name, adapter_key) "
-                    "VALUES (1, 'raindrop.ftxsri.workers.dev', 'raindrop-workers'), "
-                    "(2, '用户自定义站点名', 'raindrop-workers')"
-                )
-            )
-        Base.metadata.create_all(engine)
-
-        ensure_acquisition_schema(engine)
-
-        columns = {column["name"] for column in inspect(engine).get_columns("acquisition_sources")}
-        with engine.connect() as connection:
-            source = connection.execute(
-                text("SELECT name, base_url, page_format_key FROM acquisition_sources WHERE id=1")
-            ).mappings().one()
-            binding = connection.execute(
-                text("SELECT script_key FROM acquisition_source_scripts WHERE source_id=1")
-            ).scalar_one()
-            custom_name = connection.execute(
-                text("SELECT name FROM acquisition_sources WHERE id=2")
-            ).scalar_one()
-        self.assertIn("notes", columns)
-        self.assertEqual(source["name"], "raindrop-ftxsri-workers-dev")
-        self.assertEqual(source["base_url"], "https://raindrop.ftxsri.workers.dev")
-        self.assertEqual(source["page_format_key"], "raindrop-workers-json-v1")
-        self.assertEqual(binding, "raindrop-ftxsri-workers-dev")
-        self.assertEqual(custom_name, "用户自定义站点名")
-        engine.dispose()
-
-    def test_schema_migration_restores_deferred_assets_to_pending_review(self) -> None:
-        engine = create_engine("sqlite+pysqlite:///:memory:")
-        Base.metadata.create_all(engine)
-        with engine.begin() as connection:
-            connection.execute(text(
-                "INSERT INTO acquisition_assets (id, sha256, filename, size_bytes, status, created_at, updated_at) "
-                "VALUES ('legacy-deferred', :sha256, 'legacy.jpg', 0, 'deferred', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-            ), {"sha256": "d" * 64})
-
-        ensure_acquisition_schema(engine)
-
-        columns = {column["name"] for column in inspect(engine).get_columns("acquisition_similarity_candidates")}
-        asset_indexes = {index["name"] for index in inspect(engine).get_indexes("acquisition_assets")}
-        with engine.connect() as connection:
-            status = connection.execute(text(
-                "SELECT status FROM acquisition_assets WHERE id = 'legacy-deferred'"
-            )).scalar_one()
-        self.assertIn("scan_task_id", columns)
-        self.assertIn("scan_type", columns)
-        self.assertIn("scan_scope", columns)
-        self.assertIn("relation_type", columns)
-        self.assertIn("ix_acquisition_assets_perceptual_phash", asset_indexes)
-        self.assertIn("ix_acquisition_assets_perceptual_dhash", asset_indexes)
-        self.assertEqual(status, "pending_review")
-        engine.dispose()
-
-    def test_schema_migration_adds_regular_import_type_to_legacy_batches(self) -> None:
-        engine = create_engine("sqlite+pysqlite:///:memory:")
-        with engine.begin() as connection:
-            connection.execute(text(
-                "CREATE TABLE acquisition_import_batches ("
-                "id VARCHAR(64) PRIMARY KEY, status VARCHAR(32) NOT NULL)"
-            ))
-            connection.execute(text(
-                "INSERT INTO acquisition_import_batches (id, status) VALUES ('legacy-batch', 'completed')"
-            ))
-
-        ensure_acquisition_schema(engine)
-
-        columns = {column["name"] for column in inspect(engine).get_columns("acquisition_import_batches")}
-        with engine.connect() as connection:
-            is_rich_text = connection.execute(text(
-                "SELECT is_rich_text FROM acquisition_import_batches WHERE id = 'legacy-batch'"
-            )).scalar_one()
-        self.assertIn("is_rich_text", columns)
-        self.assertFalse(is_rich_text)
-        engine.dispose()
 
     def test_process_run_rolls_back_before_recording_database_failure(self) -> None:
         definition = get_script("raindrop-ftxsri-workers-dev")

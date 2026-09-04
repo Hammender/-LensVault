@@ -17,7 +17,6 @@ from fastapi import HTTPException
 from app.api.gallery import _gallery_display_order, _resolve_gallery_export_photos, export_gallery_photos
 from app.core.config import Settings
 from app.db import Base
-from app.lifecycle import ensure_gallery_display_order_columns
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, Tag
 from app.schemas import GalleryPhotoExportRequest
 from app.services.importer import PictureService
@@ -368,34 +367,6 @@ def test_from_start_export_includes_newer_filtered_photos_and_start(db_session: 
             ),
         )
     assert exc_info.value.detail == "起点图片不在当前筛选结果中。"
-
-
-def test_display_order_migration_backfills_without_changing_old_order() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE TABLE gallery_photos ("
-                "id INTEGER PRIMARY KEY, workspace_id INTEGER, created_at DATETIME NOT NULL)"
-            )
-        )
-        connection.execute(
-            text(
-                "INSERT INTO gallery_photos (id, workspace_id, created_at) VALUES "
-                "(1, NULL, '2026-08-05 10:00:00'), (2, NULL, '2026-08-05 11:00:00')"
-            )
-        )
-
-    ensure_gallery_display_order_columns(engine)
-
-    with engine.connect() as connection:
-        rows = connection.execute(
-            text(
-                "SELECT id FROM gallery_photos ORDER BY display_batch_at DESC, "
-                "display_index ASC, created_at DESC, id DESC"
-            )
-        ).scalars().all()
-    assert rows == [2, 1]
 
 
 def test_cleanup_command_is_dry_run_by_default_and_scoped_to_manifest(db_session: Session) -> None:

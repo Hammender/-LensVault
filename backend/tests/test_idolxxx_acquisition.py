@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.lifecycle import ensure_acquisition_schema
+from app.lifecycle import seed_acquisition_scripts
 from app.models import AcquisitionRun, AcquisitionScript
 from app.services.acquisition import AcquisitionService, _DownloadStartLimiter
 from app.services.acquisition_adapters import (
@@ -550,7 +550,7 @@ class IdolxxxLifecycleTests(unittest.TestCase):
     def test_lifecycle_sync_registers_target_adapter(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine)
-        ensure_acquisition_schema(engine)
+        seed_acquisition_scripts(engine)
         with Session(engine) as db:
             script = db.scalar(select(AcquisitionScript).where(AcquisitionScript.key == "idolxxx-gallery"))
             self.assertIsNotNone(script)

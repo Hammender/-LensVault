@@ -2,12 +2,12 @@
 
 ## 项目结构与模块组织
 
-`backend/` 包含 FastAPI 后端服务。主要 API 路由位于 `backend/app/main.py`，配置位于 `backend/app/core/config.py`，数据库初始化位于 `backend/app/db.py`，领域逻辑位于 `backend/app/services/`。`frontend/` 包含 Vite + React 前端，入口文件为 `frontend/src/main.tsx` 和 `frontend/src/App.tsx`。前端通用请求与类型定义位于 `frontend/src/api.ts` 和 `frontend/src/types.ts`。运行时数据位于 `data/`；`data/app.db` 属于本地状态，不是源代码。
+`backend/` 包含 FastAPI 后端服务。主要 API 路由位于 `backend/app/main.py`，配置位于 `backend/app/core/config.py`，数据库初始化位于 `backend/app/db.py`，领域逻辑位于 `backend/app/services/`。数据库结构迁移由 Alembic 管理：根目录 `alembic.ini` 为配置入口，迁移脚本位于 `backend/alembic/versions/`（基线 `0001`，结构对齐 `0002`，数据迁移 `0003`），迁移环境 `backend/alembic/env.py`，迁移脚本生成工具 `backend/app/tools/generate_migration.py`。`frontend/` 包含 Vite + React 前端，入口文件为 `frontend/src/main.tsx` 和 `frontend/src/App.tsx`。前端通用请求与类型定义位于 `frontend/src/api.ts` 和 `frontend/src/types.ts`。运行时数据位于 `data/`；`data/app.db` 属于本地状态，不是源代码。
 
 常用手工命令：
 
 ```powershell
-python -m uvicorn app.main:app --reload --app-dir backend
+python -m uvicorn app.main:app --app-dir backend
 cmd /c npm.cmd install
 cmd /c npm.cmd run dev
 cmd /c npm.cmd run build
@@ -36,6 +36,46 @@ cmd /c npm.cmd run build
 
 配置变更必须优先维护本地 `.env` 的完整字段和值。程序运行时只读取 `.env`，不得读取 `.env.example`；`.env.example` 仅保留完整字段名与不泄露隐私的示例默认值。
 
+## 数据库迁移工作流程（Alembic）
+
+数据库结构变更一律通过 Alembic 迁移脚本完成，不再手写启动期检查/ALTER 函数。启动时 `app.lifecycle.initialize_database` 会自动执行 `alembic upgrade head`（存量旧库首次启动会自动补齐旧结构并登记基线）。任何 Agent 修改了 `backend/app/models/` 下的表结构后，必须走以下流程：
+
+1. **生成迁移脚本**（基于临时空库 autogenerate，与真实库隔离，结果更干净）：
+
+   ```powershell
+   $env:PYTHONPATH='backend'
+   python -m app.tools.generate_migration "新增视频封面对象键"
+   ```
+
+2. **AI 自审迁移脚本（必做，不得跳过）**：逐行阅读 `backend/alembic/versions/` 下新生成的脚本，确认：
+   - 只包含本次模型改动，没有误删表/列/索引（尤其警惕 autogenerate 生成的 `drop_` 操作）；
+   - SQLite 下修改约束/列走 `batch_alter_table`（表重建），未丢失既有索引、外键和默认值；
+   - 存量数据需要回填时，用 `op.execute()` 补齐并核实回填条件；
+   - `downgrade()` 与 `upgrade()` 对称且可回退；
+   - 文件头说明为中文，描述变更内容与影响。发现问题时直接修正脚本后再进入下一步。
+
+3. **应用迁移**：
+
+   ```powershell
+   python -m alembic upgrade head
+   ```
+
+   若任务约束不允许直接改库（如仅出代码），则交付时明确说明由用户手工执行本命令。
+
+4. **同步全量表设计文件**并验证：
+
+   ```powershell
+   python -m app.tools.export_schema_sql
+   python -m pytest backend/tests
+   ```
+
+注意事项：
+
+- 已应用过的迁移脚本不得修改，只能追加新 revision。
+- 本地真实库已通过 `0002` 与 ORM 元数据对齐，可直接对真实库执行 `alembic check` 验证无漂移。生成新迁移脚本仍推荐用 `generate_migration` 工具（基于临时空库，不依赖真实数据）。
+- 迁移环境 `backend/alembic/env.py` 从 `.env` 读取数据库连接串，也可用 `alembic -x database_url=...` 指向其他库；`alembic.ini` 保持 ASCII 内容（它按系统 locale 编码读取）。
+- 启动命令不加 `--reload`：涉及模型/迁移的改动若被自动热重载，可能在半成品代码上对真实库执行迁移。
+
 ## AI Agent 工作准则
 
 1. 先阅读与任务直接相关的代码、配置、文档和当前 Git 状态，再实施改动；不根据文件名或历史印象臆测实现细节。
@@ -43,7 +83,7 @@ cmd /c npm.cmd run build
 3. 工作区中已有的未提交改动默认属于用户或其他协作者。不得撤销、覆盖、暂存或混入这些改动；若其与当前任务冲突，应说明冲突并请求处理方向。
 4. 不执行可能造成数据丢失的操作，例如递归删除、清空数据库、强制重置 Git、覆盖配置或批量迁移。确有必要时，先核实目标范围、说明影响并取得用户明确授权。
 5. 仅在任务确有需要且用户已授权的范围内安装、升级或卸载依赖。安装后应将依赖声明同步到对应的依赖清单，并说明实际变更。
-6. 数据库模型、迁移和 `sql/tables.sql` 必须保持一致。新增或修改表、字段、索引、约束时，同步补充中文注释并更新全量表设计文件。
+6. 数据库表结构的一致性来源为「ORM 模型（`backend/app/models/`）+ Alembic 迁移脚本（`backend/alembic/versions/`）+ 生成的 `sql/tables.sql`」三者一致。新增或修改表、字段、索引、约束时，必须按「数据库迁移工作流程（Alembic）」生成并审核迁移脚本，同步补充中文注释，并重新生成全量表设计文件。
 7. 修改 API、配置、数据结构或前端交互时，应追踪调用方和受影响流程，避免只修改单一入口而破坏兼容性；无法兼容时明确写出迁移要求。
 8. 代码改动完成后，按改动风险运行必要的构建、测试或静态检查。因环境、权限或时间无法执行的检查，必须在交付说明中明确未执行项与原因。
 9. 最终说明应简要列出改动内容、涉及的配置或迁移、验证结果及仍需用户手工操作的事项；不得声称未实际完成的验证或运行结果。

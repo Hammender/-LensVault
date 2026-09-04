@@ -13,3 +13,5 @@ backend/app/data/
 .idea
 newweb
 *.jar
+alembic.ini
+alembic/
