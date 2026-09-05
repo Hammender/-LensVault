@@ -19,7 +19,6 @@ import {
   listAcquisitionAssetIds,
   listAcquisitionAssets,
   listAcquisitionCategories,
-  listAcquisitionCategoryPage,
   listAcquisitionExports,
   listAcquisitionImportBatchItems,
   listAcquisitionImportBatches,
@@ -88,7 +87,7 @@ type AcquisitionCenterProps = {
 
 const tabs: Array<{ key: Tab; label: string }> = [
   { key: "sources", label: "站点与分类" },
-  { key: "runs", label: "运行记录" },
+  { key: "runs", label: "运行" },
   { key: "review", label: "待审核" },
   { key: "history", label: "入库与导出" }
 ];
@@ -157,10 +156,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [sourcePageTotal, setSourcePageTotal] = useState(0);
   const [sourcePageOffset, setSourcePageOffset] = useState(0);
   const [sourcePageLoading, setSourcePageLoading] = useState(false);
-  const [categoryPageItems, setCategoryPageItems] = useState<AcquisitionCategory[]>([]);
-  const [categoryPageTotal, setCategoryPageTotal] = useState(0);
+  const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const [categoryPageOffset, setCategoryPageOffset] = useState(0);
-  const [categoryPageLoading, setCategoryPageLoading] = useState(false);
   const [runPageItems, setRunPageItems] = useState<AcquisitionRun[]>([]);
   const [runPageTotal, setRunPageTotal] = useState(0);
   const [runPageOffset, setRunPageOffset] = useState(0);
@@ -262,6 +259,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     ? selectedRunSource.script_keys.map((key) => scriptByKey.get(key)).filter((script): script is AcquisitionScript => Boolean(script))
     : [], [scriptByKey, selectedRunSource]);
   const selectedRunScript = scriptByKey.get(runScriptKey);
+  const selectedSourceCategories = useMemo(
+    () => selectedSourceId == null ? [] : categories.filter((category) => category.source_id === selectedSourceId),
+    [categories, selectedSourceId]
+  );
+  const categoryPageTotal = selectedSourceCategories.length;
+  const categoryPageItems = selectedSourceCategories.slice(categoryPageOffset, categoryPageOffset + managementPageSize);
   const assetPagination = getAcquisitionPagination(assetsTotal, assetOffset, assets.length, acquisitionAssetPageSize);
   const sourcePagePagination = getAcquisitionPagination(sourcePageTotal, sourcePageOffset, sourcePageItems.length, managementPageSize);
   const categoryPagePagination = getAcquisitionPagination(categoryPageTotal, categoryPageOffset, categoryPageItems.length, managementPageSize);
@@ -294,6 +297,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     if (sourcesResult.data) {
       setSources(sourcesResult.data);
       setCategorySourceId((current) => current || (sourcesResult.data?.[0] ? String(sourcesResult.data[0].id) : ""));
+      setSelectedSourceId((current) => current != null && sourcesResult.data?.some((source) => source.id === current)
+        ? current
+        : sourcesResult.data?.[0]?.id ?? null);
     }
     if (categoriesResult.data) {
       setCategories(categoriesResult.data);
@@ -317,22 +323,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       setSourcePageItems(page.items);
       setSourcePageTotal(page.total);
       setSourcePageOffset(page.offset);
+      setSelectedSourceId((current) => page.items.some((source) => source.id === current) ? current : page.items[0]?.id ?? null);
     } finally {
       setSourcePageLoading(false);
-    }
-  }, []);
-
-  const loadCategoryPage = useCallback(async (requestedOffset: number) => {
-    setCategoryPageLoading(true);
-    try {
-      let page = await listAcquisitionCategoryPage(Math.max(0, requestedOffset), managementPageSize);
-      const validOffset = clampAcquisitionOffset(page.total, requestedOffset, managementPageSize);
-      if (validOffset !== page.offset) page = await listAcquisitionCategoryPage(validOffset, managementPageSize);
-      setCategoryPageItems(page.items);
-      setCategoryPageTotal(page.total);
-      setCategoryPageOffset(page.offset);
-    } finally {
-      setCategoryPageLoading(false);
     }
   }, []);
 
@@ -443,8 +436,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       if (tab === "sources") {
         await Promise.all([
           refreshReferenceData(),
-          loadSourcePage(sourcePageOffset),
-          loadCategoryPage(categoryPageOffset)
+          loadSourcePage(sourcePageOffset)
         ]);
         return;
       }
@@ -470,7 +462,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     } finally {
       setCurrentTabRefreshing(false);
     }
-  }, [assetOffset, assetStatus, categoryPageOffset, importBatchItemOffset, importBatchOffset, lightboxSelection, loadAssetPage, loadCategoryPage, loadImportBatchItemPage, loadImportBatchPage, loadRunPage, loadSimilarityPage, loadSourcePage, refreshReferenceData, reviewMode, runPageOffset, selectedImportBatchId, similarityOffset, sourcePageOffset, tab]);
+  }, [assetOffset, assetStatus, importBatchItemOffset, importBatchOffset, lightboxSelection, loadAssetPage, loadImportBatchItemPage, loadImportBatchPage, loadRunPage, loadSimilarityPage, loadSourcePage, refreshReferenceData, reviewMode, runPageOffset, selectedImportBatchId, similarityOffset, sourcePageOffset, tab]);
 
   useEffect(() => { void refreshReferenceData().catch((error: Error) => setNotice(error.message)); }, [refreshReferenceData]);
 
@@ -516,9 +508,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   }, [loadSourcePage, sourcePageOffset, tab]);
 
   useEffect(() => {
-    if (tab !== "sources") return;
-    void loadCategoryPage(categoryPageOffset).catch((error: Error) => setNotice(error.message));
-  }, [categoryPageOffset, loadCategoryPage, tab]);
+    if (selectedSourceId == null) {
+      setCategoryPageOffset(0);
+      return;
+    }
+    setCategoryPageOffset((current) => Math.min(current, Math.max(0, Math.floor((selectedSourceCategories.length - 1) / managementPageSize) * managementPageSize)));
+  }, [selectedSourceCategories.length, selectedSourceId]);
 
   useEffect(() => {
     if (tab !== "runs") return;
@@ -1191,33 +1186,42 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           {sourcePageItems.map((source) => {
             const bindable = compatibleScripts(source);
             const selectedKey = sourceScriptChoices[source.id] ?? bindable[0]?.key ?? "";
-            return <article className="source-card" key={source.id}>
+            const selected = selectedSourceId === source.id;
+            return <article
+              className={`source-card source-select-card${selected ? " selected" : ""}`}
+              key={source.id}
+              role="button"
+              tabIndex={0}
+              aria-pressed={selected}
+              onClick={() => { setSelectedSourceId(source.id); setCategoryPageOffset(0); }}
+              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedSourceId(source.id); setCategoryPageOffset(0); } }}
+            >
               <div className="source-card-heading">
                 <div><strong>{source.name}</strong><a href={source.base_url} target="_blank" rel="noreferrer" title={source.base_url}>{source.base_url}</a></div>
                 <div className="source-command-row">
-                  {canEdit && <button type="button" className="icon-button" title="编辑站点" aria-label={`编辑站点 ${source.name}`} onClick={() => editSource(source)}><Pencil size={15} /></button>}
-                  {canDelete && <button type="button" className="icon-button danger" title="删除站点" aria-label={`删除站点 ${source.name}`} disabled={busy} onClick={() => void perform(() => deleteAcquisitionSource(source.id), "站点已删除")}><Trash2 size={15} /></button>}
+                  {canEdit && <button type="button" className="icon-button" title="编辑站点" aria-label={`编辑站点 ${source.name}`} onClick={(event) => { event.stopPropagation(); editSource(source); }}><Pencil size={15} /></button>}
+                  {canDelete && <button type="button" className="icon-button danger" title="删除站点" aria-label={`删除站点 ${source.name}`} disabled={busy} onClick={(event) => { event.stopPropagation(); void perform(() => deleteAcquisitionSource(source.id), "站点已删除"); }}><Trash2 size={15} /></button>}
                 </div>
               </div>
               {source.notes && <p className="source-notes">{source.notes}</p>}
               <div className="script-bindings">
                 {source.script_keys.map((key) => <span className="script-chip" key={key} title={scriptByKey.get(key)?.description}>
                   {scriptByKey.get(key)?.name ?? key}
-                  {canEdit && <button type="button" title="解除绑定" aria-label={`解除绑定 ${key}`} disabled={busy} onClick={() => void perform(async () => { await unbindAcquisitionScript(source.id, key); }, "脚本绑定已移除")}><X size={13} /></button>}
+                  {canEdit && <button type="button" title="解除绑定" aria-label={`解除绑定 ${key}`} disabled={busy} onClick={(event) => { event.stopPropagation(); void perform(async () => { await unbindAcquisitionScript(source.id, key); }, "脚本绑定已移除"); }}><X size={13} /></button>}
                 </span>)}
                 {!source.script_keys.length && <small>尚未绑定脚本</small>}
               </div>
               {canEdit && bindable.length > 0 && <div className="script-bind-row">
-                <select value={selectedKey} onChange={(event) => setSourceScriptChoices((current) => ({ ...current, [source.id]: event.target.value }))} aria-label={`为 ${source.name} 选择脚本`}>
+                <select value={selectedKey} onClick={(event) => event.stopPropagation()} onChange={(event) => setSourceScriptChoices((current) => ({ ...current, [source.id]: event.target.value }))} aria-label={`为 ${source.name} 选择脚本`}>
                   {bindable.map((script) => <option key={script.key} value={script.key}>{script.name}</option>)}
                 </select>
-                <button type="button" className="icon-button" title="绑定脚本" aria-label={`为 ${source.name} 绑定脚本`} disabled={busy || !selectedKey} onClick={() => void perform(async () => { await bindAcquisitionScript(source.id, selectedKey); }, "脚本已绑定")}><Link2 size={16} /></button>
+                <button type="button" className="icon-button" title="绑定脚本" aria-label={`为 ${source.name} 绑定脚本`} disabled={busy || !selectedKey} onClick={(event) => { event.stopPropagation(); void perform(async () => { await bindAcquisitionScript(source.id, selectedKey); }, "脚本已绑定"); }}><Link2 size={16} /></button>
               </div>}
               <small className="source-summary">{categories.filter((category) => category.source_id === source.id).length} 个分类 · {source.enabled ? "启用" : "停用"}</small>
               {source.page_format_key === "telegram-channel-v1" && <div className="telegram-account-panel compact">
                 {telegramAccount?.status === "active" ? <div className="telegram-account-line">
                   <small>已连接 {telegramAccount.username ? `@${telegramAccount.username}` : telegramAccount.phone_masked}</small>
-                  {canEdit && <button type="button" className="mini-command" title="退出 Telegram 账号" aria-label="退出 Telegram 账号" disabled={busy} onClick={() => void perform(async () => { setTelegramAccount(await logoutTelegramAccount()); setTelegramCredentialEditing(true); }, "Telegram 账号已退出")}><LogOut size={13} />退出</button>}
+                  {canEdit && <button type="button" className="mini-command" title="退出 Telegram 账号" aria-label="退出 Telegram 账号" disabled={busy} onClick={(event) => { event.stopPropagation(); void perform(async () => { setTelegramAccount(await logoutTelegramAccount()); setTelegramCredentialEditing(true); }, "Telegram 账号已退出"); }}><LogOut size={13} />退出</button>}
                 </div> : <small>Telegram 未登录，请在上方表单完成登录。</small>}
               </div>}
             </article>;
@@ -1304,7 +1308,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       </div>}
 
       <div className="acquisition-section acquisition-category-list">
-        <div className="acquisition-section-title"><span>分类页面</span><small>{categoryPageTotal} 条</small></div>
+        <div className="acquisition-section-title"><span>{selectedSourceId == null ? "分类页面" : `${sourceById.get(selectedSourceId)?.name ?? "未知站点"} · 分类`}</span><small>{categoryPageTotal} 条</small></div>
         {categoryPageItems.map((category) => <article key={category.id} className="category-line">
           <ChevronRight size={15} /><div><strong>{telegramCategoryLabel(category)}</strong><small>{sourceById.get(category.source_id)?.name ?? "未知站点"} · {category.crawl_url}</small></div>
           <div className="category-command-row">
@@ -1312,11 +1316,11 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
             {canDelete && <button type="button" className="icon-button danger" title="删除分类" aria-label={`删除分类 ${category.name}`} disabled={busy} onClick={() => void perform(() => deleteAcquisitionCategory(category.id), "分类已删除")}><Trash2 size={15} /></button>}
           </div>
         </article>)}
-        {!categoryPageLoading && !categoryPageItems.length && <p className="acquisition-empty">尚未维护分类页面。</p>}
+        {!categoryPageItems.length && <p className="acquisition-empty">{selectedSourceId == null ? "尚未维护采集站点。" : "该站点尚未维护分类页面。"}</p>}
         {categoryPagePagination.totalPages > 1 && <div className="acquisition-pagination compact" aria-label="分类分页">
-          <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={categoryPageLoading || categoryPageOffset === 0} onClick={() => void loadCategoryPage(categoryPageOffset - managementPageSize)}><ChevronLeft size={18} /></button>
+          <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={categoryPageOffset === 0} onClick={() => setCategoryPageOffset((current) => Math.max(0, current - managementPageSize))}><ChevronLeft size={18} /></button>
           <span className="pagination-summary">第 {categoryPagePagination.currentPage} / {categoryPagePagination.totalPages} 页 · {categoryPagePagination.rangeStart}-{categoryPagePagination.rangeEnd} / {categoryPageTotal}</span>
-          <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={categoryPageLoading || categoryPageOffset + managementPageSize >= categoryPageTotal} onClick={() => void loadCategoryPage(categoryPageOffset + managementPageSize)}><ChevronRight size={18} /></button>
+          <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={categoryPageOffset + managementPageSize >= categoryPageTotal} onClick={() => setCategoryPageOffset((current) => current + managementPageSize)}><ChevronRight size={18} /></button>
         </div>}
       </div>
     </section>}
@@ -1324,7 +1328,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     {tab === "runs" && <section className="acquisition-grid run-layout">
       <div className="acquisition-section run-launcher" ref={runLauncherRef}>
         <div className="acquisition-section-title"><span>启动采集</span><Play size={17} /></div>
-        <label><span>分类页面</span><select value={runCategoryId} onChange={(event) => selectRunCategory(event.target.value)} disabled={!canAdd || runSubmitting}><option value="">选择分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{sourceById.get(category.source_id)?.name ?? "未知站点"} / {telegramCategoryLabel(category)}</option>)}</select></label>
+        <label><span>分类页面</span><select value={runCategoryId} onChange={(event) => selectRunCategory(event.target.value)} disabled={!canAdd || runSubmitting}><option value="">选择分类</option>{sources.map((source) => { const sourceCategories = categories.filter((category) => category.source_id === source.id); if (!sourceCategories.length) return null; return <optgroup key={source.id} label={source.name}>{sourceCategories.map((category) => <option key={category.id} value={category.id}>{telegramCategoryLabel(category)}</option>)}</optgroup>; })}</select></label>
         <label><span>爬取脚本</span><select value={runScriptKey} onChange={(event) => selectRunScript(event.target.value)} disabled={!canAdd || runSubmitting || !availableRunScripts.length}><option value="">{runCategoryId && !availableRunScripts.length ? "该站点尚未绑定脚本" : "选择脚本"}</option>{availableRunScripts.map((script) => <option key={script.key} value={script.key}>{script.name} · v{script.version}</option>)}</select></label>
         {selectedRunScript?.parameters.map((parameter) => <label key={parameter.key} title={parameter.description ?? undefined}>
           <span>{parameter.label}{parameter.required ? " *" : ""}</span>
@@ -1363,8 +1367,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
             </div>
           </article>;
         })}
-        {!runPageLoading && !runPageItems.length && <p className="acquisition-empty">尚无运行记录。</p>}
-        {runPagePagination.totalPages > 1 && <div className="acquisition-pagination compact" aria-label="运行记录分页">
+        {!runPageLoading && !runPageItems.length && <p className="acquisition-empty">尚无运行。</p>}
+        {runPagePagination.totalPages > 1 && <div className="acquisition-pagination compact" aria-label="运行分页">
           <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={runPageLoading || runPageOffset === 0} onClick={() => void loadRunPage(runPageOffset - managementPageSize)}><ChevronLeft size={18} /></button>
           <span className="pagination-summary">第 {runPagePagination.currentPage} / {runPagePagination.totalPages} 页 · {runPagePagination.rangeStart}-{runPagePagination.rangeEnd} / {runPageTotal}</span>
           <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={runPageLoading || runPageOffset + managementPageSize >= runPageTotal} onClick={() => void loadRunPage(runPageOffset + managementPageSize)}><ChevronRight size={18} /></button>
