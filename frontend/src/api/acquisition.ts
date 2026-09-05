@@ -17,7 +17,7 @@ import type {
   PaginatedAcquisitionAssets,
   Task
 } from "../types";
-import type { TelegramAccount } from "../types/telegram";
+import type { TelegramAccount, TelegramDialog, TelegramTopic } from "../types/telegram";
 import { authFetch, jsonHeaders, parseResponse as parse, withWorkspaceContext } from "../apiClient";
 import { toShanghaiDateTimeBoundary } from "../utils";
 
@@ -33,6 +33,14 @@ export async function listAcquisitionSources(): Promise<AcquisitionSource[]> {
 
 export async function getTelegramAccount(): Promise<TelegramAccount | null> {
   return parse<TelegramAccount | null>(await fetch("/api/acquisition/telegram/account"));
+}
+
+export async function listTelegramDialogs(): Promise<TelegramDialog[]> {
+  return parse<TelegramDialog[]>(await fetch("/api/acquisition/telegram/dialogs"));
+}
+
+export async function listTelegramTopics(peerId: string): Promise<TelegramTopic[]> {
+  return parse<TelegramTopic[]>(await fetch(`/api/acquisition/telegram/dialogs/${encodeURIComponent(peerId)}/topics`));
 }
 
 export async function startTelegramLogin(payload: { api_id: number; api_hash: string; phone_number: string }): Promise<TelegramAccount> {
@@ -55,7 +63,7 @@ export async function logoutTelegramAccount(): Promise<TelegramAccount> {
   return parse<TelegramAccount>(await fetch("/api/acquisition/telegram/account/logout", { method: "POST" }));
 }
 
-export async function createTelegramChannel(sourceId: number, payload: { name: string; channel_ref: string; notes?: string | null }): Promise<AcquisitionCategory> {
+export async function createTelegramChannel(sourceId: number, payload: { name: string; channel_ref: string; notes?: string | null; peer_id?: string | null; entity_type?: string | null; username?: string | null; topic_id?: number | null; topic_title?: string | null; source_mode?: "manual" | "dialog" }): Promise<AcquisitionCategory> {
   return parse<AcquisitionCategory>(await fetch(`/api/acquisition/sources/${sourceId}/telegram-channels`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(payload) }));
 }
 

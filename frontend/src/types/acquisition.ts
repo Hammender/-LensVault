@@ -54,6 +54,12 @@ export type AcquisitionCategory = {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+  telegram_peer_id?: string | null;
+  telegram_entity_type?: "channel" | "group" | "bot" | null;
+  telegram_username?: string | null;
+  telegram_topic_id?: number | null;
+  telegram_topic_title?: string | null;
+  telegram_source_mode?: "manual" | "dialog";
 };
 
 export type PaginatedAcquisitionCategories = {

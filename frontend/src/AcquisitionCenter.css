@@ -64,6 +64,16 @@
 .acquisition-forms form, .run-launcher, .export-builder { display: grid; align-content: start; gap: 8px; }
 .acquisition-forms form + form { border-left: 1px solid var(--acq-line); padding-left: 15px; }
 .telegram-account-panel { display: grid; gap: 8px; margin-top: 4px; border: 1px dashed var(--acq-line); background: rgba(229, 240, 237, .45); padding: 10px; }
+.telegram-target-panel { display: grid; gap: 8px; margin-top: 5px; border: 1px solid var(--acq-line); background: #fffdf8; padding: 10px; }
+.telegram-target-switch { display: flex; gap: 0; border-bottom: 1px solid var(--acq-line); }
+.telegram-target-switch button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); padding: 6px 9px; font-size: .76rem; }
+.telegram-target-switch button.active { border-bottom-color: var(--acq-teal); color: var(--acq-ink); }
+.telegram-media-options { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; color: var(--acq-ink); font-size: .76rem; }
+.telegram-media-options > span { color: var(--muted); font-weight: 700; }
+.telegram-topic-empty { color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.telegram-topic-error { color: #9f2634; font-size: .72rem; line-height: 1.45; }
+.telegram-media-options label, .telegram-comment-toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--acq-ink); font-size: .76rem; }
+.telegram-media-options input, .telegram-comment-toggle input { width: 14px; height: 14px; margin: 0; padding: 0; }
 .telegram-account-panel.compact { margin-top: 10px; gap: 0; padding: 8px 10px; }
 .telegram-account-panel.compact small { color: var(--muted); font-size: .74rem; line-height: 1.45; }
 .telegram-account-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

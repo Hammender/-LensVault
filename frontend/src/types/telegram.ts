@@ -9,3 +9,21 @@ export type TelegramAccount = {
   last_login_at: string | null;
   updated_at: string;
 };
+
+export type TelegramDialog = {
+  peer_id: string;
+  title: string;
+  username: string | null;
+  entity_type: "channel" | "group" | "bot";
+  is_bot: boolean;
+  is_forum: boolean;
+  unread_count: number;
+};
+
+export type TelegramTopic = {
+  topic_id: number;
+  title: string;
+  closed: boolean;
+  pinned: boolean;
+  date: string | null;
+};

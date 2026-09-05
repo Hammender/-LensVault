@@ -49,7 +49,10 @@ TELEGRAM_DATE_TO = ScriptParameter(
     description="只采集该时间及之前发布的消息。时间按上海时区理解。",
 )
 TELEGRAM_MEDIA_TYPES = ScriptParameter(
-    "media_types", "媒体类型", "string_list", default=["image", "video"], description="可填写 image、video，多个值以逗号分隔。"
+    "media_types", "采集媒体", "string_list", default=["image", "video"], description="选择图片、视频或两者。"
+)
+TELEGRAM_COLLECT_COMMENTS = ScriptParameter(
+    "collect_comments", "采集评论区媒体", "boolean", default=False, description="仅频道有效；从频道帖子的评论区采集图片和视频。"
 )
 TELEGRAM_HASHTAGS = ScriptParameter("hashtags", "包含标签", "string_list", description="所有标签均需出现在消息文案中。")
 TELEGRAM_KEYWORDS = ScriptParameter("caption_keywords", "文案关键词", "string_list", description="所有关键词均需出现在消息文案中。")
@@ -87,6 +90,7 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
             TELEGRAM_HASHTAGS,
             TELEGRAM_KEYWORDS,
             TELEGRAM_MAX_MESSAGES,
+            TELEGRAM_COLLECT_COMMENTS,
         ),
         max_download_workers=1,
     ),

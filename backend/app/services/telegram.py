@@ -25,6 +25,7 @@ from telethon.errors import (
     SessionPasswordNeededError,
 )
 from telethon.sessions import StringSession
+from telethon import functions, types
 from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.tl.types import ChatInviteAlready
 from telethon.tl.types.auth import (
@@ -627,6 +628,80 @@ class TelegramService:
         account.username = None
         account.status = "logged_out"
 
+    async def _open_client(self, account: TelegramAccount) -> TelegramClient:
+        client = TelegramClient(
+            StringSession(self.decrypt(account.session_encrypted or "")),
+            account.api_id,
+            self.decrypt(account.api_hash_encrypted),
+        )
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            raise ValueError("Telegram 登录会话已失效，请重新登录")
+        return client
+
+    async def _list_dialogs_async(self, account: TelegramAccount) -> list[dict[str, object]]:
+        client = await self._open_client(account)
+        try:
+            result: list[dict[str, object]] = []
+            async for dialog in client.iter_dialogs():
+                entity = dialog.entity
+                if not isinstance(entity, (types.User, types.Chat, types.Channel)):
+                    continue
+                if isinstance(entity, types.User):
+                    entity_type = "bot" if bool(getattr(entity, "bot", False)) else "user"
+                elif isinstance(entity, types.Channel):
+                    entity_type = "group" if bool(getattr(entity, "megagroup", False)) else "channel"
+                else:
+                    entity_type = "group"
+                if entity_type == "user":
+                    continue
+                peer_id = str(await client.get_peer_id(entity))
+                result.append({
+                    "peer_id": peer_id,
+                    "title": dialog.name or getattr(entity, "title", None) or getattr(entity, "username", None) or peer_id,
+                    "username": getattr(entity, "username", None),
+                    "entity_type": entity_type,
+                    "is_bot": bool(getattr(entity, "bot", False)),
+                    "is_forum": bool(getattr(entity, "forum", False)),
+                    "unread_count": int(getattr(dialog, "unread_count", 0) or 0),
+                })
+            return result
+        finally:
+            await client.disconnect()
+
+    def list_dialogs(self, account: TelegramAccount) -> list[dict[str, object]]:
+        try:
+            return self._run(self._list_dialogs_async(account))
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(translate_telegram_error(exc)) from exc
+
+    async def _list_topics_async(self, account: TelegramAccount, peer_id: str) -> list[dict[str, object]]:
+        client = await self._open_client(account)
+        try:
+            entity = await client.get_entity(int(peer_id))
+            if not isinstance(entity, types.Channel) or not bool(getattr(entity, "megagroup", False)):
+                return []
+            topics = await client(functions.messages.GetForumTopicsRequest(peer=entity, offset_date=None, offset_id=0, offset_topic=0, limit=100))
+            result = []
+            for topic in getattr(topics, "topics", []):
+                result.append({
+                    "topic_id": int(getattr(topic, "id", 0)),
+                    "title": str(getattr(topic, "title", "") or "未命名话题"),
+                    "closed": bool(getattr(topic, "closed", False)),
+                    "pinned": bool(getattr(topic, "pinned", False)),
+                    "date": as_shanghai_naive(getattr(topic, "date", None)) if getattr(topic, "date", None) else None,
+                })
+            return result
+        finally:
+            await client.disconnect()
+
+    def list_topics(self, account: TelegramAccount, peer_id: str) -> list[dict[str, object]]:
+        try:
+            return self._run(self._list_topics_async(account, peer_id))
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(translate_telegram_error(exc)) from exc
+
     def read_channel_media(
         self,
         account: TelegramAccount,
@@ -656,7 +731,7 @@ class TelegramService:
         try:
             if not await client.is_user_authorized():
                 raise ValueError("Telegram 登录会话已失效，请重新登录")
-            channel = await self._resolve_channel(client, channel_ref)
+            channel = await self._resolve_channel(client, str(parameters.get("peer_id") or channel_ref))
             date_from = self._parse_datetime(parameters.get("date_from"))
             date_to = self._parse_datetime(parameters.get("date_to"))
             media_types = {str(item) for item in parameters.get("media_types", ["image", "video"])}
@@ -688,23 +763,32 @@ class TelegramService:
 
             async def emit(group: list[Any]) -> None:
                 batch = await self._download_media_group(client, channel, group, target_dir)
+                await emit_records(batch)
+
+            async def emit_records(batch: list[dict[str, object]]) -> None:
                 if not batch:
                     return
                 if on_records is not None:
                     on_records(batch)
                 records.extend(batch)
 
-            async for message in client.iter_messages(
-                channel,
-                **scan_iter_kwargs(newest_first=newest_first, date_from=date_from, date_to=date_to),
-            ):
+            iterator_kwargs = scan_iter_kwargs(newest_first=newest_first, date_from=date_from, date_to=date_to)
+            topic_id = parameters.get("topic_id")
+            if topic_id:
+                iterator_kwargs["reply_to"] = int(topic_id)
+            async for message in client.iter_messages(channel, **iterator_kwargs):
                 seen += 1
-                for group in scanner.push(message):
+                completed_groups = scanner.push(message)
+                for group in completed_groups:
                     await emit(group)
+                    if parameters.get("collect_comments") and not topic_id:
+                        await self._emit_comment_media(client, channel, group[0], target_dir, media_types, emit_records)
                 if scanner.done or seen >= safety_limit:
                     break
             for group in scanner.finish():
                 await emit(group)
+                if parameters.get("collect_comments") and not topic_id:
+                    await self._emit_comment_media(client, channel, group[0], target_dir, media_types, emit_records)
             LOGGER.info("Telegram 采集结束 matched_messages=%s media=%s scanned_api=%s", scanner.matched, len(records), seen)
             return records
         except FloodWaitError as exc:
@@ -714,6 +798,33 @@ class TelegramService:
             raise ValueError("Telegram 限流，请重新运行采集任务") from exc
         finally:
             await client.disconnect()
+
+    async def _emit_comment_media(
+        self,
+        client: TelegramClient,
+        channel: Any,
+        root_message: Any,
+        target_dir: Path,
+        media_types: set[str],
+        emit: Callable[[list[dict[str, object]]], Any],
+    ) -> None:
+        try:
+            comments = [message async for message in client.iter_messages(channel, reply_to=int(root_message.id), limit=500)]
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Telegram 评论读取失败 channel=%s message_id=%s: %s", getattr(channel, "id", None), root_message.id, exc)
+            return
+        for comment in comments:
+            if message_media_type(comment) not in media_types:
+                continue
+            comment.grouped_id = None
+            batch = await self._download_media_group(client, channel, [comment], target_dir)
+            for record in batch:
+                record["is_comment"] = True
+                record["root_channel_message_id"] = int(root_message.id)
+                record["reply_to_message_id"] = getattr(getattr(comment, "reply_to", None), "reply_to_msg_id", None)
+                record["external_key"] = f"{record['channel_id']}:{comment.id}:1"
+            if batch:
+                await emit(batch)
 
     async def _download_message_media(self, client: TelegramClient, message: Any, path: Path) -> Path | None:
         timeout = max(1, int(self.settings.telegram_download_timeout_seconds))
@@ -807,6 +918,8 @@ class TelegramService:
             if not isinstance(invite, ChatInviteAlready):
                 raise ValueError("请先使用 Telegram 客户端加入该私人频道")
             return invite.chat
+        if re.fullmatch(r"-?\d+", normalized):
+            return await client.get_entity(int(normalized))
         return await client.get_entity(normalized)
 
     @staticmethod
@@ -822,7 +935,7 @@ class TelegramService:
         username = getattr(channel, "username", None)
         channel_id = str(getattr(channel, "id", ""))
         return {
-            "external_key": f"{channel_id}:{message.id}:0",
+            "external_key": f"{channel_id}:{message.id}:{1 if getattr(message, 'is_comment', False) else 0}",
             "source_url": f"https://t.me/{username}/{message.id}" if username else f"tg://resolve?domain={channel_id}&post={message.id}",
             "filename": path.name if path else f"telegram-{channel_id}-{message.id}",
             "path": path,
@@ -837,4 +950,13 @@ class TelegramService:
             "caption": caption or None,
             "hashtags": tags,
             "protected_content": protected,
+            "peer_id": channel_id,
+            "entity_type": "group" if bool(getattr(channel, "megagroup", False)) else "channel",
+            "sender_id": getattr(getattr(message, "sender", None), "id", None),
+            "sender_username": getattr(getattr(message, "sender", None), "username", None),
+            "sender_is_bot": bool(getattr(getattr(message, "sender", None), "bot", False)),
+            "reply_to_message_id": getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
+            "topic_id": getattr(getattr(message, "reply_to", None), "reply_to_top_id", None),
+            "is_comment": bool(getattr(message, "is_comment", False)),
+            "root_channel_message_id": None,
         }

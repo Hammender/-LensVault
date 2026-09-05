@@ -48,6 +48,12 @@ class AcquisitionCategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     crawl_url: str = Field(min_length=1, max_length=2048)
     notes: str | None = Field(default=None, max_length=2000)
+    telegram_peer_id: str | None = Field(default=None, max_length=128)
+    telegram_entity_type: Literal["channel", "group", "bot"] | None = None
+    telegram_username: str | None = Field(default=None, max_length=256)
+    telegram_topic_id: int | None = None
+    telegram_topic_title: str | None = Field(default=None, max_length=256)
+    telegram_source_mode: Literal["manual", "dialog"] = "manual"
 
 
 class AcquisitionCategoryUpdate(BaseModel):
@@ -55,6 +61,12 @@ class AcquisitionCategoryUpdate(BaseModel):
     crawl_url: str | None = Field(default=None, min_length=1, max_length=2048)
     notes: str | None = Field(default=None, max_length=2000)
     enabled: bool | None = None
+    telegram_peer_id: str | None = Field(default=None, max_length=128)
+    telegram_entity_type: Literal["channel", "group", "bot"] | None = None
+    telegram_username: str | None = Field(default=None, max_length=256)
+    telegram_topic_id: int | None = None
+    telegram_topic_title: str | None = Field(default=None, max_length=256)
+    telegram_source_mode: Literal["manual", "dialog"] | None = None
 
 
 class AcquisitionCategoryRead(BaseModel):
@@ -66,6 +78,12 @@ class AcquisitionCategoryRead(BaseModel):
     enabled: bool
     created_at: datetime
     updated_at: datetime
+    telegram_peer_id: str | None = None
+    telegram_entity_type: str | None = None
+    telegram_username: str | None = None
+    telegram_topic_id: int | None = None
+    telegram_topic_title: str | None = None
+    telegram_source_mode: str = "manual"
 
     model_config = {"from_attributes": True}
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -80,11 +81,16 @@ class AcquisitionCategory(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     path: Mapped[str] = mapped_column(String(1024), nullable=False)
     crawl_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    telegram_peer_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    telegram_entity_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    telegram_topic_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    telegram_topic_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    telegram_source_mode: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual", nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
-
 
 class AcquisitionRun(Base):
     __tablename__ = "acquisition_runs"
@@ -220,6 +226,16 @@ class AcquisitionTelegramMessage(Base):
     caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     message_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     protected_content: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    peer_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    entity_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    sender_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    sender_username: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    sender_is_bot: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    reply_to_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    topic_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    topic_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    is_comment: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False, index=True)
+    root_channel_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 

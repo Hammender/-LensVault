@@ -715,6 +715,12 @@ CREATE INDEX ix_workspace_members_workspace_id ON workspace_members (workspace_i
 --   name：名称
 --   path：采集分类相对路径
 --   crawl_url：采集分类抓取地址
+--   telegram_peer_id：Telegram 会话 peer 标识
+--   telegram_entity_type：Telegram 会话类型
+--   telegram_username：Telegram 用户名
+--   telegram_topic_id：Telegram 论坛主题标识
+--   telegram_topic_title：Telegram 论坛主题名称
+--   telegram_source_mode：Telegram 来源配置方式
 --   notes：备注说明
 --   enabled：是否启用
 --   created_at：记录创建时间（上海时区无时区值）
@@ -726,6 +732,12 @@ CREATE TABLE acquisition_categories (
 	name VARCHAR(256) NOT NULL, 
 	path VARCHAR(1024) NOT NULL, 
 	crawl_url VARCHAR(2048) NOT NULL, 
+	telegram_peer_id VARCHAR(128), 
+	telegram_entity_type VARCHAR(16), 
+	telegram_username VARCHAR(256), 
+	telegram_topic_id INTEGER, 
+	telegram_topic_title VARCHAR(256), 
+	telegram_source_mode VARCHAR(16) DEFAULT 'manual' NOT NULL, 
 	notes TEXT, 
 	enabled BOOLEAN NOT NULL, 
 	created_at DATETIME NOT NULL, 
@@ -738,6 +750,8 @@ CREATE TABLE acquisition_categories (
 CREATE INDEX ix_acquisition_categories_enabled ON acquisition_categories (enabled);
 CREATE INDEX ix_acquisition_categories_parent_id ON acquisition_categories (parent_id);
 CREATE INDEX ix_acquisition_categories_source_id ON acquisition_categories (source_id);
+CREATE INDEX ix_acquisition_categories_telegram_peer_id ON acquisition_categories (telegram_peer_id);
+CREATE INDEX ix_acquisition_categories_telegram_topic_id ON acquisition_categories (telegram_topic_id);
 
 -- 表名：acquisition_import_batch_items
 -- 表说明：采集入库批次内的逐图处理结果
@@ -1587,6 +1601,16 @@ CREATE INDEX ix_acquisition_run_items_status ON acquisition_run_items (status);
 --   caption：消息文案
 --   message_url：消息链接
 --   protected_content：是否为受保护内容
+--   peer_id：Telegram 会话 peer 标识
+--   entity_type：Telegram 会话类型
+--   sender_id：消息发送者标识
+--   sender_username：消息发送者用户名
+--   sender_is_bot：发送者是否为机器人
+--   reply_to_message_id：回复的消息标识
+--   topic_id：论坛主题标识
+--   topic_title：论坛主题名称
+--   is_comment：是否为评论消息
+--   root_channel_message_id：评论所属频道原帖标识
 --   created_at：记录创建时间（上海时区无时区值）
 --   updated_at：记录最后更新时间（上海时区无时区值）
 CREATE TABLE acquisition_telegram_messages (
@@ -1605,6 +1629,16 @@ CREATE TABLE acquisition_telegram_messages (
 	caption TEXT, 
 	message_url VARCHAR(2048), 
 	protected_content BOOLEAN NOT NULL, 
+	peer_id VARCHAR(128), 
+	entity_type VARCHAR(16), 
+	sender_id BIGINT, 
+	sender_username VARCHAR(256), 
+	sender_is_bot BOOLEAN DEFAULT (0) NOT NULL, 
+	reply_to_message_id INTEGER, 
+	topic_id INTEGER, 
+	topic_title VARCHAR(256), 
+	is_comment BOOLEAN DEFAULT (0) NOT NULL, 
+	root_channel_message_id INTEGER, 
 	created_at DATETIME NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
@@ -1614,9 +1648,15 @@ CREATE TABLE acquisition_telegram_messages (
 );
 CREATE INDEX ix_acquisition_telegram_messages_channel_id ON acquisition_telegram_messages (channel_id);
 CREATE INDEX ix_acquisition_telegram_messages_grouped_id ON acquisition_telegram_messages (grouped_id);
+CREATE INDEX ix_acquisition_telegram_messages_is_comment ON acquisition_telegram_messages (is_comment);
 CREATE INDEX ix_acquisition_telegram_messages_message_id ON acquisition_telegram_messages (message_id);
+CREATE INDEX ix_acquisition_telegram_messages_peer_id ON acquisition_telegram_messages (peer_id);
 CREATE INDEX ix_acquisition_telegram_messages_published_at ON acquisition_telegram_messages (published_at);
+CREATE INDEX ix_acquisition_telegram_messages_reply_to_message_id ON acquisition_telegram_messages (reply_to_message_id);
+CREATE INDEX ix_acquisition_telegram_messages_root_channel_message_id ON acquisition_telegram_messages (root_channel_message_id);
+CREATE INDEX ix_acquisition_telegram_messages_sender_id ON acquisition_telegram_messages (sender_id);
 CREATE UNIQUE INDEX ix_acquisition_telegram_messages_source_item_id ON acquisition_telegram_messages (source_item_id);
+CREATE INDEX ix_acquisition_telegram_messages_topic_id ON acquisition_telegram_messages (topic_id);
 CREATE INDEX ix_acquisition_telegram_messages_workspace_id ON acquisition_telegram_messages (workspace_id);
 
 -- 表名：gallery_similarity_group_members

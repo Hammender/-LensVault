@@ -14,6 +14,8 @@ import {
   getAcquisitionAsset,
   getAcquisitionAssetSummary,
   getTelegramAccount,
+  listTelegramDialogs,
+  listTelegramTopics,
   listAcquisitionAssetIds,
   listAcquisitionAssets,
   listAcquisitionCategories,
@@ -72,7 +74,7 @@ import type {
   AcquisitionSource,
   PaginatedAcquisitionAssets
 } from "./types";
-import type { TelegramAccount } from "./types/telegram";
+import type { TelegramAccount, TelegramDialog, TelegramTopic } from "./types/telegram";
 import { formatBytes, formatDate, toShanghaiDateTimeBoundary } from "./utils";
 import "./AcquisitionCenter.css";
 
@@ -103,6 +105,19 @@ function statusLabel(status: string): string {
     import_queued: "等待入库", importing: "正在入库", import_failed: "入库失败",
     gallery_duplicate: "图库已存在", completed_with_errors: "部分失败", ready: "可下载", downloaded: "已下载", expired: "已过期"
   } as Record<string, string>)[status] ?? status;
+}
+
+function telegramDialogTitle(dialog: TelegramDialog): string {
+  return dialog.title.replace(/\s*[·•]\s*(?:频道|群组|机器人|论坛)(?:\s*[·•]\s*(?:频道|群组|机器人|论坛))*\s*$/u, "").trim() || dialog.title;
+}
+
+function selectedTelegramMediaTypes(value: string | boolean | undefined): string[] {
+  return String(value ?? "").split(",").map((item) => item.trim()).filter((item) => item === "image" || item === "video");
+}
+
+function telegramCategoryLabel(category: AcquisitionCategory): string {
+  if (!category.telegram_topic_title || category.name.includes(category.telegram_topic_title)) return category.name;
+  return `${category.name} / ${category.telegram_topic_title}`;
 }
 
 function runStopLabel(run: AcquisitionRun): string | null {
@@ -190,7 +205,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [telegramCredentialEditing, setTelegramCredentialEditing] = useState(false);
   const [sourceScriptChoices, setSourceScriptChoices] = useState<Record<number, string>>({});
   const [categorySourceId, setCategorySourceId] = useState("");
+  const categorySourceTouchedRef = useRef(false);
   const [categoryName, setCategoryName] = useState("");
+  const categoryNameTouchedRef = useRef(false);
   const [categoryUrl, setCategoryUrl] = useState("");
   const [categoryNotes, setCategoryNotes] = useState("");
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
@@ -198,6 +215,17 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [runScriptKey, setRunScriptKey] = useState("");
   const [runParameters, setRunParameters] = useState<Record<string, string | boolean>>({});
   const [telegramAccount, setTelegramAccount] = useState<TelegramAccount | null>(null);
+  const [telegramDialogs, setTelegramDialogs] = useState<TelegramDialog[]>([]);
+  const [telegramTopics, setTelegramTopics] = useState<TelegramTopic[]>([]);
+  const [telegramDialogLoading, setTelegramDialogLoading] = useState(false);
+  const [telegramTopicLoading, setTelegramTopicLoading] = useState(false);
+  const [telegramTopicError, setTelegramTopicError] = useState<string | null>(null);
+  const [telegramTargetMode, setTelegramTargetMode] = useState<"dialog" | "manual">("dialog");
+  const [telegramDialogPeerId, setTelegramDialogPeerId] = useState("");
+  const [telegramTopicId, setTelegramTopicId] = useState("");
+  const [telegramTopicTitle, setTelegramTopicTitle] = useState("");
+  const [telegramMediaTypes, setTelegramMediaTypes] = useState<string[]>(["image", "video"]);
+  const [telegramCollectComments, setTelegramCollectComments] = useState(false);
   const [telegramApiId, setTelegramApiId] = useState("");
   const [telegramApiHash, setTelegramApiHash] = useState("");
   const [telegramPhone, setTelegramPhone] = useState("");
@@ -445,6 +473,42 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   }, [assetOffset, assetStatus, categoryPageOffset, importBatchItemOffset, importBatchOffset, lightboxSelection, loadAssetPage, loadCategoryPage, loadImportBatchItemPage, loadImportBatchPage, loadRunPage, loadSimilarityPage, loadSourcePage, refreshReferenceData, reviewMode, runPageOffset, selectedImportBatchId, similarityOffset, sourcePageOffset, tab]);
 
   useEffect(() => { void refreshReferenceData().catch((error: Error) => setNotice(error.message)); }, [refreshReferenceData]);
+
+  useEffect(() => {
+    const selectedSource = sourceById.get(Number(categorySourceId));
+    const isTelegramCategory = selectedSource?.page_format_key === "telegram-channel-v1";
+    if (!categorySourceTouchedRef.current) return;
+    if (!isTelegramCategory) {
+      setTelegramDialogPeerId("");
+      setTelegramTopics([]);
+      setTelegramTopicError(null);
+      return;
+    }
+    if (telegramAccount?.status !== "active" || telegramDialogs.length > 0 || telegramDialogLoading) return;
+    setTelegramDialogLoading(true);
+    void listTelegramDialogs().then(setTelegramDialogs).catch((error: Error) => setNotice(error.message)).finally(() => setTelegramDialogLoading(false));
+  }, [categorySourceId, sourceById, telegramAccount?.status, telegramDialogLoading, telegramDialogs.length]);
+
+  useEffect(() => {
+    if (!telegramDialogPeerId) { setTelegramTopics([]); setTelegramTopicError(null); return; }
+    const dialog = telegramDialogs.find((item) => item.peer_id === telegramDialogPeerId);
+    if (!dialog || dialog.entity_type === "bot" || !dialog.is_forum) { setTelegramTopics([]); setTelegramTopicError(null); return; }
+    let cancelled = false;
+    setTelegramTopicLoading(true);
+    setTelegramTopicError(null);
+    void listTelegramTopics(telegramDialogPeerId)
+      .then((items) => { if (!cancelled) setTelegramTopics(items); })
+      .catch((error: Error) => { if (!cancelled) { setTelegramTopics([]); setTelegramTopicError(error.message); } })
+      .finally(() => { if (!cancelled) setTelegramTopicLoading(false); });
+    return () => { cancelled = true; };
+  }, [telegramDialogPeerId, telegramDialogs]);
+
+  useEffect(() => {
+    if (editingCategoryId != null || telegramTargetMode !== "dialog" || !telegramDialogPeerId) return;
+    const dialog = telegramDialogs.find((item) => item.peer_id === telegramDialogPeerId);
+    if (!dialog || categoryNameTouchedRef.current) return;
+    setCategoryName(telegramDialogTitle(dialog));
+  }, [editingCategoryId, telegramDialogPeerId, telegramDialogs, telegramTargetMode]);
 
   useEffect(() => {
     if (tab !== "sources") return;
@@ -726,7 +790,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
 
   function resetCategoryForm() {
     setEditingCategoryId(null);
+    categorySourceTouchedRef.current = false;
     setCategoryName("");
+    categoryNameTouchedRef.current = false;
     setCategoryUrl("");
     setCategoryNotes("");
   }
@@ -735,18 +801,30 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setEditingCategoryId(category.id);
     setCategorySourceId(String(category.source_id));
     setCategoryName(category.name);
+    categoryNameTouchedRef.current = true;
     setCategoryUrl(category.crawl_url);
     setCategoryNotes(category.notes ?? "");
   }
 
   async function submitCategory(event: FormEvent) {
     event.preventDefault();
-    if (!categorySourceId || !categoryName.trim() || !categoryUrl.trim()) return;
+    if (!categorySourceId || !categoryName.trim()) return;
     await perform(async () => {
       const payload = { name: categoryName.trim(), crawl_url: categoryUrl.trim(), notes: categoryNotes.trim() || null };
       if (editingCategoryId) await updateAcquisitionCategory(editingCategoryId, payload);
       else if (sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1") {
-        await createTelegramChannel(Number(categorySourceId), { name: payload.name, channel_ref: categoryUrl.trim(), notes: payload.notes });
+        const dialog = telegramDialogs.find((item) => item.peer_id === telegramDialogPeerId);
+        await createTelegramChannel(Number(categorySourceId), {
+          name: payload.name,
+          channel_ref: categoryUrl.trim() || (dialog?.username ? `@${dialog.username}` : telegramDialogPeerId),
+          notes: payload.notes,
+          peer_id: telegramTargetMode === "dialog" ? telegramDialogPeerId || null : null,
+          entity_type: telegramTargetMode === "dialog" ? dialog?.entity_type : undefined,
+          username: telegramTargetMode === "dialog" ? dialog?.username : undefined,
+          topic_id: telegramTopicId ? Number(telegramTopicId) : null,
+          topic_title: telegramTopicTitle.trim() || null,
+          source_mode: telegramTargetMode,
+        });
       } else await createAcquisitionCategory(Number(categorySourceId), payload);
       resetCategoryForm();
     }, editingCategoryId ? "分类信息已更新" : "分类已创建");
@@ -786,6 +864,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
 
   async function startRun() {
     if (!runCategoryId || !runScriptKey || runSubmitting) return;
+    if (selectedRunScript?.key === "telegram-channel-mtproto" && selectedTelegramMediaTypes(runParameters.media_types).length === 0) {
+      setNotice("至少选择一种采集媒体：图片或视频");
+      return;
+    }
     setRunSubmitting(true);
     setNotice(null);
     try {
@@ -1195,9 +1277,27 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         </form>
         <form onSubmit={(event) => void submitCategory(event)}>
           <div className="acquisition-section-title"><span>{editingCategoryId ? "编辑分类" : "新增分类"}</span><FolderPlus size={17} /></div>
-          <select value={categorySourceId} onChange={(event) => setCategorySourceId(event.target.value)} required disabled={editingCategoryId != null}><option value="">选择站点</option>{sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select>
-          <input value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="分类名称" required />
-          <input type={sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" ? "text" : "url"} value={categoryUrl} onChange={(event) => setCategoryUrl(event.target.value)} placeholder={sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" ? "@频道名或私人频道链接" : "分类分页入口 URL"} required />
+          <select value={categorySourceId} onChange={(event) => { categorySourceTouchedRef.current = true; setCategorySourceId(event.target.value); }} required disabled={editingCategoryId != null}><option value="">选择站点</option>{sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select>
+          <input value={categoryName} onChange={(event) => { categoryNameTouchedRef.current = true; setCategoryName(event.target.value); }} placeholder="分类名称" required />
+          {sourceById.get(Number(categorySourceId))?.page_format_key !== "telegram-channel-v1" && <input type="url" value={categoryUrl} onChange={(event) => setCategoryUrl(event.target.value)} placeholder="分类分页入口 URL" required />}
+          {sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" && <div className="telegram-target-panel">
+            <div className="telegram-target-switch" role="tablist" aria-label="Telegram 来源方式">
+              <button type="button" className={telegramTargetMode === "dialog" ? "active" : ""} onClick={() => setTelegramTargetMode("dialog")}>选择已登录会话</button>
+              <button type="button" className={telegramTargetMode === "manual" ? "active" : ""} onClick={() => setTelegramTargetMode("manual")}>手工输入引用</button>
+            </div>
+            {telegramTargetMode === "dialog" && <>
+              <select value={telegramDialogPeerId} onChange={(event) => { setTelegramDialogPeerId(event.target.value); setTelegramTopicId(""); setTelegramTopicTitle(""); }} aria-label="选择 Telegram 会话">
+                <option value="">{telegramDialogLoading ? "正在读取会话…" : "选择频道、群组或机器人"}</option>
+                {telegramDialogs.map((dialog) => <option key={dialog.peer_id} value={dialog.peer_id}>{dialog.title} · {dialog.entity_type === "bot" ? "机器人" : dialog.entity_type === "group" ? "群组" : "频道"}{dialog.is_forum ? " · 论坛" : ""}</option>)}
+              </select>
+              {telegramTopics.length > 0 && <select value={telegramTopicId} onChange={(event) => { const topic = telegramTopics.find((item) => String(item.topic_id) === event.target.value); setTelegramTopicId(event.target.value); setTelegramTopicTitle(topic?.title ?? ""); if (!categoryNameTouchedRef.current) { const dialog = telegramDialogs.find((item) => item.peer_id === telegramDialogPeerId); setCategoryName(topic && dialog ? `${telegramDialogTitle(dialog)} / ${topic.title}` : dialog ? telegramDialogTitle(dialog) : ""); } }} aria-label="选择论坛话题"><option value="">采集全部话题</option>{telegramTopics.map((topic) => <option key={topic.topic_id} value={topic.topic_id}>{topic.title}{topic.closed ? " · 已关闭" : ""}</option>)}</select>}
+              {telegramTopicLoading && <small>正在读取论坛话题…</small>}
+              {!telegramTopicLoading && telegramTopicError && <small className="telegram-topic-error">读取论坛话题失败：{telegramTopicError}</small>}
+              {!telegramTopicLoading && !telegramTopicError && telegramDialogPeerId && telegramTopics.length === 0 && <small className="telegram-topic-empty">未读取到论坛话题，可直接手工输入话题 ID。</small>}
+            </>}
+            {telegramTargetMode === "manual" && <input type="text" value={categoryUrl} onChange={(event) => setCategoryUrl(event.target.value)} placeholder="频道用户名、频道链接、私有邀请链接或 peer ID" required />}
+            <input value={telegramTopicId} onChange={(event) => setTelegramTopicId(event.target.value)} placeholder="可选：手工输入话题 ID" inputMode="numeric" />
+          </div>}
           <textarea value={categoryNotes} onChange={(event) => setCategoryNotes(event.target.value)} placeholder="备注（选填）" rows={3} />
           <div className="form-command-row"><button type="submit" disabled={busy}>{editingCategoryId ? "保存分类" : sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" ? "添加 Telegram 频道" : "新建分类"}</button>{editingCategoryId && <button type="button" className="secondary-command" onClick={resetCategoryForm}>取消</button>}</div>
         </form>
@@ -1206,7 +1306,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       <div className="acquisition-section acquisition-category-list">
         <div className="acquisition-section-title"><span>分类页面</span><small>{categoryPageTotal} 条</small></div>
         {categoryPageItems.map((category) => <article key={category.id} className="category-line">
-          <ChevronRight size={15} /><div><strong>{category.name}</strong><small>{sourceById.get(category.source_id)?.name ?? "未知站点"} · {category.crawl_url}</small></div>
+          <ChevronRight size={15} /><div><strong>{telegramCategoryLabel(category)}</strong><small>{sourceById.get(category.source_id)?.name ?? "未知站点"} · {category.crawl_url}</small></div>
           <div className="category-command-row">
             {canEdit && <button type="button" className="icon-button" title="编辑分类" aria-label={`编辑分类 ${category.name}`} onClick={() => editCategory(category)}><Pencil size={15} /></button>}
             {canDelete && <button type="button" className="icon-button danger" title="删除分类" aria-label={`删除分类 ${category.name}`} disabled={busy} onClick={() => void perform(() => deleteAcquisitionCategory(category.id), "分类已删除")}><Trash2 size={15} /></button>}
@@ -1224,11 +1324,17 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     {tab === "runs" && <section className="acquisition-grid run-layout">
       <div className="acquisition-section run-launcher" ref={runLauncherRef}>
         <div className="acquisition-section-title"><span>启动采集</span><Play size={17} /></div>
-        <label><span>分类页面</span><select value={runCategoryId} onChange={(event) => selectRunCategory(event.target.value)} disabled={!canAdd || runSubmitting}><option value="">选择分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{sourceById.get(category.source_id)?.name ?? "未知站点"} / {category.name}</option>)}</select></label>
+        <label><span>分类页面</span><select value={runCategoryId} onChange={(event) => selectRunCategory(event.target.value)} disabled={!canAdd || runSubmitting}><option value="">选择分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{sourceById.get(category.source_id)?.name ?? "未知站点"} / {telegramCategoryLabel(category)}</option>)}</select></label>
         <label><span>爬取脚本</span><select value={runScriptKey} onChange={(event) => selectRunScript(event.target.value)} disabled={!canAdd || runSubmitting || !availableRunScripts.length}><option value="">{runCategoryId && !availableRunScripts.length ? "该站点尚未绑定脚本" : "选择脚本"}</option>{availableRunScripts.map((script) => <option key={script.key} value={script.key}>{script.name} · v{script.version}</option>)}</select></label>
         {selectedRunScript?.parameters.map((parameter) => <label key={parameter.key} title={parameter.description ?? undefined}>
           <span>{parameter.label}{parameter.required ? " *" : ""}</span>
-          {parameter.type === "boolean"
+          {parameter.key === "media_types"
+            ? <div className="telegram-media-options"><span>选择媒体</span><label><input type="checkbox" checked={selectedTelegramMediaTypes(runParameters.media_types).includes("image")} onChange={(event) => setRunParameters((current) => { const values = selectedTelegramMediaTypes(current.media_types); const next = event.target.checked ? [...new Set([...values, "image"])] : values.filter((item) => item !== "image"); return { ...current, media_types: next.join(",") }; })} /> 图片</label><label><input type="checkbox" checked={selectedTelegramMediaTypes(runParameters.media_types).includes("video")} onChange={(event) => setRunParameters((current) => { const values = selectedTelegramMediaTypes(current.media_types); const next = event.target.checked ? [...new Set([...values, "video"])] : values.filter((item) => item !== "video"); return { ...current, media_types: next.join(",") }; })} /> 视频</label></div>
+            : parameter.key === "collect_comments" && selectedRunCategory?.telegram_entity_type !== "bot" && selectedRunCategory?.telegram_entity_type !== "group"
+              ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
+              : parameter.key === "collect_comments"
+                ? <span className="telegram-topic-empty">机器人或群组不支持频道评论区采集</span>
+              : parameter.type === "boolean"
             ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
             : parameter.type === "select"
               ? <select value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))}>{parameter.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
@@ -1249,7 +1355,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
               ? "载入此运行配置"
               : "原分类或脚本已不可用";
           return <article className="run-line" key={run.id}>
-            <div><strong>{run.source_name} / {run.category_name}</strong><small>{run.script_name} · v{run.script_version} · {formatDate(run.created_at)} · {run.mode === "verify" ? "核验更新" : run.mode === "full" || run.parameters.force_full_scan === true ? "全量发现" : "增量"}</small>{runStopLabel(run) && <small>{runStopLabel(run)}</small>}{run.error_message && <p className="run-error">{run.error_message}</p>}</div>
+            <div><strong>{run.source_name} / {telegramCategoryLabel(categoryById.get(run.category_id) ?? ({ name: run.category_name } as AcquisitionCategory))}</strong><small>{run.script_name} · v{run.script_version} · {formatDate(run.created_at)} · {run.mode === "verify" ? "核验更新" : run.mode === "full" || run.parameters.force_full_scan === true ? "全量发现" : "增量"}</small>{runStopLabel(run) && <small>{runStopLabel(run)}</small>}{run.error_message && <p className="run-error">{run.error_message}</p>}</div>
             <div className="run-actions">
               <div className="run-metrics"><span className={`acquisition-status status-${run.status}`}>{statusLabel(run.status)}</span><small>扫描 {run.total_count} · 跳过 {run.skipped_count} · 忽略 {run.ignored_count}</small><small>下载成功 {run.download_success_count} · 新候选 {run.candidate_count} · 内容重复 {run.content_duplicate_count} · 清晰度重复 {run.resolution_duplicate_count} · 高清替换 {run.resolution_upgrade_count} · 图库重复 {run.gallery_duplicate_count} · 失败 {run.error_count}</small></div>
               <button type="button" className="icon-button" title={loadTitle} aria-label={`${loadTitle} ${run.category_name}`} disabled={!canLoadConfiguration} onClick={() => loadRunConfiguration(run)}><RotateCcw size={16} /></button>

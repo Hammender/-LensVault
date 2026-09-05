@@ -144,6 +144,8 @@ class ScriptDefinition:
             end_page = result.get("end_page")
             if end_page is not None and int(end_page) < start_page:
                 raise ValueError("结束页不能小于起始页")
+        if self.key == "telegram-channel-mtproto" and not result.get("media_types"):
+            raise ValueError("至少选择一种采集媒体：图片或视频")
         return result
 
 

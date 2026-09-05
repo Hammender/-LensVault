@@ -62,6 +62,8 @@ from app.schemas import (
     TelegramChannelCreate,
     TelegramLoginStartRequest,
     TelegramLoginVerifyRequest,
+    TelegramDialogRead,
+    TelegramTopicRead,
     PaginatedAcquisitionAssets,
     PaginatedAcquisitionCategories,
     PaginatedAcquisitionImportBatchItems,
@@ -115,6 +117,35 @@ def _telegram_account_or_404(db: Session, workspace_id: int) -> TelegramAccount:
     if account is None:
         raise HTTPException(status_code=404, detail="当前工作区尚未绑定 Telegram 账号")
     return account
+
+
+@router.get("/telegram/dialogs", response_model=list[TelegramDialogRead])
+def list_telegram_dialogs(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[TelegramDialogRead]:
+    account = _telegram_account_or_404(db, current.workspace_id)
+    if account.status != "active":
+        raise HTTPException(status_code=400, detail="当前工作区 Telegram 账号不可用")
+    try:
+        return [TelegramDialogRead(**item) for item in _telegram_service(request).list_dialogs(account)]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/telegram/dialogs/{peer_id}/topics", response_model=list[TelegramTopicRead])
+def list_telegram_topics(
+    peer_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> list[TelegramTopicRead]:
+    account = _telegram_account_or_404(db, current.workspace_id)
+    try:
+        return [TelegramTopicRead(**item) for item in _telegram_service(request).list_topics(account, peer_id)]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _telegram_account_read(account: TelegramAccount, request: Request | None = None) -> TelegramAccountRead:
@@ -926,7 +957,17 @@ def create_telegram_channel(
         raise HTTPException(status_code=400, detail="当前工作区 Telegram 账号不可用")
     try:
         category = _service(request).create_category(
-            db, source, payload.name, payload.channel_ref, payload.notes
+            db,
+            source,
+            payload.name,
+            payload.channel_ref,
+            payload.notes,
+            telegram_peer_id=payload.peer_id,
+            telegram_entity_type=payload.entity_type,
+            telegram_username=payload.username,
+            telegram_topic_id=payload.topic_id,
+            telegram_topic_title=payload.topic_title,
+            telegram_source_mode=payload.source_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

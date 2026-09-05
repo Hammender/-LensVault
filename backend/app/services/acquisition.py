@@ -337,6 +337,7 @@ class AcquisitionService:
         name: str,
         crawl_url: str,
         notes: str | None = None,
+        **telegram_values: object,
     ) -> AcquisitionCategory:
         self._validate_category_url(source, crawl_url)
         category = AcquisitionCategory(
@@ -346,6 +347,12 @@ class AcquisitionService:
             path=name.strip(),
             crawl_url=crawl_url.strip(),
             notes=(notes or "").strip() or None,
+            telegram_peer_id=telegram_values.get("telegram_peer_id"),
+            telegram_entity_type=telegram_values.get("telegram_entity_type"),
+            telegram_username=telegram_values.get("telegram_username"),
+            telegram_topic_id=telegram_values.get("telegram_topic_id"),
+            telegram_topic_title=telegram_values.get("telegram_topic_title"),
+            telegram_source_mode=str(telegram_values.get("telegram_source_mode") or "manual"),
         )
         db.add(category)
         db.commit()
@@ -358,7 +365,7 @@ class AcquisitionService:
             if source is None:
                 raise ValueError("分类所属站点不存在")
             self._validate_category_url(source, str(values["crawl_url"]))
-        for field in ("name", "crawl_url", "notes", "enabled"):
+        for field in ("name", "crawl_url", "notes", "enabled", "telegram_peer_id", "telegram_entity_type", "telegram_username", "telegram_topic_id", "telegram_topic_title", "telegram_source_mode"):
             if field in values and values[field] is not None:
                 setattr(category, field, values[field])
         if "name" in values and values["name"] is not None:
@@ -797,6 +804,13 @@ class AcquisitionService:
                     path.unlink(missing_ok=True)
 
         try:
+            parameters = dict(parameters)
+            if category.telegram_peer_id:
+                parameters.setdefault("peer_id", category.telegram_peer_id)
+            if category.telegram_topic_id is not None:
+                parameters.setdefault("topic_id", category.telegram_topic_id)
+            if category.telegram_entity_type in {"bot", "group"}:
+                parameters["collect_comments"] = False
             TelegramService(self.settings).read_channel_media(
                 account,
                 category.crawl_url,
@@ -859,6 +873,12 @@ class AcquisitionService:
                 channel_id=str(record["channel_id"]), channel_title=record.get("channel_title"),
                 channel_username=record.get("channel_username"), message_id=int(record["message_id"]),
                 grouped_id=record.get("grouped_id"), media_type=str(record["media_type"]),
+                peer_id=record.get("peer_id"), entity_type=record.get("entity_type"),
+                sender_id=record.get("sender_id"), sender_username=record.get("sender_username"),
+                sender_is_bot=bool(record.get("sender_is_bot")),
+                reply_to_message_id=record.get("reply_to_message_id"), topic_id=record.get("topic_id"),
+                topic_title=record.get("topic_title"), is_comment=bool(record.get("is_comment")),
+                root_channel_message_id=record.get("root_channel_message_id"),
             )
             db.add(metadata)
             db.flush()
@@ -867,6 +887,16 @@ class AcquisitionService:
         metadata.caption = record.get("caption")
         metadata.message_url = str(record["source_url"])
         metadata.protected_content = bool(record.get("protected_content"))
+        metadata.peer_id = record.get("peer_id")
+        metadata.entity_type = record.get("entity_type")
+        metadata.sender_id = record.get("sender_id")
+        metadata.sender_username = record.get("sender_username")
+        metadata.sender_is_bot = bool(record.get("sender_is_bot"))
+        metadata.reply_to_message_id = record.get("reply_to_message_id")
+        metadata.topic_id = record.get("topic_id")
+        metadata.topic_title = record.get("topic_title")
+        metadata.is_comment = bool(record.get("is_comment"))
+        metadata.root_channel_message_id = record.get("root_channel_message_id")
         db.query(AcquisitionTelegramHashtag).filter(AcquisitionTelegramHashtag.telegram_message_id == metadata.id).delete()
         for raw, normalized in record.get("hashtags", []):
             db.add(AcquisitionTelegramHashtag(telegram_message_id=metadata.id, tag_raw=raw, tag_normalized=normalized))
