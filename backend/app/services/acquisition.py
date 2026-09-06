@@ -177,14 +177,16 @@ class DownloadedRemote:
     resolved_url: str
     resolved_candidate: str
     filename: str
-    width: int
-    height: int
-    blur_score: float
+    media_type: str
+    width: int | None
+    height: int | None
+    duration_seconds: float | None
+    blur_score: float | None
     quality_warnings: tuple[str, ...]
     sha256: str
-    perceptual_phash: str
-    perceptual_dhash: str
-    quality_score: float
+    perceptual_phash: str | None
+    perceptual_dhash: str | None
+    quality_score: float | None
 
 
 class AcquisitionService:
@@ -471,7 +473,7 @@ class AcquisitionService:
         request = Request(
             url,
             headers={
-                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Accept": "image/avif,image/webp,image/apng,image/*,video/*,*/*;q=0.8",
                 "Referer": referer,
                 "User-Agent": "PictureShow acquisition/1.0",
             },
@@ -505,7 +507,7 @@ class AcquisitionService:
                     try:
                         return curl_request_bytes(
                             url,
-                            "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                            "image/avif,image/webp,image/apng,image/*,video/*,*/*;q=0.8",
                             referer,
                             self.settings.acquisition_download_timeout_seconds,
                             self.settings.acquisition_max_file_bytes,
@@ -544,7 +546,11 @@ class AcquisitionService:
                     if cache_url and cache_url not in candidates:
                         candidates.insert(index, cache_url)
                     continue
-                if content_type and not content_type.lower().startswith("image/"):
+                expected_prefix = "video/" if remote.media_type == "video" else "image/"
+                content_type_lower = (content_type or "").lower()
+                if content_type and not content_type_lower.startswith(expected_prefix) and not (
+                    remote.media_type == "video" and content_type_lower == "application/octet-stream"
+                ):
                     errors.append(f"{candidate}: 返回类型 {content_type}")
                     continue
                 return payload, content_type, candidate
@@ -563,28 +569,50 @@ class AcquisitionService:
             resolved_url = remote.source_url
         else:
             payload, content_type, resolved_url = result
-        width, height, blur, warnings, features = self._analyze_image_payload(payload)
+        filename = Path(urlparse(resolved_url).path).name or Path(urlparse(remote.source_url).path).name
+        media_type = remote.media_type
+        content_type = (content_type or "").lower()
+        if media_type == "image":
+            width, height, blur, warnings, features = self._analyze_image_payload(payload)
+            duration = None
+            perceptual_phash = features.phash
+            perceptual_dhash = features.dhash
+            quality_score = features.quality_score
+        else:
+            suffix = Path(filename).suffix.lower()
+            if not content_type.startswith("video/") and suffix not in {".3gp", ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".ts", ".webm", ".wmv"}:
+                raise RuntimeError(f"{resolved_url}: 返回内容不是视频")
+            with tempfile.NamedTemporaryFile(suffix=suffix or ".mp4") as temporary:
+                temporary.write(payload)
+                temporary.flush()
+                duration, width, height = self._probe_video_file(Path(temporary.name))
+            blur = None
+            warnings = []
+            perceptual_phash = None
+            perceptual_dhash = None
+            quality_score = None
         if resolved_url == remote.source_url or (remote.candidate_urls and resolved_url == remote.candidate_urls[0]):
             candidate = "source"
         elif remote.preview_url and resolved_url == remote.preview_url:
             candidate = "preview"
         else:
             candidate = "cache"
-        filename = Path(urlparse(resolved_url).path).name or Path(urlparse(remote.source_url).path).name
         return DownloadedRemote(
             payload=payload,
             content_type=content_type,
             resolved_url=resolved_url,
             resolved_candidate=candidate,
-            filename=filename or f"{remote.external_key}.img",
+            filename=filename or f"{remote.external_key}{'.mp4' if media_type == 'video' else '.img'}",
+            media_type=media_type,
             width=width,
             height=height,
+            duration_seconds=duration,
             blur_score=blur,
             quality_warnings=tuple(warnings),
             sha256=hashlib.sha256(payload).hexdigest(),
-            perceptual_phash=features.phash,
-            perceptual_dhash=features.dhash,
-            quality_score=features.quality_score,
+            perceptual_phash=perceptual_phash,
+            perceptual_dhash=perceptual_dhash,
+            quality_score=quality_score,
         )
 
     def _quality(self, payload: bytes) -> tuple[int, int, float, list[str]]:
@@ -1111,10 +1139,12 @@ class AcquisitionService:
             sha256=downloaded.sha256,
             filename=downloaded.filename,
             content_type=downloaded.content_type or mimetypes.guess_type(downloaded.filename)[0],
+            media_type=downloaded.media_type,
             object_key=object_key,
             size_bytes=len(downloaded.payload),
             width=downloaded.width,
             height=downloaded.height,
+            duration_seconds=downloaded.duration_seconds,
             blur_score=downloaded.blur_score,
             perceptual_phash=downloaded.perceptual_phash,
             perceptual_dhash=downloaded.perceptual_dhash,
@@ -1169,7 +1199,7 @@ class AcquisitionService:
                 )
             )
             if asset is None:
-                variant = self._find_resolution_variant(db, run, downloaded)
+                variant = self._find_resolution_variant(db, run, downloaded) if downloaded.media_type == "image" else None
                 if variant is not None:
                     incoming_rank = self._asset_rank(
                         downloaded.width, downloaded.height, downloaded.quality_score, len(downloaded.payload)

@@ -54,6 +54,7 @@ class RemoteItem:
     ignored_reason: str | None = None
     referer_url: str | None = None
     abort_on_access_block: bool = False
+    media_type: Literal["image", "video"] = "image"
 
 
 @dataclass(frozen=True)
@@ -124,6 +125,12 @@ class ScriptDefinition:
                     value = [part.strip() for part in value if part.strip()]
                 else:
                     raise ValueError(f"参数“{parameter.label}”必须是文本列表")
+                if parameter.key == "media_types":
+                    invalid = sorted(set(value) - {"image", "video"})
+                    if invalid:
+                        raise ValueError(f"参数“{parameter.label}”包含无效媒体类型：{', '.join(invalid)}")
+                    if not value:
+                        raise ValueError(f"参数“{parameter.label}”至少选择图片或视频")
             else:
                 value = str(value)
             if isinstance(value, (int, float)):

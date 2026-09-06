@@ -104,7 +104,7 @@ class IdolxxxDetailParser(HTMLParser):
         self.item_has_image = False
         self.item_has_video = False
         self.item_candidates: dict[str, list[str]] = {"data-src": [], "href": [], "src": []}
-        self.image_candidates: list[tuple[str, ...]] = []
+        self.media_candidates: list[tuple[tuple[str, ...], str]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
@@ -135,13 +135,13 @@ class IdolxxxDetailParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if self.item_depth == self.depth and tag == self.item_tag:
-            if self.item_has_image and not self.item_has_video:
+            if self.item_has_image or self.item_has_video:
                 candidates = tuple(
                     value
                     for attribute in ("data-src", "href", "src")
                     for value in self.item_candidates[attribute]
                 )
-                self.image_candidates.append(candidates)
+                self.media_candidates.append((candidates, "video" if self.item_has_video else "image"))
             self.item_depth = None
             self.item_tag = None
         if self.media_depth == self.depth and self.item_depth is None:
@@ -192,10 +192,10 @@ class IdolxxxGalleryAdapter(SourceAdapter):
         return parser.result()
 
     @staticmethod
-    def _parse_detail(raw: bytes) -> tuple[tuple[str, ...], ...]:
+    def _parse_detail(raw: bytes) -> tuple[tuple[tuple[str, ...], str], ...]:
         parser = IdolxxxDetailParser()
         parser.feed(raw.decode("utf-8", errors="replace"))
-        return tuple(parser.image_candidates)
+        return tuple(parser.media_candidates)
 
     def enumerate_pages(
         self,
@@ -208,6 +208,7 @@ class IdolxxxGalleryAdapter(SourceAdapter):
         site_host = (urlparse(site_url).hostname or "").lower()
         start_page = int(parameters.get("start_page") or 1)
         end_page = int(parameters["end_page"]) if parameters.get("end_page") not in (None, "") else None
+        media_types = {str(item) for item in parameters.get("media_types", ["image"])}
         request_limiter = _RequestStartLimiter(self.HTML_START_INTERVAL_SECONDS)
 
         def fetch(url: str, referer: str) -> bytes:
@@ -260,8 +261,10 @@ class IdolxxxGalleryAdapter(SourceAdapter):
                         if detail_raw is None:
                             continue
                         parsed_media = self._parse_detail(detail_raw)
-                        originals: list[str] = []
-                        for candidates in parsed_media:
+                        originals: list[tuple[str, str]] = []
+                        for candidates, media_type in parsed_media:
+                            if media_type not in media_types:
+                                continue
                             original = next(
                                 (
                                     normalized
@@ -272,8 +275,8 @@ class IdolxxxGalleryAdapter(SourceAdapter):
                             )
                             if original and original not in seen_originals:
                                 seen_originals.add(original)
-                                originals.append(original)
-                        for index, original in enumerate(originals, start=1):
+                                originals.append((original, media_type))
+                        for index, (original, media_type) in enumerate(originals, start=1):
                             external_key = stable_key(original)
                             page_keys.append(external_key)
                             title = card_title
@@ -285,6 +288,7 @@ class IdolxxxGalleryAdapter(SourceAdapter):
                                     source_url=detail_url,
                                     title=title,
                                     candidate_urls=(original,),
+                                    media_type=media_type,
                                     referer_url=detail_url,
                                     abort_on_access_block=True,
                                 )

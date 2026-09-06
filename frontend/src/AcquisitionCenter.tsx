@@ -859,7 +859,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
 
   async function startRun() {
     if (!runCategoryId || !runScriptKey || runSubmitting) return;
-    if (selectedRunScript?.key === "telegram-channel-mtproto" && selectedTelegramMediaTypes(runParameters.media_types).length === 0) {
+    if (selectedRunScript?.parameters.some((parameter) => parameter.key === "media_types") && selectedTelegramMediaTypes(runParameters.media_types).length === 0) {
       setNotice("至少选择一种采集媒体：图片或视频");
       return;
     }

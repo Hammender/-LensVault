@@ -51,6 +51,9 @@ TELEGRAM_DATE_TO = ScriptParameter(
 TELEGRAM_MEDIA_TYPES = ScriptParameter(
     "media_types", "采集媒体", "string_list", default=["image", "video"], description="选择图片、视频或两者。"
 )
+IDOLXXX_MEDIA_TYPES = ScriptParameter(
+    "media_types", "采集媒体", "string_list", default=["image"], description="选择图片、视频或两者。"
+)
 TELEGRAM_COLLECT_COMMENTS = ScriptParameter(
     "collect_comments", "采集评论区媒体", "boolean", default=False, description="仅频道有效；从频道帖子的评论区采集图片和视频。"
 )
@@ -97,11 +100,11 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "idolxxx-gallery": ScriptDefinition(
         key="idolxxx-gallery",
         name="idolxxx-gallery",
-        version="1.0.1",
+        version="1.1.0",
         page_format_key="idolxxx-gallery-v1",
-        description="解析目标站点偶像分类页及卡片详情页，仅采集 /files/src/ 原图。",
+        description="解析目标站点偶像分类页及卡片详情页，支持采集 /files/src/ 图片和视频原文件。",
         adapter=IdolxxxGalleryAdapter(),
-        parameters=(START_PAGE, END_PAGE),
+        parameters=(START_PAGE, END_PAGE, IDOLXXX_MEDIA_TYPES),
         max_download_workers=3,
         download_start_interval_seconds=1.0,
     ),

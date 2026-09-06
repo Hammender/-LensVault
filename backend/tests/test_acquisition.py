@@ -66,7 +66,7 @@ class AcquisitionAdapterTests(unittest.TestCase):
             {item["name"] for item in catalog},
             {"idolxxx-gallery", "raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page", "Telegram 频道"},
         )
-        self.assertEqual({item["version"] for item in catalog}, {"1.0.0", "1.0.1", "1.0.2", "1.2.0"})
+        self.assertEqual({item["version"] for item in catalog}, {"1.1.0", "1.0.2", "1.2.0"})
 
     def test_raindrop_page_normalizes_relative_image_urls(self) -> None:
         payload = (

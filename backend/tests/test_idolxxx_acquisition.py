@@ -35,6 +35,30 @@ def html(value: str) -> tuple[bytes, str]:
 
 
 class IdolxxxAdapterTests(unittest.TestCase):
+    def test_extracts_video_media_and_filters_by_media_type(self) -> None:
+        listing = html('<article><a href="/post/1/">混合</a></article><article><a href="/post/2/">视频</a></article>')
+        responses = {
+            "https://gallery.example.test/idols/iu/": listing,
+            "https://gallery.example.test/post/1/": html(
+                '<div class="post-media">'
+                '<a class="post-media-item" href="//media.gallery.example.test/files/src/a.jpg"><img></a>'
+                '<div class="post-media-item"><video><source type="video/mp4" data-src="//media.gallery.example.test/files/src/a.mp4"></video></div>'
+                '</div>'
+            ),
+            "https://gallery.example.test/post/2/": html(
+                '<div class="post-media"><div class="post-media-item"><video><source type="video/mp4" src="/files/src/b.mp4"></video></div></div>'
+            ),
+        }
+        with patch("app.services.acquisition_adapters._request_bytes", side_effect=lambda url, *_args, **_kwargs: responses[url]):
+            videos = list(IdolxxxGalleryAdapter().enumerate(
+                "https://gallery.example.test/idols/iu/", {"media_types": ["video"]}, set(), False
+            ))
+        self.assertEqual([item.media_type for item in videos], ["video", "video"])
+        self.assertEqual([item.candidate_urls[0] for item in videos], [
+            "https://media.gallery.example.test/files/src/a.mp4",
+            "https://gallery.example.test/files/src/b.mp4",
+        ])
+
     def test_extracts_image_media_and_never_requests_premium_cards(self) -> None:
         listing = html(
             """
@@ -163,13 +187,19 @@ class IdolxxxAdapterTests(unittest.TestCase):
     def test_page_parameters_are_validated(self) -> None:
         definition = get_script("idolxxx-gallery")
         assert definition is not None
-        self.assertEqual(definition.validate_parameters({}), {"start_page": 1})
+        self.assertEqual(definition.validate_parameters({}), {"start_page": 1, "media_types": ["image"]})
         self.assertEqual(
             definition.validate_parameters({"start_page": "2", "end_page": "4"}),
-            {"start_page": 2, "end_page": 4},
+            {"start_page": 2, "end_page": 4, "media_types": ["image"]},
         )
         with self.assertRaisesRegex(ValueError, "结束页不能小于起始页"):
             definition.validate_parameters({"start_page": 4, "end_page": 2})
+        self.assertEqual(
+            definition.validate_parameters({"media_types": "image,video"})["media_types"],
+            ["image", "video"],
+        )
+        with self.assertRaisesRegex(ValueError, "至少选择图片或视频"):
+            definition.validate_parameters({"media_types": []})
 
     def test_urllib_403_is_not_retried(self) -> None:
         error = HTTPError("https://gallery.example.test/idols/iu/", 403, "Forbidden", None, None)
@@ -555,7 +585,7 @@ class IdolxxxLifecycleTests(unittest.TestCase):
             script = db.scalar(select(AcquisitionScript).where(AcquisitionScript.key == "idolxxx-gallery"))
             self.assertIsNotNone(script)
             assert script is not None
-            self.assertEqual(script.version, "1.0.1")
+            self.assertEqual(script.version, "1.1.0")
             self.assertEqual(script.page_format_key, "idolxxx-gallery-v1")
         engine.dispose()
 
