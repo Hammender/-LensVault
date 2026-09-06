@@ -1709,7 +1709,7 @@ input:focus, select:focus, textarea:focus {
 
 .face-candidate-row {
   display: grid;
-  grid-template-columns: auto minmax(70px, 1fr) auto minmax(88px, auto);
+  grid-template-columns: auto minmax(70px, 1fr) auto minmax(88px, auto) auto;
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -1777,6 +1777,12 @@ input:focus, select:focus, textarea:focus {
 .face-source {
   min-width: 0;
   text-align: right;
+}
+
+.face-candidate-fill {
+  min-height: 28px;
+  padding: 3px 9px;
+  white-space: nowrap;
 }
 
 .face-source > span {
@@ -1869,12 +1875,16 @@ input:focus, select:focus, textarea:focus {
 
 @media (max-width: 540px) {
   .face-candidate-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
     gap: 6px;
   }
   .face-source {
     grid-column: 2 / -1;
     text-align: left;
+  }
+  .face-candidate-fill {
+    grid-column: 4;
+    grid-row: 1;
   }
   .face-card-foot,
   .face-card-foot.has-rejection {

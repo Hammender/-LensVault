@@ -3697,6 +3697,22 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                             <span className="face-source">
                               {renderFaceMatchSource(face.predicted_person_id, face.predicted_match_source, face.predicted_sample_photo_id)}
                             </span>
+                            {face.needs_review && face.predicted_person_name && (
+                              <button
+                                type="button"
+                                className="ghost-button face-candidate-fill"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedFaceId(face.id);
+                                  setManualPersonId(String(face.predicted_person_id));
+                                  setManualPersonSearch(face.predicted_person_name!);
+                                  setManualPersonNotice(null);
+                                }}
+                                title="仅填入绑定人物输入框"
+                              >
+                                填入
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <div className="face-empty-candidate">无第一候选</div>
@@ -3709,6 +3725,22 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                             <span className="face-source">
                               {renderFaceMatchSource(face.second_person_id, face.second_match_source, face.second_sample_photo_id)}
                             </span>
+                            {face.needs_review && face.second_person_name && (
+                              <button
+                                type="button"
+                                className="ghost-button face-candidate-fill"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedFaceId(face.id);
+                                  setManualPersonId(String(face.second_person_id));
+                                  setManualPersonSearch(face.second_person_name!);
+                                  setManualPersonNotice(null);
+                                }}
+                                title="仅填入绑定人物输入框"
+                              >
+                                填入
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
