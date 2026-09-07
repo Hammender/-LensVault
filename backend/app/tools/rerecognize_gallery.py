@@ -92,6 +92,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="本次最多处理多少张照片。")
     parser.add_argument("--audit-file", type=Path, help="审计 JSONL 路径。")
     parser.add_argument("--resume", action="store_true", help="跳过同一审计文件中已成功的照片。")
+    parser.add_argument("--only-unknown", action="store_true", help="仅重识别待审核未知人脸，保留同图已有结果。")
     parser.add_argument(
         "--preserve-existing-known-tags",
         action="store_true",
@@ -128,6 +129,12 @@ def main() -> None:
         query = select(GalleryPhoto.id).where(GalleryPhoto.id > args.start_after).order_by(GalleryPhoto.id)
         if args.workspace_id is not None:
             query = query.where(GalleryPhoto.workspace_id == args.workspace_id)
+        if args.only_unknown:
+            query = query.where(GalleryPhoto.id.in_(
+                select(FaceRecord.gallery_photo_id).outerjoin(Person, Person.id == FaceRecord.matched_person_id)
+                .where(FaceRecord.needs_review.is_(True),
+                       (FaceRecord.matched_person_id.is_(None)) | Person.is_unknown.is_(True))
+            ))
         photo_ids = list(db.scalars(query).all())
     photo_ids = [photo_id for photo_id in photo_ids if photo_id not in completed]
     if args.limit is not None:
@@ -172,12 +179,15 @@ def main() -> None:
                 "adapter_id": settings.face_adapter_id,
                 "threshold": settings.face_recognition_threshold,
                 "min_margin": settings.face_recognition_min_margin,
+                "centroid_mode": settings.face_centroid_mode,
+                "max_bonus": settings.face_match_max_bonus,
+                "only_unknown": args.only_unknown,
                 "preserve_existing_known_tags": args.preserve_existing_known_tags,
                 "before": before,
             }
             row_status = "failed"
             try:
-                result = service.re_recognize_gallery_photo(db, photo, commit=args.apply)
+                result = service.re_recognize_gallery_photo(db, photo, commit=args.apply, only_unknown=args.only_unknown)
                 after = _snapshot(db, photo_id)
                 summary = getattr(result, "recognition_summary", None)
                 if not args.apply:

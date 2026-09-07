@@ -19,6 +19,7 @@ from app.core.config import Settings, get_settings
 from app.core.timezones import as_shanghai_naive, shanghai_now
 from app.models import FaceRecognitionCorrection, FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, PersonTag, SamplePhoto, Tag
 from app.services.face import DetectedFace, FaceRuntime, FaceService
+from app.services.face_profiles import ReferenceFace, aggregate_hits, build_centroid
 from app.services.image_metadata import load_rgb_image, parse_image_metadata, parse_image_metadata_from_image
 from app.services.qdrant import FaceSearchHit, QdrantVectorStore
 from app.services.ocr import OcrService
@@ -89,6 +90,12 @@ class PictureService:
                 embedding_version=self.settings.face_embedding_version,
                 limit=self.settings.face_search_limit,
             )
+            if self.settings.face_match_max_bonus > 0:
+                hits = aggregate_hits(
+                    hits, top_k=self.settings.face_match_top_k,
+                    max_bonus=self.settings.face_match_max_bonus,
+                    support_floor=self.settings.face_recognition_threshold - 0.05,
+                )
             for hit in hits:
                 current = by_person.get(hit.person_id)
                 if current is None or self._is_better_candidate_hit(hit, current):
@@ -344,20 +351,24 @@ class PictureService:
         return source in {"manual", "import", "import_unknown"}
 
     def _recompute_person_centroid(self, db: Session, person_id: int, workspace_id: int | None) -> None:
-        face_ids = db.scalars(
-            select(FaceRecord.id)
+        faces = db.scalars(
+            select(FaceRecord)
             .join(SamplePhoto, SamplePhoto.id == FaceRecord.sample_photo_id)
             .where(
                 SamplePhoto.person_id == person_id,
                 SamplePhoto.status == "ready",
                 FaceRecord.vector_collection == "known",
+                SamplePhoto.workspace_id == workspace_id,
             )
+            .order_by(FaceRecord.id)
         ).all()
-        vectors = [
-            vector
-            for face_id in face_ids
-            if (vector := self.vector_store.get_face_vector(self.settings.qdrant_known_collection, face_id)) is not None
-        ]
+        vectors = []
+        for face in faces:
+            vector = self.vector_store.get_reference_vector(
+                self.settings.qdrant_known_collection, face.id, workspace_id=workspace_id,
+                person_id=person_id, embedding_version=self.settings.face_embedding_version,
+            )
+            vectors.append(ReferenceFace(vector, face.face_size, face.detection_score, face.blur_score, face.pose_yaw))
         if not vectors:
             self.vector_store.delete_centroid(
                 self.settings.qdrant_known_collection,
@@ -366,10 +377,11 @@ class PictureService:
                 self.settings.face_embedding_version,
             )
             return
-        centroid = np.mean(np.stack(vectors), axis=0)
-        norm = np.linalg.norm(centroid)
-        if norm > 0:
-            centroid = centroid / norm
+        centroid = build_centroid(
+            vectors, mode=self.settings.face_centroid_mode,
+            quality_strength=self.settings.face_centroid_quality_strength,
+            outlier_fraction=self.settings.face_centroid_outlier_fraction,
+        )
         self.vector_store.upsert_centroid(
             self.settings.qdrant_known_collection,
             person_id,
@@ -1318,18 +1330,38 @@ class PictureService:
         )
         return {"total": len(photo_ids), "cleared": cleared, "kept": kept}
 
-    def re_recognize_gallery_photo(self, db: Session, photo: GalleryPhoto, *, commit: bool = True) -> GalleryPhoto:
+    def re_recognize_gallery_photo(
+        self, db: Session, photo: GalleryPhoto, *, commit: bool = True, only_unknown: bool = False,
+    ) -> GalleryPhoto:
         logger.info("Start re_recognize_gallery_photo photo_id=%s", photo.id)
         payload = self.storage.get_bytes(photo.object_key)
         recognition_plan = self._recognition_plan(db, payload, photo.workspace_id)
+        protected_faces = [
+            face for face in photo.faces
+            if only_unknown and (not face.needs_review or (face.matched_person and not face.matched_person.is_unknown))
+        ]
+        if only_unknown:
+            targets = [face for face in photo.faces if face not in protected_faces]
+            recognition_plan = [
+                (detected, match) for detected, match in recognition_plan
+                if any(FaceRuntime.bbox_iou(detected.bbox, (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)) >= 0.3 for face in targets)
+                and not any(FaceRuntime.bbox_iou(detected.bbox, (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)) >= 0.3 for face in protected_faces)
+            ]
+            # 无法重新定位的旧人脸保留，避免将检测失败误认为未知已消失。
+            protected_faces.extend(
+                face for face in targets
+                if not any(FaceRuntime.bbox_iou(detected.bbox, (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)) >= 0.3 for detected, _ in recognition_plan)
+            )
+        protected_person_ids = {face.matched_person_id for face in protected_faces}
         old_person_ids = {tag.person_id for tag in photo.person_tags}
         preserved_person_links = [
             (tag.person_id, tag.source)
             for tag in photo.person_tags
             if self._is_preserved_person_tag_source(tag.source)
+            or (only_unknown and (tag.person_id in protected_person_ids or tag.source == "face_manual"))
         ]
         old_auto_links = [
-            tag for tag in photo.person_tags if not self._is_preserved_person_tag_source(tag.source)
+            tag for tag in photo.person_tags if (tag.person_id, tag.source) not in preserved_person_links
         ]
         for link in old_auto_links:
             db.delete(link)
@@ -1348,7 +1380,8 @@ class PictureService:
             len(old_person_gallery_tags),
         )
         for face in photo.faces:
-            db.delete(face)
+            if face not in protected_faces:
+                db.delete(face)
         db.flush()
 
         summary = GalleryImportSummary()

@@ -126,6 +126,11 @@ class Settings(BaseSettings):
     face_rotation_fallback_angles: str = "90,-90,180"
     face_recognition_threshold: float = 0.43
     face_recognition_min_margin: float = 0.04
+    face_centroid_mode: str = Field(default="mean", pattern="^(mean|robust)$")
+    face_centroid_quality_strength: float = Field(default=1.0, ge=0, le=2)
+    face_centroid_outlier_fraction: float = Field(default=0.2, ge=0, le=0.3)
+    face_match_top_k: int = Field(default=3, ge=2, le=10)
+    face_match_max_bonus: float = Field(default=0.0, ge=0, le=0.03)
     face_sample_min_size: int = 40
     face_sample_warning_size: int = 80
     face_sample_min_detection_score: float = 0.5

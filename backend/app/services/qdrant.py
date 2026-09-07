@@ -328,6 +328,22 @@ class QdrantVectorStore:
             return None
         return np.asarray(vector, dtype=np.float32)
 
+    def get_reference_vector(
+        self, collection_name: str, face_id: int, *, workspace_id: int | None,
+        person_id: int, embedding_version: str,
+    ) -> np.ndarray:
+        points = self._get_client().retrieve(
+            collection_name=collection_name, ids=[face_id], with_vectors=True, with_payload=True,
+        )
+        expected = {"workspace_id": workspace_id, "person_id": person_id,
+                    "embedding_version": embedding_version, "source_type": "sample"}
+        if not points or any((points[0].payload or {}).get(key) != value for key, value in expected.items()):
+            raise ValueError(f"样本向量缺失或版本、工作区、人物不一致：{face_id}")
+        vector = np.asarray(points[0].vector, dtype=np.float32)
+        if vector.shape != (self.settings.qdrant_vector_dimension,) or not np.isfinite(vector).all() or np.linalg.norm(vector) < 1e-8:
+            raise ValueError(f"样本向量无效：{face_id}")
+        return vector / np.linalg.norm(vector)
+
     @staticmethod
     def _vector_schema(info: object) -> tuple[int | None, str | None]:
         params = getattr(getattr(getattr(info, "config", None), "params", None), "vectors", None)
