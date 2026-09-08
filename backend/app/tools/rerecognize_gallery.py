@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.db import SessionLocal, engine
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, Person
 from app.services.face import FaceService
+from app.services.face import FaceRuntime
 from app.services.importer import PictureService
 from app.services.ocr import OcrService
 from app.services.qdrant import QdrantVectorStore
@@ -85,6 +86,33 @@ def _append_audit(path: Path, row: dict[str, object]) -> None:
         handle.flush()
 
 
+def _read_only_preview(service: PictureService, db, photo: GalleryPhoto, *, only_unknown: bool) -> dict[str, int]:
+    """只检测和匹配，不修改 ORM 对象、数据库记录或标签。"""
+    recognition_plan = service._recognition_plan(db, service.storage.get_bytes(photo.object_key), photo.workspace_id)
+    protected_faces = [
+        face for face in photo.faces
+        if only_unknown and (not face.needs_review or (face.matched_person and not face.matched_person.is_unknown))
+    ]
+    if only_unknown:
+        targets = [face for face in photo.faces if face not in protected_faces]
+        recognition_plan = [
+            (detected, match) for detected, match in recognition_plan
+            if any(FaceRuntime.bbox_iou(detected.bbox, (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)) >= 0.3 for face in targets)
+            and not any(FaceRuntime.bbox_iou(detected.bbox, (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)) >= 0.3 for face in protected_faces)
+        ]
+    known = 0
+    rejected = 0
+    for _detected, match in recognition_plan:
+        person = None
+        if match.person_id is not None:
+            person = db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == photo.workspace_id))
+        if service._evaluate_match(match, person).accepted:
+            known += 1
+        else:
+            rejected += 1
+    return {"faces": len(recognition_plan), "known": known, "unknown": rejected}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="可预演、可恢复的全图库人脸重新识别工具。")
     parser.add_argument("--workspace-id", type=int, help="只处理指定工作区；默认处理全部工作区。")
@@ -93,6 +121,10 @@ def main() -> None:
     parser.add_argument("--audit-file", type=Path, help="审计 JSONL 路径。")
     parser.add_argument("--resume", action="store_true", help="跳过同一审计文件中已成功的照片。")
     parser.add_argument("--only-unknown", action="store_true", help="仅重识别待审核未知人脸，保留同图已有结果。")
+    parser.add_argument("--detection-size", type=int, help="仅覆盖本次进程的人脸检测尺寸，不修改 .env。")
+    parser.add_argument("--flip-augmentation", action="store_true", help="仅覆盖本次进程，启用翻转增强，不修改 .env。")
+    parser.add_argument("--threshold", type=float, help="仅覆盖本次进程的识别阈值，不修改 .env。")
+    parser.add_argument("--min-margin", type=float, help="仅覆盖本次进程的最小人物间隔，不修改 .env。")
     parser.add_argument(
         "--preserve-existing-known-tags",
         action="store_true",
@@ -116,6 +148,23 @@ def main() -> None:
         )
 
     settings = get_settings()
+    updates: dict[str, object] = {}
+    if args.detection_size is not None:
+        if args.detection_size < 320 or args.detection_size > 2048:
+            raise SystemExit("--detection-size 必须在 320 到 2048 之间")
+        updates["face_detection_size"] = args.detection_size
+    if args.flip_augmentation:
+        updates["face_flip_augmentation"] = True
+    if args.threshold is not None:
+        if not 0 <= args.threshold <= 1:
+            raise SystemExit("--threshold 必须在 0 到 1 之间")
+        updates["face_recognition_threshold"] = args.threshold
+    if args.min_margin is not None:
+        if not 0 <= args.min_margin <= 1:
+            raise SystemExit("--min-margin 必须在 0 到 1 之间")
+        updates["face_recognition_min_margin"] = args.min_margin
+    if updates:
+        settings = settings.model_copy(update=updates)
     mode = "apply" if args.apply else "dry-run"
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     audit_path = args.audit_file or settings.data_dir / "face-rerecognition" / f"{timestamp}-{mode}.jsonl"
@@ -187,11 +236,13 @@ def main() -> None:
             }
             row_status = "failed"
             try:
-                result = service.re_recognize_gallery_photo(db, photo, commit=args.apply, only_unknown=args.only_unknown)
-                after = _snapshot(db, photo_id)
-                summary = getattr(result, "recognition_summary", None)
-                if not args.apply:
-                    db.rollback()
+                if args.apply:
+                    result = service.re_recognize_gallery_photo(db, photo, commit=True, only_unknown=args.only_unknown)
+                    after = _snapshot(db, photo_id)
+                    summary = getattr(result, "recognition_summary", None)
+                else:
+                    summary = _read_only_preview(service, db, photo, only_unknown=args.only_unknown)
+                    after = before
                 _append_audit(audit_path, {**base_row, "status": "success", "summary": summary, "after": after})
                 succeeded += 1
                 row_status = "success"
