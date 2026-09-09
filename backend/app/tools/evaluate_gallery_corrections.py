@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 import time
 
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 from app.core.config import get_settings
 from app.db import SessionLocal
@@ -23,8 +24,17 @@ def _is_better_correction(candidate: FaceRecognitionCorrection, current: FaceRec
     return candidate.id > current.id
 
 
-def _load_corrections(limit: int | None) -> list[tuple[FaceRecognitionCorrection, GalleryPhoto, FaceRecord, bool]]:
-    with SessionLocal() as db:
+def _load_corrections(
+    limit: int | None,
+    database_url: str | None = None,
+) -> list[tuple[FaceRecognitionCorrection, GalleryPhoto, FaceRecord, bool]]:
+    session_factory = SessionLocal
+    if database_url:
+        source_engine = create_engine(database_url, connect_args={"check_same_thread": False})
+        session_factory = sessionmaker(
+            bind=source_engine, autoflush=False, autocommit=False, expire_on_commit=False
+        )
+    with session_factory() as db:
         rows = db.scalars(
             select(FaceRecognitionCorrection)
             .where(FaceRecognitionCorrection.gallery_photo_id.is_not(None))
@@ -61,8 +71,9 @@ def _evaluate_config(
     detection_size: int,
     flip_augmentation: bool,
     corrections: list[tuple[FaceRecognitionCorrection, GalleryPhoto, FaceRecord, bool]],
+    base_settings=None,
 ) -> dict[str, object]:
-    base = get_settings()
+    base = base_settings or get_settings()
     settings = base.model_copy(update={
         "face_detection_size": detection_size,
         "face_flip_augmentation": flip_augmentation,
@@ -140,12 +151,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="只读评估真实图库人工纠正样本的人脸检测配置。")
     parser.add_argument("--output", type=Path, default=Path("data/gallery-correction-evaluation"))
     parser.add_argument("--limit", type=int, help="限制纠正样本数量；默认处理全部最新纠正样本。")
+    parser.add_argument("--database-url", help="显式指定只读评估数据源，例如迁移前 SQLite 备份。")
+    parser.add_argument("--model-name", default=None, help="实验检测模型包，例如 antelopev2。")
+    parser.add_argument("--adapter-id", default=None, help="实验识别适配器 ID。")
+    parser.add_argument("--model-path", type=Path, default=None, help="实验识别 ONNX 文件路径。")
+    parser.add_argument("--collection", default=None, help="实验 Qdrant 集合名称。")
+    parser.add_argument("--embedding-version", default=None, help="实验向量版本。")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         raise SystemExit("--limit 必须大于 0")
-    corrections = _load_corrections(args.limit)
+    corrections = _load_corrections(args.limit, args.database_url)
     if not corrections:
         raise SystemExit("没有可用的图库人工纠正样本")
+    updates = {}
+    if args.model_name is not None:
+        updates["face_model_name"] = args.model_name
+    if args.adapter_id is not None:
+        updates["face_adapter_id"] = args.adapter_id
+    if args.model_path is not None:
+        updates["face_recognition_model_path"] = str(args.model_path)
+    if args.collection is not None:
+        updates["qdrant_known_collection"] = args.collection
+    if args.embedding_version is not None:
+        updates["face_embedding_version"] = args.embedding_version
+    base_settings = get_settings().model_copy(update=updates)
     configs = [
         ("baseline_640_no_flip", 640, False),
         ("flip_640", 640, True),
@@ -154,9 +183,13 @@ def main() -> None:
     ]
     reports = []
     for name, size, flip in configs:
-        reports.append(_evaluate_config(name, size, flip, corrections))
+        reports.append(_evaluate_config(name, size, flip, corrections, base_settings))
     report = {
         "sample_source": "face_recognition_corrections latest per gallery face",
+        "model": {"name": base_settings.face_model_name, "adapter_id": base_settings.face_adapter_id,
+                  "model_path": base_settings.face_recognition_model_path or None,
+                  "collection": base_settings.qdrant_known_collection,
+                  "embedding_version": base_settings.face_embedding_version},
         "input_corrections": len(corrections),
         "configs": [item["summary"] for item in reports],
         "details": reports,

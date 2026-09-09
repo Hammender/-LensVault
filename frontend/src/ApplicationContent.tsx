@@ -2433,8 +2433,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     }
   }
 
-  async function handleUnbindFace(faceId: number) {
-    if (!selectedPhoto || !await confirm({ title: "解除人脸绑定", message: "确定将这张脸恢复为待确认状态吗？", confirmLabel: "解除绑定", tone: "danger" })) return;
+  async function handleUnbindFace(faceId: number, requireConfirmation = true) {
+    if (!selectedPhoto) return;
+    if (requireConfirmation && !await confirm({ title: "解除人脸绑定", message: "确定将这张脸恢复为待确认状态吗？", confirmLabel: "解除绑定", tone: "danger" })) return;
     setBusy(true);
     setError(null);
     try {
@@ -3525,8 +3526,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                             <small>{face.binding_source === "manual" ? "人工确认" : face.binding_source === "unknown" ? "未知人物" : "自动识别"}</small>
                           </button>
                           {face.matched_person_id !== null && (
-                            <button className="ghost-button face-binding-remove" type="button" disabled={busy} onClick={() => void handleDeletePhotoPerson(face.matched_person_id!)}>
-                              移除绑定
+                            <button className="ghost-button face-binding-remove" type="button" disabled={busy} onClick={() => void (face.matched_person_is_unknown ? handleDeletePhotoPerson(face.matched_person_id!) : handleUnbindFace(face.id, false))}>
+                              {face.matched_person_is_unknown ? "移除绑定" : "解除绑定"}
                             </button>
                           )}
                         </div>

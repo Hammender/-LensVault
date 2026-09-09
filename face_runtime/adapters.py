@@ -60,6 +60,54 @@ _INSIGHTFACE = AdapterManifest(
 )
 
 
+_ANTELOPEV2 = AdapterManifest(
+    adapter_id="antelopev2",
+    version="1",
+    model_label="InsightFace antelopev2 glintr100",
+    default_filename="glintr100.onnx",
+    input_width=112,
+    input_height=112,
+    input_layout="NCHW",
+    input_color="RGB",
+    input_range="[-1,1]",
+    mean=(127.5, 127.5, 127.5),
+    std=(127.5, 127.5, 127.5),
+    alignment="insightface-arcface-112-v1",
+    keypoint_order="left-eye,right-eye,nose,left-mouth,right-mouth",
+    output_dimension=512,
+    output_normalization="l2",
+    supports_flip_tta=True,
+    license_name="InsightFace 非商业研究模型许可",
+    license_url="https://github.com/deepinsight/insightface/tree/master/model_zoo",
+    license_note="InsightFace 模型权重仅限非商业研究用途。",
+    model_source_url="https://github.com/deepinsight/insightface/tree/master/model_zoo",
+)
+
+
+_ADAFACE_R101 = AdapterManifest(
+    adapter_id="adaface-r101",
+    version="1",
+    model_label="AdaFace IR-101 WebFace12M ONNX export",
+    default_filename=None,
+    input_width=112,
+    input_height=112,
+    input_layout="NCHW",
+    input_color="BGR",
+    input_range="[-1,1]",
+    mean=(127.5, 127.5, 127.5),
+    std=(127.5, 127.5, 127.5),
+    alignment="insightface-arcface-112-v1",
+    keypoint_order="left-eye,right-eye,nose,left-mouth,right-mouth",
+    output_dimension=512,
+    output_normalization="l2",
+    supports_flip_tta=True,
+    license_name="AdaFace MIT 代码与模型仓库许可（权重来源需单独核对）",
+    license_url="https://github.com/mk-minchul/AdaFace",
+    license_note="AdaFace 官方实现针对低质量人脸；本实验使用公开 ONNX 导出权重。",
+    model_source_url="https://github.com/yakhyo/adaface-onnx/releases",
+)
+
+
 def _lvface(adapter_id: str, size: str) -> AdapterManifest:
     return AdapterManifest(
         adapter_id=adapter_id,
@@ -87,6 +135,8 @@ def _lvface(adapter_id: str, size: str) -> AdapterManifest:
 
 ADAPTERS: dict[str, AdapterManifest] = {
     "buffalo_l": _INSIGHTFACE,
+    "antelopev2": _ANTELOPEV2,
+    "adaface-r101": _ADAFACE_R101,
     "lvface-t": _lvface("lvface-t", "T"),
     "lvface-s": _lvface("lvface-s", "S"),
     "lvface-b": _lvface("lvface-b", "B"),

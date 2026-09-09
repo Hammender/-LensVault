@@ -24,8 +24,22 @@ def main() -> None:
     parser.add_argument("--replace", action="store_true", help="Replace an existing non-active target collection.")
     parser.add_argument("--reuse-vectors", action="store_true", help="复用当前有效样本向量，不加载模型。")
     parser.add_argument("--centroid-mode", choices=["mean", "robust"], help="新索引的中心向量算法。")
+    parser.add_argument("--model-name", help="实验检测模型包，例如 antelopev2。")
+    parser.add_argument("--adapter-id", help="实验识别适配器 ID。")
+    parser.add_argument("--model-path", help="实验识别 ONNX 文件路径。")
     args = parser.parse_args()
     settings = get_settings()
+    setting_updates = {}
+    if args.model_name:
+        setting_updates["face_model_name"] = args.model_name
+    if args.adapter_id:
+        setting_updates["face_adapter_id"] = args.adapter_id
+    if args.model_path:
+        setting_updates["face_recognition_model_path"] = args.model_path
+    if args.embedding_version:
+        setting_updates["face_embedding_version"] = args.embedding_version
+    if setting_updates:
+        settings = settings.model_copy(update=setting_updates)
     embedding_version = args.embedding_version or settings.face_embedding_version
     centroid_mode = args.centroid_mode or settings.face_centroid_mode
     if args.reuse_vectors and embedding_version != settings.face_embedding_version:

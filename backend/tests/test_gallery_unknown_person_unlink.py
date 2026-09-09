@@ -119,6 +119,35 @@ def test_unlink_unknown_person_in_multi_face_photo_preserves_known_faces_and_tag
     assert [face["id"] for face in response.json()["faces"]] == [known_face_id]
 
 
+def test_unbind_one_of_two_faces_sharing_person_preserves_other_face(db_session) -> None:
+    workspace, unknown, first, _, photo = _add_workspace_people_and_photo(db_session)
+    person_link = GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=first.id, source="auto")
+    first_face = _face(workspace.id, photo.id, first.id)
+    second_face = _face(workspace.id, photo.id, first.id, 50)
+    db_session.add_all([person_link, first_face, second_face])
+    db_session.commit()
+    first_face_id = first_face.id
+    second_face_id = second_face.id
+
+    with _client(db_session, workspace.id) as client:
+        response = client.delete(f"/api/gallery/photos/{photo.id}/faces/{first_face_id}/person")
+
+    assert response.status_code == 200
+    updated_first = db_session.get(FaceRecord, first_face_id)
+    updated_second = db_session.get(FaceRecord, second_face_id)
+    assert updated_first is not None
+    assert updated_first.matched_person_id == unknown.id
+    assert updated_first.needs_review is True
+    assert updated_second is not None
+    assert updated_second.matched_person_id == first.id
+    assert db_session.scalar(
+        select(GalleryPhotoPersonTag).where(
+            GalleryPhotoPersonTag.gallery_photo_id == photo.id,
+            GalleryPhotoPersonTag.person_id == first.id,
+        )
+    ) is not None
+
+
 def test_add_person_to_single_face_photo_rebinds_face_and_removes_unknown_tag(db_session) -> None:
     workspace, unknown, first, _, photo = _add_workspace_people_and_photo(db_session)
     unknown_link = GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=unknown.id, source="unknown")

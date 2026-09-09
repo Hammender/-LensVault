@@ -348,7 +348,7 @@ class PictureService:
 
     @staticmethod
     def _is_preserved_person_tag_source(source: str) -> bool:
-        return source in {"manual", "import", "import_unknown"}
+        return source in {"manual", "face_manual", "import", "import_unknown"}
 
     def _recompute_person_centroid(self, db: Session, person_id: int, workspace_id: int | None) -> None:
         faces = db.scalars(
@@ -422,26 +422,47 @@ class PictureService:
             logger.info("Updated tag to system tag name=%s tag_id=%s", self.rich_text_tag_name, rich_tag.id)
 
     def ensure_gallery_person_tag(self, db: Session, gallery_photo_id: int, person_id: int, source: str) -> None:
-        existing = db.scalar(
-            select(GalleryPhotoPersonTag).where(
-                GalleryPhotoPersonTag.gallery_photo_id == gallery_photo_id,
-                GalleryPhotoPersonTag.person_id == person_id,
+        existing = next((
+            item for item in db.new
+            if isinstance(item, GalleryPhotoPersonTag)
+            and item.gallery_photo_id == gallery_photo_id
+            and item.person_id == person_id
+        ), None)
+        if existing is None:
+            existing = db.scalar(
+                select(GalleryPhotoPersonTag).where(
+                    GalleryPhotoPersonTag.gallery_photo_id == gallery_photo_id,
+                    GalleryPhotoPersonTag.person_id == person_id,
+                )
             )
-        )
         if existing is None:
             db.add(GalleryPhotoPersonTag(gallery_photo_id=gallery_photo_id, person_id=person_id, source=source))
             return
-        source_priority = {"unknown": 0, "auto": 0, "import_unknown": 1, "import": 1, "manual": 2}
+        source_priority = {
+            "unknown": 0,
+            "auto": 0,
+            "import_unknown": 1,
+            "import": 1,
+            "manual": 2,
+            "face_manual": 2,
+        }
         if source_priority.get(source, 0) > source_priority.get(existing.source, 0):
             existing.source = source
 
     def ensure_gallery_tag(self, db: Session, gallery_photo_id: int, tag: Tag, source: str = "manual") -> None:
-        existing = db.scalar(
-            select(GalleryPhotoTag).where(
-                GalleryPhotoTag.gallery_photo_id == gallery_photo_id,
-                GalleryPhotoTag.tag_id == tag.id,
+        existing = next((
+            item for item in db.new
+            if isinstance(item, GalleryPhotoTag)
+            and item.gallery_photo_id == gallery_photo_id
+            and item.tag_id == tag.id
+        ), None)
+        if existing is None:
+            existing = db.scalar(
+                select(GalleryPhotoTag).where(
+                    GalleryPhotoTag.gallery_photo_id == gallery_photo_id,
+                    GalleryPhotoTag.tag_id == tag.id,
+                )
             )
-        )
         if existing is None:
             db.add(GalleryPhotoTag(gallery_photo_id=gallery_photo_id, tag_id=tag.id, source=source))
         elif existing.source != "manual" and source == "manual":
@@ -1330,6 +1351,67 @@ class PictureService:
         )
         return {"total": len(photo_ids), "cleared": cleared, "kept": kept}
 
+    def _resolve_promoted_sample_faces(
+        self,
+        photo: GalleryPhoto,
+        promoted_samples: list[SamplePhoto],
+        recognition_plan: list[tuple[DetectedFace, PersonMatch]],
+    ) -> dict[int, list[SamplePhoto]]:
+        """把提升样本关联到当前图库人脸，并修复历史重识别造成的悬空来源引用。"""
+        faces_by_id = {face.id: face for face in photo.faces}
+        samples_by_face: dict[int, list[SamplePhoto]] = {}
+        unresolved: dict[int, list[SamplePhoto]] = {}
+        for sample in promoted_samples:
+            assert sample.source_gallery_face_id is not None
+            if sample.source_gallery_face_id in faces_by_id:
+                samples_by_face.setdefault(sample.source_gallery_face_id, []).append(sample)
+            else:
+                unresolved.setdefault(sample.source_gallery_face_id, []).append(sample)
+
+        for stale_face_id, samples in unresolved.items():
+            person_ids = {sample.person_id for sample in samples}
+            if len(person_ids) != 1:
+                raise RuntimeError(f"同一悬空人脸来源关联到多个人物：face_id={stale_face_id}")
+            person_id = next(iter(person_ids))
+            candidates = [face for face in photo.faces if face.matched_person_id == person_id]
+            if not candidates:
+                raise RuntimeError(
+                    f"样本追溯指向不存在的图库人脸，且同图没有对应人物：face_id={stale_face_id}"
+                )
+            selected = candidates[0]
+            if len(candidates) > 1:
+                sample_faces = self.face_service.detect_faces(self.storage.get_bytes(samples[0].object_key))
+                if len(sample_faces) != 1:
+                    raise RuntimeError(
+                        f"无法用样本裁剪解析悬空人脸来源：face_id={stale_face_id}, detected={len(sample_faces)}"
+                    )
+                scored: list[tuple[float, int, FaceRecord]] = []
+                for face in candidates:
+                    face_bbox = (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)
+                    aligned = [
+                        (FaceRuntime.bbox_iou(detected.bbox, face_bbox), detected)
+                        for detected, _match in recognition_plan
+                    ]
+                    overlap, detected = max(aligned, key=lambda item: item[0], default=(0.0, None))
+                    if detected is None or overlap < 0.3:
+                        continue
+                    similarity = float(np.dot(sample_faces[0].embedding, detected.embedding))
+                    scored.append((similarity, -face.id, face))
+                if not scored:
+                    raise RuntimeError(
+                        f"同图对应人物无法与新检测框对齐：face_id={stale_face_id}"
+                    )
+                selected = max(scored, key=lambda item: (item[0], item[1]))[2]
+            samples_by_face.setdefault(selected.id, []).extend(samples)
+            logger.info(
+                "Resolved stale promoted sample face photo_id=%s stale_face_id=%s current_face_id=%s person_id=%s",
+                photo.id,
+                stale_face_id,
+                selected.id,
+                person_id,
+            )
+        return samples_by_face
+
     def re_recognize_gallery_photo(
         self, db: Session, photo: GalleryPhoto, *, commit: bool = True, only_unknown: bool = False,
     ) -> GalleryPhoto:
@@ -1352,6 +1434,54 @@ class PictureService:
                 face for face in targets
                 if not any(FaceRuntime.bbox_iou(detected.bbox, (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)) >= 0.3 for detected, _ in recognition_plan)
             )
+        locked_faces: list[FaceRecord] = []
+        locked_detection_indexes: dict[int, FaceRecord] = {}
+        promoted_samples_by_face: dict[int, list[SamplePhoto]] = {}
+        if not only_unknown:
+            manual_person_ids = {
+                tag.person_id for tag in photo.person_tags if tag.source == "face_manual"
+            }
+            promoted_samples = db.scalars(
+                select(SamplePhoto).where(
+                    SamplePhoto.source_gallery_photo_id == photo.id,
+                    SamplePhoto.source_gallery_face_id.is_not(None),
+                    SamplePhoto.status == "ready",
+                )
+            ).all()
+            promoted_samples_by_face = self._resolve_promoted_sample_faces(
+                photo, promoted_samples, recognition_plan
+            )
+            locked_faces = [
+                face for face in photo.faces
+                if face.matched_person_id in manual_person_ids or face.id in promoted_samples_by_face
+            ]
+            candidate_pairs = sorted(
+                [(
+                    FaceRuntime.bbox_iou(
+                        detected.bbox,
+                        (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom),
+                    ),
+                    detection_index,
+                    face,
+                )
+                for detection_index, (detected, _match) in enumerate(recognition_plan)
+                for face in locked_faces
+                ],
+                key=lambda item: (-item[0], item[1], item[2].id),
+            )
+            assigned_face_ids: set[int] = set()
+            for overlap, detection_index, face in candidate_pairs:
+                if overlap < 0.3:
+                    break
+                if detection_index in locked_detection_indexes or face.id in assigned_face_ids:
+                    continue
+                locked_detection_indexes[detection_index] = face
+                assigned_face_ids.add(face.id)
+            unmapped_locked_faces = sorted(face.id for face in locked_faces if face.id not in assigned_face_ids)
+            if unmapped_locked_faces:
+                raise RuntimeError(
+                    f"无法在新检测结果中重定位人工或样本来源人脸：{unmapped_locked_faces}"
+                )
         protected_person_ids = {face.matched_person_id for face in protected_faces}
         old_person_ids = {tag.person_id for tag in photo.person_tags}
         preserved_person_links = [
@@ -1386,9 +1516,36 @@ class PictureService:
 
         summary = GalleryImportSummary()
         logger.info("Re-recognize detection result photo_id=%s faces=%d", photo.id, len(recognition_plan))
-        for detected, match in recognition_plan:
+        remapped_face_ids: dict[int, int] = {}
+        for detection_index, (detected, match) in enumerate(recognition_plan):
             try:
                 with db.begin_nested():
+                    locked_face = locked_detection_indexes.get(detection_index)
+                    if locked_face is not None:
+                        matched_person = db.scalar(
+                            select(Person).where(
+                                Person.id == locked_face.matched_person_id,
+                                Person.workspace_id == photo.workspace_id,
+                            )
+                        )
+                        if matched_person is None or matched_person.is_unknown:
+                            raise RuntimeError(f"锁定人脸人物无效：face_id={locked_face.id}")
+                        face = FaceRecord(
+                            workspace_id=photo.workspace_id,
+                            gallery_photo_id=photo.id,
+                            **self._face_fields(detected, match, MatchDecision(True, None)),
+                            matched_person_id=matched_person.id,
+                            match_score=match.score,
+                            needs_review=False,
+                            vector_collection=None,
+                        )
+                        db.add(face)
+                        db.flush()
+                        remapped_face_ids[locked_face.id] = face.id
+                        self.ensure_gallery_person_tag(db, photo.id, matched_person.id, "face_manual")
+                        self.apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
+                        summary.known_matches += 1
+                        continue
                     matched_person_id, matched_score = match.person_id, match.score
                     matched_person = None
                     if matched_person_id is not None:
@@ -1445,6 +1602,13 @@ class PictureService:
                 logger.exception("Re-recognize face process failed photo_id=%s", photo.id)
                 raise
 
+        for old_face_id, samples in promoted_samples_by_face.items():
+            new_face_id = remapped_face_ids.get(old_face_id)
+            if new_face_id is None:
+                raise RuntimeError(f"样本来源人脸没有生成新记录：face_id={old_face_id}")
+            for sample in samples:
+                sample.source_gallery_face_id = new_face_id
+
         for person_id, source in preserved_person_links:
             self.ensure_gallery_person_tag(db, photo.id, person_id, source)
             self.apply_person_tags_to_gallery_photo(db, photo.id, person_id)
@@ -1483,6 +1647,9 @@ class PictureService:
             "known": summary.known_matches,
             "unknown": summary.unknown_faces,
             "manual_tags_preserved": sum(1 for _, source in preserved_person_links if source == "manual"),
+            "face_manual_tags_preserved": sum(
+                1 for _, source in preserved_person_links if source == "face_manual"
+            ),
             "import_tags_preserved": sum(1 for _, source in preserved_person_links if source.startswith("import")),
         }
         return photo

@@ -9,7 +9,7 @@ from sqlalchemy import inspect, select
 
 from app.core.config import get_settings
 from app.db import SessionLocal, engine
-from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, Person
+from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, Person, SamplePhoto
 from app.services.face import FaceService
 from app.services.face import FaceRuntime
 from app.services.importer import PictureService
@@ -50,6 +50,13 @@ def _snapshot(db, photo_id: int) -> dict[str, object]:
     faces = db.scalars(
         select(FaceRecord).where(FaceRecord.gallery_photo_id == photo_id).order_by(FaceRecord.id)
     ).all()
+    promoted_samples = db.scalars(
+        select(SamplePhoto).where(
+            SamplePhoto.source_gallery_photo_id == photo_id,
+            SamplePhoto.source_gallery_face_id.is_not(None),
+            SamplePhoto.status == "ready",
+        ).order_by(SamplePhoto.id)
+    ).all()
     return {
         "person_tags": [{"person_id": link.person_id, "source": link.source} for link in links],
         "faces": [
@@ -76,6 +83,14 @@ def _snapshot(db, photo_id: int) -> dict[str, object]:
             }
             for face in faces
         ],
+        "promoted_samples": [
+            {
+                "sample_photo_id": sample.id,
+                "person_id": sample.person_id,
+                "source_gallery_face_id": sample.source_gallery_face_id,
+            }
+            for sample in promoted_samples
+        ],
     }
 
 
@@ -86,7 +101,7 @@ def _append_audit(path: Path, row: dict[str, object]) -> None:
         handle.flush()
 
 
-def _read_only_preview(service: PictureService, db, photo: GalleryPhoto, *, only_unknown: bool) -> dict[str, int]:
+def _read_only_preview(service: PictureService, db, photo: GalleryPhoto, *, only_unknown: bool) -> dict[str, object]:
     """只检测和匹配，不修改 ORM 对象、数据库记录或标签。"""
     recognition_plan = service._recognition_plan(db, service.storage.get_bytes(photo.object_key), photo.workspace_id)
     protected_faces = [
@@ -100,17 +115,140 @@ def _read_only_preview(service: PictureService, db, photo: GalleryPhoto, *, only
             if any(FaceRuntime.bbox_iou(detected.bbox, (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)) >= 0.3 for face in targets)
             and not any(FaceRuntime.bbox_iou(detected.bbox, (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom)) >= 0.3 for face in protected_faces)
         ]
+    locked_detection_indexes: dict[int, FaceRecord] = {}
+    sample_remaps: list[dict[str, object]] = []
+    if not only_unknown:
+        manual_person_ids = {
+            tag.person_id for tag in photo.person_tags if tag.source == "face_manual"
+        }
+        promoted_samples = db.scalars(
+            select(SamplePhoto).where(
+                SamplePhoto.source_gallery_photo_id == photo.id,
+                SamplePhoto.source_gallery_face_id.is_not(None),
+                SamplePhoto.status == "ready",
+            )
+        ).all()
+        samples_by_face = service._resolve_promoted_sample_faces(
+            photo, promoted_samples, recognition_plan
+        )
+        locked_faces = [
+            face for face in photo.faces
+            if face.matched_person_id in manual_person_ids or face.id in samples_by_face
+        ]
+        pairs = sorted(
+            [(
+                FaceRuntime.bbox_iou(
+                    detected.bbox,
+                    (face.bbox_left, face.bbox_top, face.bbox_right, face.bbox_bottom),
+                ),
+                detection_index,
+                face,
+            ) for detection_index, (detected, _match) in enumerate(recognition_plan) for face in locked_faces],
+            key=lambda item: (-item[0], item[1], item[2].id),
+        )
+        assigned_face_ids: set[int] = set()
+        for overlap, detection_index, face in pairs:
+            if overlap < 0.3:
+                break
+            if detection_index in locked_detection_indexes or face.id in assigned_face_ids:
+                continue
+            locked_detection_indexes[detection_index] = face
+            assigned_face_ids.add(face.id)
+            for sample in samples_by_face.get(face.id, []):
+                sample_remaps.append({
+                    "sample_photo_id": sample.id,
+                    "old_face_record_id": sample.source_gallery_face_id,
+                    "resolved_current_face_record_id": face.id,
+                    "detection_index": detection_index,
+                    "iou": overlap,
+                })
+        unmapped = sorted(face.id for face in locked_faces if face.id not in assigned_face_ids)
+        if unmapped:
+            raise RuntimeError(f"无法在新检测结果中重定位人工或样本来源人脸：{unmapped}")
+
     known = 0
     rejected = 0
-    for _detected, match in recognition_plan:
+    proposed_faces: list[dict[str, object]] = []
+    protected_person_ids = {face.matched_person_id for face in protected_faces}
+    proposed_tags: dict[int, str] = {
+        tag.person_id: tag.source
+        for tag in photo.person_tags
+        if service._is_preserved_person_tag_source(tag.source)
+        or (only_unknown and tag.person_id in protected_person_ids)
+    }
+    source_priority = {
+        "unknown": 0,
+        "auto": 0,
+        "import_unknown": 1,
+        "import": 1,
+        "manual": 2,
+        "face_manual": 2,
+    }
+
+    def set_proposed_tag(person_id: int, source: str) -> None:
+        existing_source = proposed_tags.get(person_id)
+        if (
+            existing_source is None
+            or source_priority.get(source, 0) > source_priority.get(existing_source, 0)
+        ):
+            proposed_tags[person_id] = source
+
+    unknown_person = db.scalar(
+        select(Person).where(Person.workspace_id == photo.workspace_id, Person.is_unknown.is_(True))
+    )
+    for detection_index, (detected, match) in enumerate(recognition_plan):
         person = None
         if match.person_id is not None:
             person = db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == photo.workspace_id))
-        if service._evaluate_match(match, person).accepted:
+        decision = service._evaluate_match(match, person)
+        locked_face = locked_detection_indexes.get(detection_index)
+        if locked_face is not None:
+            matched_person_id = locked_face.matched_person_id
+            source = "face_manual"
+            accepted = True
+        elif decision.accepted:
+            matched_person_id = person.id
+            source = "auto"
+            accepted = True
+        else:
+            if unknown_person is None:
+                raise RuntimeError("工作区缺少系统未知人物，无法生成只读预演")
+            matched_person_id = unknown_person.id
+            source = "unknown"
+            accepted = False
+        set_proposed_tag(int(matched_person_id), source)
+        proposed_faces.append({
+            "detection_index": detection_index,
+            "bbox": list(detected.bbox),
+            "detection_score": detected.score,
+            "matched_person_id": matched_person_id,
+            "binding_source": source,
+            "predicted_person_id": match.person_id,
+            "score": match.score,
+            "second_person_id": match.second_person_id,
+            "second_score": match.second_score,
+            "margin": match.margin,
+            "rejection_reason": None if accepted else decision.rejection_reason,
+            "face_size": detected.face_size,
+            "blur_score": detected.blur_score,
+            "pose_yaw": detected.pose_yaw,
+            "needs_review": not accepted,
+        })
+        if accepted:
             known += 1
         else:
             rejected += 1
-    return {"faces": len(recognition_plan), "known": known, "unknown": rejected}
+    return {
+        "summary": {"faces": len(recognition_plan), "known": known, "unknown": rejected},
+        "proposed": {
+            "person_tags": [
+                {"person_id": person_id, "source": source}
+                for person_id, source in sorted(proposed_tags.items())
+            ],
+            "faces": proposed_faces,
+            "sample_face_remaps": sample_remaps,
+        },
+    }
 
 
 def main() -> None:
@@ -125,6 +263,11 @@ def main() -> None:
     parser.add_argument("--flip-augmentation", action="store_true", help="仅覆盖本次进程，启用翻转增强，不修改 .env。")
     parser.add_argument("--threshold", type=float, help="仅覆盖本次进程的识别阈值，不修改 .env。")
     parser.add_argument("--min-margin", type=float, help="仅覆盖本次进程的最小人物间隔，不修改 .env。")
+    parser.add_argument("--model-name", help="仅覆盖本次进程的人脸检测模型包。")
+    parser.add_argument("--adapter-id", help="仅覆盖本次进程的人脸识别适配器。")
+    parser.add_argument("--model-path", type=Path, help="仅覆盖本次进程的人脸识别 ONNX 路径。")
+    parser.add_argument("--collection", help="仅覆盖本次进程的 Qdrant 人脸集合。")
+    parser.add_argument("--embedding-version", help="仅覆盖本次进程的向量版本。")
     parser.add_argument(
         "--preserve-existing-known-tags",
         action="store_true",
@@ -163,6 +306,16 @@ def main() -> None:
         if not 0 <= args.min_margin <= 1:
             raise SystemExit("--min-margin 必须在 0 到 1 之间")
         updates["face_recognition_min_margin"] = args.min_margin
+    if args.model_name is not None:
+        updates["face_model_name"] = args.model_name
+    if args.adapter_id is not None:
+        updates["face_adapter_id"] = args.adapter_id
+    if args.model_path is not None:
+        updates["face_recognition_model_path"] = str(args.model_path)
+    if args.collection is not None:
+        updates["qdrant_known_collection"] = args.collection
+    if args.embedding_version is not None:
+        updates["face_embedding_version"] = args.embedding_version
     if updates:
         settings = settings.model_copy(update=updates)
     mode = "apply" if args.apply else "dry-run"
@@ -204,7 +357,7 @@ def main() -> None:
                 })
                 continue
             before = _snapshot(db, photo_id)
-            if args.preserve_existing_known_tags:
+            if args.apply and args.preserve_existing_known_tags:
                 links = db.scalars(
                     select(GalleryPhotoPersonTag)
                     .join(Person, Person.id == GalleryPhotoPersonTag.person_id)
@@ -241,8 +394,9 @@ def main() -> None:
                     after = _snapshot(db, photo_id)
                     summary = getattr(result, "recognition_summary", None)
                 else:
-                    summary = _read_only_preview(service, db, photo, only_unknown=args.only_unknown)
-                    after = before
+                    preview = _read_only_preview(service, db, photo, only_unknown=args.only_unknown)
+                    summary = preview["summary"]
+                    after = preview["proposed"]
                 _append_audit(audit_path, {**base_row, "status": "success", "summary": summary, "after": after})
                 succeeded += 1
                 row_status = "success"

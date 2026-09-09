@@ -120,6 +120,11 @@ def main() -> None:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--flip-augmentation", action="store_true")
+    parser.add_argument("--model-name", default=None, help="实验检测模型包，例如 antelopev2。")
+    parser.add_argument("--adapter-id", default=None, help="实验识别适配器 ID。")
+    parser.add_argument("--model-path", type=Path, default=None, help="实验识别 ONNX 文件路径。")
+    parser.add_argument("--collection", default=None, help="实验 Qdrant 集合名称。")
+    parser.add_argument("--embedding-version", default=None, help="实验向量版本。")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         raise SystemExit("--limit 必须大于 0")
@@ -129,6 +134,16 @@ def main() -> None:
         if not 0 <= args.threshold <= 1:
             raise SystemExit("--threshold 必须在 0 到 1 之间")
         updates["face_recognition_threshold"] = args.threshold
+    if args.model_name is not None:
+        updates["face_model_name"] = args.model_name
+    if args.adapter_id is not None:
+        updates["face_adapter_id"] = args.adapter_id
+    if args.model_path is not None:
+        updates["face_recognition_model_path"] = str(args.model_path)
+    if args.collection is not None:
+        updates["qdrant_known_collection"] = args.collection
+    if args.embedding_version is not None:
+        updates["face_embedding_version"] = args.embedding_version
     settings = base.model_copy(update=updates)
     photo_ids = _load_photo_ids(args.workspace_id)
     if args.limit is not None:
@@ -150,6 +165,10 @@ def main() -> None:
         "threshold": settings.face_recognition_threshold,
         "min_margin": settings.face_recognition_min_margin,
         "flip_augmentation": settings.face_flip_augmentation,
+        "model": {"name": settings.face_model_name, "adapter_id": settings.face_adapter_id,
+                  "model_path": settings.face_recognition_model_path or None,
+                  "collection": settings.qdrant_known_collection,
+                  "embedding_version": settings.face_embedding_version},
         "configs": [item["summary"] for item in reports],
         "details": reports,
         "limitation": "没有人工真值时，accepted_known_candidates 代表可疑的已知候选，不等于确认正确；本工具全程只读。",
