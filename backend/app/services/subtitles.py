@@ -596,6 +596,8 @@ class SubtitleService:
                     "--gpu-layers",
                     str(self.settings.subtitle_llama_server_gpu_layers),
                     "--no-webui",
+                    "--verbosity",
+                    str(self.settings.subtitle_llama_server_log_verbosity),
                 ]
                 if not self.settings.subtitle_llama_server_warmup:
                     args.append("--no-warmup")
@@ -604,7 +606,7 @@ class SubtitleService:
                 if log_path is not None:
                     log_path.parent.mkdir(parents=True, exist_ok=True)
                     self._close_llama_log_handle()
-                    _llama_log_handle = log_path.open("ab")
+                    _llama_log_handle = log_path.open("wb")
                     log_handle = _llama_log_handle
                 creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 _llama_process = subprocess.Popen(

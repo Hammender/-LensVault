@@ -14,7 +14,10 @@ from app.models import (
     FaceRecord,
     GalleryPhoto,
     GalleryPhotoPersonTag,
+    GalleryPhotoTag,
     Person,
+    PersonTag,
+    Tag,
     Workspace,
 )
 from app.services.importer import PictureService
@@ -177,3 +180,231 @@ def test_add_person_to_single_face_photo_rebinds_face_and_removes_unknown_tag(db
     )
     assert correction is not None
     assert correction.corrected_person_id == first.id
+
+
+def _tag_names(payload: dict) -> set[str]:
+    return {item["name"] for item in payload["tags"]}
+
+
+def _photo_tag_names(db_session, photo_id: int) -> set[str]:
+    return set(
+        db_session.scalars(
+            select(Tag.name)
+            .join(GalleryPhotoTag, GalleryPhotoTag.tag_id == Tag.id)
+            .where(GalleryPhotoTag.gallery_photo_id == photo_id)
+        ).all()
+    )
+
+
+def _photo_tag_sources(db_session, photo_id: int) -> dict[str, str]:
+    return {
+        tag.name: link.source
+        for link in db_session.scalars(
+            select(GalleryPhotoTag).where(GalleryPhotoTag.gallery_photo_id == photo_id)
+        ).all()
+        for tag in [db_session.get(Tag, link.tag_id)]
+        if tag is not None
+    }
+
+
+def test_rebind_face_drops_old_person_inherited_tags(db_session) -> None:
+    workspace, unknown, first, second, photo = _add_workspace_people_and_photo(db_session)
+    aespa = Tag(name="aespa", workspace_id=workspace.id)
+    ive = Tag(name="IVE", workspace_id=workspace.id)
+    korea = Tag(name="韩娱", workspace_id=workspace.id)
+    db_session.add_all([aespa, ive, korea])
+    db_session.flush()
+    db_session.add_all(
+        [
+            PersonTag(person_id=first.id, tag_id=aespa.id),
+            PersonTag(person_id=first.id, tag_id=korea.id),
+            PersonTag(person_id=second.id, tag_id=ive.id),
+            PersonTag(person_id=second.id, tag_id=korea.id),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=first.id, source="auto"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=aespa.id, source="person"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=korea.id, source="person"),
+        ]
+    )
+    face = _face(workspace.id, photo.id, first.id)
+    face.needs_review = False
+    db_session.add(face)
+    db_session.commit()
+
+    with _client(db_session, workspace.id) as client:
+        response = client.patch(
+            f"/api/gallery/photos/{photo.id}/faces/{face.id}/person",
+            json={"person_id": second.id},
+        )
+
+    assert response.status_code == 200
+    assert _tag_names(response.json()) == {"IVE", "韩娱"}
+    assert _photo_tag_names(db_session, photo.id) == {"IVE", "韩娱"}
+    assert _photo_tag_sources(db_session, photo.id) == {"IVE": "person", "韩娱": "person"}
+    remaining_person_ids = set(
+        db_session.scalars(
+            select(GalleryPhotoPersonTag.person_id).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id)
+        ).all()
+    )
+    assert remaining_person_ids == {second.id}
+
+
+def test_unbind_face_drops_old_person_inherited_tags(db_session) -> None:
+    workspace, unknown, first, second, photo = _add_workspace_people_and_photo(db_session)
+    aespa = Tag(name="aespa", workspace_id=workspace.id)
+    ive = Tag(name="IVE", workspace_id=workspace.id)
+    korea = Tag(name="韩娱", workspace_id=workspace.id)
+    db_session.add_all([aespa, ive, korea])
+    db_session.flush()
+    db_session.add_all(
+        [
+            PersonTag(person_id=first.id, tag_id=aespa.id),
+            PersonTag(person_id=first.id, tag_id=korea.id),
+            PersonTag(person_id=second.id, tag_id=ive.id),
+            PersonTag(person_id=second.id, tag_id=korea.id),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=first.id, source="auto"),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=second.id, source="manual"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=aespa.id, source="person"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=ive.id, source="person"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=korea.id, source="person"),
+        ]
+    )
+    face = _face(workspace.id, photo.id, first.id)
+    face.needs_review = False
+    db_session.add(face)
+    db_session.commit()
+    face_id = face.id
+
+    with _client(db_session, workspace.id) as client:
+        response = client.delete(f"/api/gallery/photos/{photo.id}/faces/{face_id}/person")
+
+    assert response.status_code == 200
+    assert _tag_names(response.json()) == {"IVE", "韩娱"}
+    assert _photo_tag_names(db_session, photo.id) == {"IVE", "韩娱"}
+    remaining_person_ids = set(
+        db_session.scalars(
+            select(GalleryPhotoPersonTag.person_id).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id)
+        ).all()
+    )
+    assert remaining_person_ids == {second.id, unknown.id}
+
+
+def test_unbind_one_of_two_faces_keeps_shared_person_inherited_tags(db_session) -> None:
+    workspace, unknown, first, _, photo = _add_workspace_people_and_photo(db_session)
+    aespa = Tag(name="aespa", workspace_id=workspace.id)
+    db_session.add(aespa)
+    db_session.flush()
+    db_session.add_all(
+        [
+            PersonTag(person_id=first.id, tag_id=aespa.id),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=first.id, source="auto"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=aespa.id, source="person"),
+        ]
+    )
+    first_face = _face(workspace.id, photo.id, first.id)
+    second_face = _face(workspace.id, photo.id, first.id, 50)
+    db_session.add_all([first_face, second_face])
+    db_session.commit()
+
+    with _client(db_session, workspace.id) as client:
+        response = client.delete(f"/api/gallery/photos/{photo.id}/faces/{first_face.id}/person")
+
+    assert response.status_code == 200
+    assert _tag_names(response.json()) == {"aespa"}
+    assert db_session.scalar(
+        select(GalleryPhotoPersonTag).where(
+            GalleryPhotoPersonTag.gallery_photo_id == photo.id,
+            GalleryPhotoPersonTag.person_id == first.id,
+        )
+    ) is not None
+
+
+def test_rebind_keeps_manual_person_tag_and_its_inherited_tags(db_session) -> None:
+    workspace, unknown, first, second, photo = _add_workspace_people_and_photo(db_session)
+    aespa = Tag(name="aespa", workspace_id=workspace.id)
+    ive = Tag(name="IVE", workspace_id=workspace.id)
+    db_session.add_all([aespa, ive])
+    db_session.flush()
+    db_session.add_all(
+        [
+            PersonTag(person_id=first.id, tag_id=aespa.id),
+            PersonTag(person_id=second.id, tag_id=ive.id),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=first.id, source="manual"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=aespa.id, source="person"),
+        ]
+    )
+    face = _face(workspace.id, photo.id, first.id)
+    face.needs_review = False
+    db_session.add(face)
+    db_session.commit()
+
+    with _client(db_session, workspace.id) as client:
+        response = client.patch(
+            f"/api/gallery/photos/{photo.id}/faces/{face.id}/person",
+            json={"person_id": second.id},
+        )
+
+    assert response.status_code == 200
+    assert _tag_names(response.json()) == {"aespa", "IVE"}
+    remaining_person_ids = set(
+        db_session.scalars(
+            select(GalleryPhotoPersonTag.person_id).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id)
+        ).all()
+    )
+    assert remaining_person_ids == {first.id, second.id}
+
+
+def test_unbind_does_not_remove_manual_gallery_tag(db_session) -> None:
+    workspace, unknown, first, _, photo = _add_workspace_people_and_photo(db_session)
+    aespa = Tag(name="aespa", workspace_id=workspace.id)
+    db_session.add(aespa)
+    db_session.flush()
+    db_session.add_all(
+        [
+            PersonTag(person_id=first.id, tag_id=aespa.id),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=first.id, source="auto"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=aespa.id, source="manual"),
+        ]
+    )
+    face = _face(workspace.id, photo.id, first.id)
+    face.needs_review = False
+    db_session.add(face)
+    db_session.commit()
+
+    with _client(db_session, workspace.id) as client:
+        response = client.delete(f"/api/gallery/photos/{photo.id}/faces/{face.id}/person")
+
+    assert response.status_code == 200
+    assert _tag_names(response.json()) == {"aespa"}
+    assert _photo_tag_sources(db_session, photo.id) == {"aespa": "manual"}
+
+
+def test_delete_person_tag_drops_unneeded_inherited_tags(db_session) -> None:
+    workspace, unknown, first, second, photo = _add_workspace_people_and_photo(db_session)
+    aespa = Tag(name="aespa", workspace_id=workspace.id)
+    korea = Tag(name="韩娱", workspace_id=workspace.id)
+    db_session.add_all([aespa, korea])
+    db_session.flush()
+    db_session.add_all(
+        [
+            PersonTag(person_id=first.id, tag_id=aespa.id),
+            PersonTag(person_id=first.id, tag_id=korea.id),
+            PersonTag(person_id=second.id, tag_id=korea.id),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=first.id, source="manual"),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=second.id, source="manual"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=aespa.id, source="person"),
+            GalleryPhotoTag(gallery_photo_id=photo.id, tag_id=korea.id, source="person"),
+        ]
+    )
+    db_session.commit()
+
+    with _client(db_session, workspace.id) as client:
+        response = client.delete(f"/api/gallery/photos/{photo.id}/persons/{first.id}")
+
+    assert response.status_code == 200
+    assert _tag_names(response.json()) == {"韩娱"}
+    remaining_person_ids = set(
+        db_session.scalars(
+            select(GalleryPhotoPersonTag.person_id).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id)
+        ).all()
+    )
+    assert remaining_person_ids == {second.id}

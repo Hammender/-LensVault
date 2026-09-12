@@ -15,6 +15,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from telethon import TelegramClient
 from telethon.errors import (
     ApiIdInvalidError,
+    ChannelPrivateError,
     FloodWaitError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
@@ -23,6 +24,8 @@ from telethon.errors import (
     PhoneNumberInvalidError,
     RPCError,
     SessionPasswordNeededError,
+    UsernameInvalidError,
+    UsernameNotOccupiedError,
 )
 from telethon.sessions import StringSession
 from telethon import functions, types
@@ -114,7 +117,13 @@ def delivery_hint(code_delivery: str | None) -> str:
 
 def translate_telegram_error(exc: BaseException) -> str:
     if isinstance(exc, ValueError):
-        return str(exc)
+        message = str(exc)
+        if "Could not find the input entity" in message:
+            return (
+                "当前登录账号无法定位该频道。公开频道请使用用户名或 t.me 公开链接，不必加入；"
+                "私有频道必须先用该账号在 Telegram 里加入，再通过「选择已登录会话」或邀请链接添加。"
+            )
+        return message
     if isinstance(exc, FloodWaitError):
         return f"Telegram 请求过于频繁，请等待 {exc.seconds} 秒后再试"
     if isinstance(exc, PhoneNumberInvalidError):
@@ -131,6 +140,10 @@ def translate_telegram_error(exc: BaseException) -> str:
         return "API ID 或 API Hash 无效，请到 my.telegram.org 核对"
     if isinstance(exc, SessionPasswordNeededError):
         return "该账号已开启两步验证，请输入密码"
+    if isinstance(exc, ChannelPrivateError):
+        return "该频道是私有的，当前登录账号没有访问权限，请先加入后再采集"
+    if isinstance(exc, (UsernameNotOccupiedError, UsernameInvalidError)):
+        return "找不到该频道用户名，请检查链接是否正确"
     if isinstance(exc, RPCError):
         message = (getattr(exc, "message", None) or str(exc)).strip()
         return f"Telegram 接口错误：{message or exc.__class__.__name__}"
@@ -640,6 +653,21 @@ class TelegramService:
             raise ValueError("Telegram 登录会话已失效，请重新登录")
         return client
 
+    def _store_client_session(self, account: TelegramAccount, client: TelegramClient) -> None:
+        session_obj = getattr(client, "session", None)
+        save = getattr(session_obj, "save", None)
+        if not callable(save):
+            return
+        session = save()
+        if session:
+            account.session_encrypted = self.encrypt(session)
+
+    async def _close_client(self, account: TelegramAccount, client: TelegramClient) -> None:
+        try:
+            self._store_client_session(account, client)
+        finally:
+            await client.disconnect()
+
     async def _list_dialogs_async(self, account: TelegramAccount) -> list[dict[str, object]]:
         client = await self._open_client(account)
         try:
@@ -668,7 +696,7 @@ class TelegramService:
                 })
             return result
         finally:
-            await client.disconnect()
+            await self._close_client(account, client)
 
     def list_dialogs(self, account: TelegramAccount) -> list[dict[str, object]]:
         try:
@@ -679,28 +707,87 @@ class TelegramService:
     async def _list_topics_async(self, account: TelegramAccount, peer_id: str) -> list[dict[str, object]]:
         client = await self._open_client(account)
         try:
-            entity = await client.get_entity(int(peer_id))
-            if not isinstance(entity, types.Channel) or not bool(getattr(entity, "megagroup", False)):
-                return []
-            topics = await client(functions.messages.GetForumTopicsRequest(peer=entity, offset_date=None, offset_id=0, offset_topic=0, limit=100))
-            result = []
-            for topic in getattr(topics, "topics", []):
-                result.append({
-                    "topic_id": int(getattr(topic, "id", 0)),
-                    "title": str(getattr(topic, "title", "") or "未命名话题"),
-                    "closed": bool(getattr(topic, "closed", False)),
-                    "pinned": bool(getattr(topic, "pinned", False)),
-                    "date": as_shanghai_naive(getattr(topic, "date", None)) if getattr(topic, "date", None) else None,
-                })
-            return result
+            entity = await self._resolve_target(client, channel_ref=peer_id, peer_id=peer_id)
+            return await self._forum_topics_for_entity(client, entity)
         finally:
-            await client.disconnect()
+            await self._close_client(account, client)
 
     def list_topics(self, account: TelegramAccount, peer_id: str) -> list[dict[str, object]]:
         try:
             return self._run(self._list_topics_async(account, peer_id))
         except Exception as exc:  # noqa: BLE001
             raise ValueError(translate_telegram_error(exc)) from exc
+
+    async def _scan_forum_topics_async(self, account: TelegramAccount, channel_ref: str) -> dict[str, object]:
+        client = await self._open_client(account)
+        try:
+            entity = await self._resolve_target(client, channel_ref=channel_ref)
+            peer_id = str(await client.get_peer_id(entity))
+            is_forum = bool(getattr(entity, "forum", False))
+            return {
+                **self._describe_telegram_entity(entity, peer_id),
+                "is_forum": is_forum,
+                "topics": await self._forum_topics_for_entity(client, entity) if is_forum else [],
+            }
+        finally:
+            await self._close_client(account, client)
+
+    def scan_forum_topics(self, account: TelegramAccount, channel_ref: str) -> dict[str, object]:
+        normalized = channel_ref.strip()
+        if not normalized:
+            raise ValueError("请输入频道链接")
+        try:
+            return self._run(self._scan_forum_topics_async(account, normalized))
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(translate_telegram_error(exc)) from exc
+
+    async def _forum_topics_for_entity(self, client: TelegramClient, entity: Any) -> list[dict[str, object]]:
+        if not bool(getattr(entity, "forum", False)):
+            return []
+        topics = await client(
+            functions.messages.GetForumTopicsRequest(
+                peer=entity,
+                offset_date=None,
+                offset_id=0,
+                offset_topic=0,
+                limit=100,
+            )
+        )
+        return self._serialize_forum_topics(topics)
+
+    @staticmethod
+    def _describe_telegram_entity(entity: Any, peer_id: str) -> dict[str, object]:
+        if isinstance(entity, types.User):
+            entity_type = "bot" if bool(getattr(entity, "bot", False)) else "user"
+        elif isinstance(entity, types.Channel):
+            entity_type = "group" if bool(getattr(entity, "megagroup", False)) else "channel"
+        else:
+            entity_type = "group"
+        title = (
+            getattr(entity, "title", None)
+            or getattr(entity, "username", None)
+            or getattr(entity, "first_name", None)
+            or peer_id
+        )
+        return {
+            "peer_id": peer_id,
+            "title": str(title),
+            "username": getattr(entity, "username", None),
+            "entity_type": entity_type,
+        }
+
+    @staticmethod
+    def _serialize_forum_topics(topics: Any) -> list[dict[str, object]]:
+        result: list[dict[str, object]] = []
+        for topic in getattr(topics, "topics", []):
+            result.append({
+                "topic_id": int(getattr(topic, "id", 0)),
+                "title": str(getattr(topic, "title", "") or "未命名话题"),
+                "closed": bool(getattr(topic, "closed", False)),
+                "pinned": bool(getattr(topic, "pinned", False)),
+                "date": as_shanghai_naive(getattr(topic, "date", None)) if getattr(topic, "date", None) else None,
+            })
+        return result
 
     def read_channel_media(
         self,
@@ -710,9 +797,12 @@ class TelegramService:
         target_dir: Path,
         on_records: Callable[[list[dict[str, object]]], None] | None = None,
     ) -> list[dict[str, object]]:
-        return self._run(
-            self._read_channel_media_async(account, channel_ref, parameters, target_dir, on_records)
-        )
+        try:
+            return self._run(
+                self._read_channel_media_async(account, channel_ref, parameters, target_dir, on_records)
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(translate_telegram_error(exc)) from exc
 
     async def _read_channel_media_async(
         self,
@@ -731,7 +821,12 @@ class TelegramService:
         try:
             if not await client.is_user_authorized():
                 raise ValueError("Telegram 登录会话已失效，请重新登录")
-            channel = await self._resolve_channel(client, str(parameters.get("peer_id") or channel_ref))
+            channel = await self._resolve_target(
+                client,
+                channel_ref=channel_ref,
+                peer_id=parameters.get("peer_id"),
+                username=parameters.get("username"),
+            )
             date_from = self._parse_datetime(parameters.get("date_from"))
             date_to = self._parse_datetime(parameters.get("date_to"))
             media_types = {str(item) for item in parameters.get("media_types", ["image", "video"])}
@@ -797,7 +892,7 @@ class TelegramService:
             await asyncio.sleep(exc.seconds)
             raise ValueError("Telegram 限流，请重新运行采集任务") from exc
         finally:
-            await client.disconnect()
+            await self._close_client(account, client)
 
     async def _emit_comment_media(
         self,
@@ -903,9 +998,125 @@ class TelegramService:
             parsed = parsed.replace(tzinfo=SHANGHAI_TZ)
         return parsed.astimezone(timezone.utc)
 
+    async def _resolve_target(
+        self,
+        client: TelegramClient,
+        *,
+        channel_ref: str,
+        peer_id: object = None,
+        username: object = None,
+    ) -> Any:
+        last_exc: BaseException | None = None
+        for candidate in self._resolve_candidates(channel_ref, peer_id, username):
+            try:
+                return await self._resolve_channel(client, candidate)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if self._should_raise_resolve_error(exc):
+                    raise
+        numeric_ref = str(peer_id or "").strip() or (channel_ref.strip() if re.fullmatch(r"-?\d+", channel_ref.strip()) else "")
+        if numeric_ref:
+            found = await self._find_dialog_entity(client, numeric_ref)
+            if found is not None:
+                return found
+        if last_exc is not None:
+            raise ValueError(translate_telegram_error(last_exc)) from last_exc
+        raise ValueError("无法解析 Telegram 频道，请检查链接或会话")
+
+    @staticmethod
+    def _resolve_candidates(channel_ref: str, peer_id: object = None, username: object = None) -> list[str]:
+        candidates: list[str] = []
+
+        def add(value: str | None) -> None:
+            text = (value or "").strip()
+            if text and text not in candidates:
+                candidates.append(text)
+
+        name = str(username or "").strip().lstrip("@")
+        if name:
+            add(f"@{name}")
+            add(name)
+        ref = (channel_ref or "").strip()
+        add(TelegramService._public_ref_lookup(ref))
+        add(ref)
+        add(str(peer_id or "").strip() or None)
+        return candidates
+
+    @staticmethod
+    def _public_ref_lookup(channel_ref: str) -> str | None:
+        normalized = channel_ref.strip()
+        if not normalized:
+            return None
+        if normalized.startswith("@"):
+            return normalized
+        has_host = "://" in normalized or normalized.startswith("t.me/") or normalized.startswith("telegram.me/")
+        if not has_host:
+            return None
+        parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+        parts = [item for item in parsed.path.strip("/").split("/") if item]
+        if not parts:
+            return None
+        if parts[0].startswith("+") or parts[0] == "joinchat":
+            return normalized
+        if parts[0] == "c" and len(parts) >= 2 and parts[1].isdigit():
+            return f"-100{parts[1]}"
+        username = parts[0].removeprefix("@")
+        if username and not re.fullmatch(r"-?\d+", username):
+            return f"@{username}"
+        return None
+
+    @staticmethod
+    def _peer_id_aliases(value: str) -> set[str]:
+        text = value.strip()
+        aliases = {text}
+        if re.fullmatch(r"-?\d+", text):
+            number = int(text)
+            aliases.add(str(number))
+            as_text = str(number)
+            if number < 0 and as_text.startswith("-100"):
+                aliases.add(as_text[4:])
+            elif number > 0:
+                aliases.add(f"-100{number}")
+        return aliases
+
+    @staticmethod
+    def _is_missing_input_entity(exc: BaseException) -> bool:
+        return "Could not find the input entity" in str(exc)
+
+    @staticmethod
+    def _should_raise_resolve_error(exc: BaseException) -> bool:
+        if isinstance(exc, FloodWaitError):
+            return True
+        if isinstance(exc, ValueError) and "请先使用 Telegram 客户端加入" in str(exc):
+            return True
+        if TelegramService._is_missing_input_entity(exc):
+            return False
+        return not isinstance(exc, (UsernameInvalidError, UsernameNotOccupiedError, ChannelPrivateError, ValueError))
+
+    @staticmethod
+    async def _find_dialog_entity(client: TelegramClient, peer_id: str) -> Any | None:
+        aliases = TelegramService._peer_id_aliases(peer_id)
+        async for dialog in client.iter_dialogs():
+            entity = getattr(dialog, "entity", None)
+            if entity is None:
+                continue
+            entity_id = str(getattr(entity, "id", "") or "")
+            try:
+                current = str(await client.get_peer_id(entity))
+            except Exception:  # noqa: BLE001
+                current = entity_id
+            if current in aliases or entity_id in aliases:
+                return entity
+        return None
+
     @staticmethod
     async def _resolve_channel(client: TelegramClient, channel_ref: str) -> Any:
         normalized = channel_ref.strip()
+        lookup = TelegramService._public_ref_lookup(normalized)
+        if lookup and lookup != normalized and not lookup.startswith("-"):
+            normalized = lookup
+        elif lookup and lookup.startswith("-100") and re.fullmatch(r"-100\d+", lookup):
+            normalized = lookup
         parsed = urlparse(normalized)
         path = parsed.path.strip("/") if parsed.scheme else normalized.removeprefix("t.me/").strip("/")
         invite_hash: str | None = None

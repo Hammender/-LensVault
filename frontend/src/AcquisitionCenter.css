@@ -78,6 +78,8 @@
 .telegram-media-options > span { color: var(--muted); font-weight: 700; }
 .telegram-topic-empty { color: var(--muted); font-size: .72rem; line-height: 1.45; }
 .telegram-topic-error { color: #9f2634; font-size: .72rem; line-height: 1.45; }
+.telegram-manual-ref-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: stretch; }
+.telegram-manual-ref-row button { white-space: nowrap; }
 .telegram-media-options label, .telegram-comment-toggle { display: inline-flex; align-items: center; gap: 5px; color: var(--acq-ink); font-size: .76rem; }
 .telegram-media-options input, .telegram-comment-toggle input { width: 14px; height: 14px; margin: 0; padding: 0; }
 .telegram-account-panel.compact { margin-top: 10px; gap: 0; padding: 8px 10px; }

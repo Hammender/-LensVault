@@ -484,6 +484,39 @@ class PictureService:
             link.tag
             self.ensure_gallery_tag(db, gallery_photo_id, link.tag, source="person")
 
+    def sync_inherited_gallery_tags(self, db: Session, gallery_photo_id: int) -> None:
+        """按当前图片上的人物，重建 source=person 的普通标签。
+
+        人脸换绑/解绑后，旧人物继承过来的标签（如组合名）必须一并撤掉；
+        手工打在图片上的标签不受影响。
+        """
+        db.flush()
+        person_ids = list(
+            db.scalars(
+                select(GalleryPhotoPersonTag.person_id).where(
+                    GalleryPhotoPersonTag.gallery_photo_id == gallery_photo_id
+                )
+            ).all()
+        )
+        required_tag_ids: set[int] = set()
+        if person_ids:
+            required_tag_ids = set(
+                db.scalars(select(PersonTag.tag_id).where(PersonTag.person_id.in_(person_ids))).all()
+            )
+        existing_links = db.scalars(
+            select(GalleryPhotoTag).where(GalleryPhotoTag.gallery_photo_id == gallery_photo_id)
+        ).all()
+        existing_tag_ids = {link.tag_id for link in existing_links}
+        for link in existing_links:
+            if link.source == "person" and link.tag_id not in required_tag_ids:
+                db.delete(link)
+        missing_ids = required_tag_ids - existing_tag_ids
+        if not missing_ids:
+            return
+        tags = db.scalars(select(Tag).where(Tag.id.in_(missing_ids))).all()
+        for tag in tags:
+            self.ensure_gallery_tag(db, gallery_photo_id, tag, source="person")
+
     def get_or_create_unknown_person(self, db: Session, workspace_id: int | None) -> Person:
         internal_name = self._unknown_person_internal_name(workspace_id)
         person = db.scalar(

@@ -27,3 +27,12 @@ export type TelegramTopic = {
   pinned: boolean;
   date: string | null;
 };
+
+export type TelegramForumScan = {
+  is_forum: boolean;
+  peer_id: string;
+  title: string;
+  username: string | null;
+  entity_type: string;
+  topics: TelegramTopic[];
+};

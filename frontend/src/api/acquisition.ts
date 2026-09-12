@@ -17,7 +17,7 @@ import type {
   PaginatedAcquisitionAssets,
   Task
 } from "../types";
-import type { TelegramAccount, TelegramDialog, TelegramTopic } from "../types/telegram";
+import type { TelegramAccount, TelegramDialog, TelegramForumScan, TelegramTopic } from "../types/telegram";
 import { authFetch, jsonHeaders, parseResponse as parse, withWorkspaceContext } from "../apiClient";
 import { toShanghaiDateTimeBoundary } from "../utils";
 
@@ -41,6 +41,11 @@ export async function listTelegramDialogs(): Promise<TelegramDialog[]> {
 
 export async function listTelegramTopics(peerId: string): Promise<TelegramTopic[]> {
   return parse<TelegramTopic[]>(await fetch(`/api/acquisition/telegram/dialogs/${encodeURIComponent(peerId)}/topics`));
+}
+
+export async function scanTelegramForumTopics(channelRef: string): Promise<TelegramForumScan> {
+  const params = new URLSearchParams({ channel_ref: channelRef });
+  return parse<TelegramForumScan>(await fetch(`/api/acquisition/telegram/topics?${params.toString()}`));
 }
 
 export async function startTelegramLogin(payload: { api_id: number; api_hash: string; phone_number: string }): Promise<TelegramAccount> {

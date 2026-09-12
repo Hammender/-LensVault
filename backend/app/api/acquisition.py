@@ -63,6 +63,7 @@ from app.schemas import (
     TelegramLoginStartRequest,
     TelegramLoginVerifyRequest,
     TelegramDialogRead,
+    TelegramForumScanRead,
     TelegramTopicRead,
     PaginatedAcquisitionAssets,
     PaginatedAcquisitionCategories,
@@ -129,9 +130,11 @@ def list_telegram_dialogs(
     if account.status != "active":
         raise HTTPException(status_code=400, detail="当前工作区 Telegram 账号不可用")
     try:
-        return [TelegramDialogRead(**item) for item in _telegram_service(request).list_dialogs(account)]
+        dialogs = [TelegramDialogRead(**item) for item in _telegram_service(request).list_dialogs(account)]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return dialogs
 
 
 @router.get("/telegram/dialogs/{peer_id}/topics", response_model=list[TelegramTopicRead])
@@ -143,9 +146,29 @@ def list_telegram_topics(
 ) -> list[TelegramTopicRead]:
     account = _telegram_account_or_404(db, current.workspace_id)
     try:
-        return [TelegramTopicRead(**item) for item in _telegram_service(request).list_topics(account, peer_id)]
+        topics = [TelegramTopicRead(**item) for item in _telegram_service(request).list_topics(account, peer_id)]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return topics
+
+
+@router.get("/telegram/topics", response_model=TelegramForumScanRead)
+def scan_telegram_forum_topics(
+    request: Request,
+    channel_ref: Annotated[str, Query(min_length=1, max_length=2048)],
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> TelegramForumScanRead:
+    account = _telegram_account_or_404(db, current.workspace_id)
+    if account.status != "active":
+        raise HTTPException(status_code=400, detail="当前工作区 Telegram 账号不可用")
+    try:
+        payload = TelegramForumScanRead(**_telegram_service(request).scan_forum_topics(account, channel_ref))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return payload
 
 
 def _telegram_account_read(account: TelegramAccount, request: Request | None = None) -> TelegramAccountRead:

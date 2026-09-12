@@ -60,3 +60,12 @@ class TelegramTopicRead(BaseModel):
     closed: bool = False
     pinned: bool = False
     date: datetime | None = None
+
+
+class TelegramForumScanRead(BaseModel):
+    is_forum: bool
+    peer_id: str
+    title: str
+    username: str | None = None
+    entity_type: str
+    topics: list[TelegramTopicRead] = []

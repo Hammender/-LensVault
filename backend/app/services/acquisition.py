@@ -833,6 +833,8 @@ class AcquisitionService:
 
         try:
             parameters = dict(parameters)
+            if category.telegram_username:
+                parameters.setdefault("username", category.telegram_username)
             if category.telegram_peer_id:
                 parameters.setdefault("peer_id", category.telegram_peer_id)
             if category.telegram_topic_id is not None:

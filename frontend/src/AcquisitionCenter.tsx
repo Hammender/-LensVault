@@ -16,6 +16,7 @@ import {
   getTelegramAccount,
   listTelegramDialogs,
   listTelegramTopics,
+  scanTelegramForumTopics,
   listAcquisitionAssetIds,
   listAcquisitionAssets,
   listAcquisitionCategories,
@@ -73,7 +74,7 @@ import type {
   AcquisitionSource,
   PaginatedAcquisitionAssets
 } from "./types";
-import type { TelegramAccount, TelegramDialog, TelegramTopic } from "./types/telegram";
+import type { TelegramAccount, TelegramDialog, TelegramForumScan, TelegramTopic } from "./types/telegram";
 import { formatBytes, formatDate, toShanghaiDateTimeBoundary } from "./utils";
 import "./AcquisitionCenter.css";
 
@@ -221,6 +222,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [telegramDialogPeerId, setTelegramDialogPeerId] = useState("");
   const [telegramTopicId, setTelegramTopicId] = useState("");
   const [telegramTopicTitle, setTelegramTopicTitle] = useState("");
+  const [telegramManualScan, setTelegramManualScan] = useState<Omit<TelegramForumScan, "topics"> | null>(null);
   const [telegramMediaTypes, setTelegramMediaTypes] = useState<string[]>(["image", "video"]);
   const [telegramCollectComments, setTelegramCollectComments] = useState(false);
   const [telegramApiId, setTelegramApiId] = useState("");
@@ -482,6 +484,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   }, [categorySourceId, sourceById, telegramAccount?.status, telegramDialogLoading, telegramDialogs.length]);
 
   useEffect(() => {
+    if (telegramTargetMode !== "dialog") return;
     if (!telegramDialogPeerId) { setTelegramTopics([]); setTelegramTopicError(null); return; }
     const dialog = telegramDialogs.find((item) => item.peer_id === telegramDialogPeerId);
     if (!dialog || dialog.entity_type === "bot" || !dialog.is_forum) { setTelegramTopics([]); setTelegramTopicError(null); return; }
@@ -493,7 +496,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       .catch((error: Error) => { if (!cancelled) { setTelegramTopics([]); setTelegramTopicError(error.message); } })
       .finally(() => { if (!cancelled) setTelegramTopicLoading(false); });
     return () => { cancelled = true; };
-  }, [telegramDialogPeerId, telegramDialogs]);
+  }, [telegramDialogPeerId, telegramDialogs, telegramTargetMode]);
 
   useEffect(() => {
     if (editingCategoryId != null || telegramTargetMode !== "dialog" || !telegramDialogPeerId) return;
@@ -792,6 +795,68 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setCategoryNotes("");
   }
 
+  function resetTelegramTopicState() {
+    setTelegramTopics([]);
+    setTelegramTopicError(null);
+    setTelegramTopicId("");
+    setTelegramTopicTitle("");
+    setTelegramManualScan(null);
+    setTelegramTopicLoading(false);
+  }
+
+  function switchTelegramTargetMode(mode: "dialog" | "manual") {
+    if (mode === telegramTargetMode) return;
+    setTelegramTargetMode(mode);
+    resetTelegramTopicState();
+  }
+
+  function applyTelegramTopicSelection(topicId: string) {
+    const topic = telegramTopics.find((item) => String(item.topic_id) === topicId);
+    setTelegramTopicId(topicId);
+    setTelegramTopicTitle(topic?.title ?? "");
+    if (categoryNameTouchedRef.current) return;
+    const dialog = telegramDialogs.find((item) => item.peer_id === telegramDialogPeerId);
+    const baseTitle = telegramTargetMode === "dialog"
+      ? (dialog ? telegramDialogTitle(dialog) : "")
+      : telegramManualScan?.title ?? "";
+    if (!baseTitle) return;
+    setCategoryName(topic ? `${baseTitle} / ${topic.title}` : baseTitle);
+  }
+
+  async function scanManualForumTopics() {
+    const channelRef = categoryUrl.trim();
+    if (!channelRef) {
+      setTelegramTopicError("请先输入频道链接");
+      setTelegramTopics([]);
+      setTelegramManualScan(null);
+      return;
+    }
+    setTelegramTopicLoading(true);
+    setTelegramTopicError(null);
+    setTelegramTopics([]);
+    setTelegramTopicId("");
+    setTelegramTopicTitle("");
+    setTelegramManualScan(null);
+    try {
+      const result = await scanTelegramForumTopics(channelRef);
+      setTelegramManualScan({
+        is_forum: result.is_forum,
+        peer_id: result.peer_id,
+        title: result.title,
+        username: result.username,
+        entity_type: result.entity_type
+      });
+      setTelegramTopics(result.is_forum ? result.topics : []);
+      if (!categoryNameTouchedRef.current && result.title) setCategoryName(result.title);
+    } catch (error) {
+      setTelegramTopics([]);
+      setTelegramManualScan(null);
+      setTelegramTopicError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTelegramTopicLoading(false);
+    }
+  }
+
   function editCategory(category: AcquisitionCategory) {
     setEditingCategoryId(category.id);
     setCategorySourceId(String(category.source_id));
@@ -809,13 +874,16 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       if (editingCategoryId) await updateAcquisitionCategory(editingCategoryId, payload);
       else if (sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1") {
         const dialog = telegramDialogs.find((item) => item.peer_id === telegramDialogPeerId);
+        const scannedEntityType = telegramManualScan?.entity_type === "channel" || telegramManualScan?.entity_type === "group" || telegramManualScan?.entity_type === "bot"
+          ? telegramManualScan.entity_type
+          : undefined;
         await createTelegramChannel(Number(categorySourceId), {
           name: payload.name,
           channel_ref: categoryUrl.trim() || (dialog?.username ? `@${dialog.username}` : telegramDialogPeerId),
           notes: payload.notes,
-          peer_id: telegramTargetMode === "dialog" ? telegramDialogPeerId || null : null,
-          entity_type: telegramTargetMode === "dialog" ? dialog?.entity_type : undefined,
-          username: telegramTargetMode === "dialog" ? dialog?.username : undefined,
+          peer_id: telegramTargetMode === "dialog" ? telegramDialogPeerId || null : telegramManualScan?.peer_id || null,
+          entity_type: telegramTargetMode === "dialog" ? dialog?.entity_type : scannedEntityType,
+          username: telegramTargetMode === "dialog" ? dialog?.username : telegramManualScan?.username ?? undefined,
           topic_id: telegramTopicId ? Number(telegramTopicId) : null,
           topic_title: telegramTopicTitle.trim() || null,
           source_mode: telegramTargetMode,
@@ -1286,20 +1354,28 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           {sourceById.get(Number(categorySourceId))?.page_format_key !== "telegram-channel-v1" && <input type="url" value={categoryUrl} onChange={(event) => setCategoryUrl(event.target.value)} placeholder="分类分页入口 URL" required />}
           {sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" && <div className="telegram-target-panel">
             <div className="telegram-target-switch" role="tablist" aria-label="Telegram 来源方式">
-              <button type="button" className={telegramTargetMode === "dialog" ? "active" : ""} onClick={() => setTelegramTargetMode("dialog")}>选择已登录会话</button>
-              <button type="button" className={telegramTargetMode === "manual" ? "active" : ""} onClick={() => setTelegramTargetMode("manual")}>手工输入引用</button>
+              <button type="button" className={telegramTargetMode === "dialog" ? "active" : ""} onClick={() => switchTelegramTargetMode("dialog")}>选择已登录会话</button>
+              <button type="button" className={telegramTargetMode === "manual" ? "active" : ""} onClick={() => switchTelegramTargetMode("manual")}>手工输入引用</button>
             </div>
-            {telegramTargetMode === "dialog" && <>
-              <select value={telegramDialogPeerId} onChange={(event) => { setTelegramDialogPeerId(event.target.value); setTelegramTopicId(""); setTelegramTopicTitle(""); }} aria-label="选择 Telegram 会话">
-                <option value="">{telegramDialogLoading ? "正在读取会话…" : "选择频道、群组或机器人"}</option>
-                {telegramDialogs.map((dialog) => <option key={dialog.peer_id} value={dialog.peer_id}>{dialog.title} · {dialog.entity_type === "bot" ? "机器人" : dialog.entity_type === "group" ? "群组" : "频道"}{dialog.is_forum ? " · 论坛" : ""}</option>)}
-              </select>
-              {telegramTopics.length > 0 && <select value={telegramTopicId} onChange={(event) => { const topic = telegramTopics.find((item) => String(item.topic_id) === event.target.value); setTelegramTopicId(event.target.value); setTelegramTopicTitle(topic?.title ?? ""); if (!categoryNameTouchedRef.current) { const dialog = telegramDialogs.find((item) => item.peer_id === telegramDialogPeerId); setCategoryName(topic && dialog ? `${telegramDialogTitle(dialog)} / ${topic.title}` : dialog ? telegramDialogTitle(dialog) : ""); } }} aria-label="选择论坛话题"><option value="">采集全部话题</option>{telegramTopics.map((topic) => <option key={topic.topic_id} value={topic.topic_id}>{topic.title}{topic.closed ? " · 已关闭" : ""}</option>)}</select>}
-              {telegramTopicLoading && <small>正在读取论坛话题…</small>}
-              {!telegramTopicLoading && telegramTopicError && <small className="telegram-topic-error">读取论坛话题失败：{telegramTopicError}</small>}
-              {!telegramTopicLoading && !telegramTopicError && telegramDialogPeerId && telegramTopics.length === 0 && <small className="telegram-topic-empty">未读取到论坛话题，可直接手工输入话题 ID。</small>}
-            </>}
-            {telegramTargetMode === "manual" && <input type="text" value={categoryUrl} onChange={(event) => setCategoryUrl(event.target.value)} placeholder="频道用户名、频道链接、私有邀请链接或 peer ID" required />}
+            {telegramTargetMode === "dialog" && <select value={telegramDialogPeerId} onChange={(event) => { setTelegramDialogPeerId(event.target.value); setTelegramTopicId(""); setTelegramTopicTitle(""); }} aria-label="选择 Telegram 会话">
+              <option value="">{telegramDialogLoading ? "正在读取会话…" : "选择频道、群组或机器人"}</option>
+              {telegramDialogs.map((dialog) => <option key={dialog.peer_id} value={dialog.peer_id}>{dialog.title} · {dialog.entity_type === "bot" ? "机器人" : dialog.entity_type === "group" ? "群组" : "频道"}{dialog.is_forum ? " · 论坛" : ""}</option>)}
+            </select>}
+            {telegramTargetMode === "manual" && <div className="telegram-manual-ref-row">
+              <input type="text" value={categoryUrl} onChange={(event) => {
+                setCategoryUrl(event.target.value);
+                if (telegramManualScan || telegramTopics.length || telegramTopicError) resetTelegramTopicState();
+              }} placeholder="频道用户名、频道链接、私有邀请链接或 peer ID" required />
+              <button type="button" className="secondary-command" disabled={busy || telegramTopicLoading || !categoryUrl.trim() || telegramAccount?.status !== "active"} onClick={() => void scanManualForumTopics()}>
+                <ScanSearch size={15} /> {telegramTopicLoading ? "扫描中…" : "扫描话题"}
+              </button>
+            </div>}
+            {telegramTopics.length > 0 && <select value={telegramTopicId} onChange={(event) => applyTelegramTopicSelection(event.target.value)} aria-label="选择论坛话题"><option value="">采集全部话题</option>{telegramTopics.map((topic) => <option key={topic.topic_id} value={topic.topic_id}>{topic.title}{topic.closed ? " · 已关闭" : ""}</option>)}</select>}
+            {telegramTopicLoading && <small>正在读取论坛话题…</small>}
+            {!telegramTopicLoading && telegramTopicError && <small className="telegram-topic-error">读取论坛话题失败：{telegramTopicError}</small>}
+            {!telegramTopicLoading && !telegramTopicError && telegramTargetMode === "dialog" && telegramDialogPeerId && telegramTopics.length === 0 && <small className="telegram-topic-empty">未读取到论坛话题，可直接手工输入话题 ID。</small>}
+            {!telegramTopicLoading && !telegramTopicError && telegramTargetMode === "manual" && telegramManualScan && !telegramManualScan.is_forum && <small className="telegram-topic-empty">该链接不是论坛</small>}
+            {!telegramTopicLoading && !telegramTopicError && telegramTargetMode === "manual" && telegramManualScan?.is_forum && telegramTopics.length === 0 && <small className="telegram-topic-empty">未读取到论坛话题，可直接手工输入话题 ID。</small>}
             <input value={telegramTopicId} onChange={(event) => setTelegramTopicId(event.target.value)} placeholder="可选：手工输入话题 ID" inputMode="numeric" />
           </div>}
           <textarea value={categoryNotes} onChange={(event) => setCategoryNotes(event.target.value)} placeholder="备注（选填）" rows={3} />

@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     subtitle_llama_server_context_size: int = 4096
     subtitle_llama_server_startup_timeout_seconds: int = 300
     subtitle_llama_server_log_path: Path | None = None
+    subtitle_llama_server_log_verbosity: int = Field(default=1, ge=0)
     subtitle_llama_server_device: str = "none"
     subtitle_llama_server_gpu_layers: int = 0
     subtitle_llama_server_warmup: bool = False

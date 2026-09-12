@@ -23,7 +23,7 @@ from app.dependencies.context import CurrentContext, require_context, require_pe
 from app.http.media import stream_storage_object
 from app.mappers.gallery import gallery_photo_to_detail as _gallery_photo_to_detail, gallery_photo_to_list_item as _gallery_photo_to_list_item
 from app.mappers.people import person_to_read
-from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityFeature, GallerySimilarityGroup, GallerySimilarityGroupMember, GallerySimilarityGroupPair, GallerySimilarityScan, Person, PersonTag, SamplePhoto, Tag, Task
+from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityFeature, GallerySimilarityGroup, GallerySimilarityGroupMember, GallerySimilarityGroupPair, GallerySimilarityScan, Person, SamplePhoto, Tag, Task
 from app.schemas import (
     GallerySimilarityAutoDeleteExecuteRequest,
     GallerySimilarityAutoDeleteResponse,
@@ -1143,7 +1143,7 @@ def bind_gallery_face_person(
         if previous_link is not None and previous_link.source in {"auto", "unknown", "face_manual"} and not still_bound:
             db.delete(previous_link)
     picture_service.ensure_gallery_person_tag(db, photo.id, person.id, "face_manual")
-    picture_service.apply_person_tags_to_gallery_photo(db, photo.id, person.id)
+    picture_service.sync_inherited_gallery_tags(db, photo.id)
     mark_similarity_scans_stale(db, current.workspace_id, {person.id})
     db.commit()
     return get_gallery_photo(photo_id, db, current)
@@ -1179,6 +1179,7 @@ def unbind_gallery_face_person(
         if previous_link is not None and previous_link.source in {"auto", "unknown", "face_manual"} and not still_bound:
             db.delete(previous_link)
     picture_service.ensure_gallery_person_tag(db, photo.id, unknown.id, "unknown")
+    picture_service.sync_inherited_gallery_tags(db, photo.id)
     db.flush()
     db.commit()
     return get_gallery_photo(photo_id, db, current)
@@ -1253,42 +1254,13 @@ def delete_gallery_photo_person(
         for face in faces:
             db.delete(face)
         db.delete(link)
+        picture_service.sync_inherited_gallery_tags(db, photo_id)
         mark_similarity_scans_stale(db, current.workspace_id, {person.id})
         db.commit()
         return get_gallery_photo(photo_id, db, current)
-    
-    person_tags = db.scalars(select(PersonTag).where(PersonTag.person_id == person_id)).all()
-    tag_ids = [pt.tag_id for pt in person_tags]
-    
+
     db.delete(link)
-    
-    for tag_id in tag_ids:
-        gallery_tag = db.scalar(
-            select(GalleryPhotoTag).where(
-                GalleryPhotoTag.gallery_photo_id == photo_id,
-                GalleryPhotoTag.tag_id == tag_id,
-            )
-        )
-        if gallery_tag is None or gallery_tag.source != "person":
-            continue
-        
-        still_required = db.scalar(
-            select(func.count(PersonTag.id))
-            .join(Person, Person.id == PersonTag.person_id)
-            .join(
-                GalleryPhotoPersonTag,
-                GalleryPhotoPersonTag.person_id == PersonTag.person_id,
-            )
-            .where(
-                PersonTag.tag_id == tag_id,
-                GalleryPhotoPersonTag.gallery_photo_id == photo_id,
-                PersonTag.person_id != person_id,
-            )
-        ) or 0
-        
-        if still_required == 0:
-            db.delete(gallery_tag)
-    
+    picture_service.sync_inherited_gallery_tags(db, photo_id)
     mark_similarity_scans_stale(db, current.workspace_id, {person.id})
     db.commit()
     return get_gallery_photo(photo_id, db, current)

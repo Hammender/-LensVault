@@ -104,6 +104,10 @@ class TelegramAcquisitionTests(unittest.TestCase):
         self.assertEqual(code_delivery_from_type(SentCodeTypeSms(length=5)), "sms")
         self.assertIn("频繁", translate_telegram_error(FloodWaitError(request=None, capture=12)))
         self.assertIn("手机号无效", translate_telegram_error(PhoneNumberInvalidError(request=None)))
+        self.assertIn(
+            "公开频道",
+            translate_telegram_error(ValueError("Could not find the input entity for PeerChannel(channel_id=2653573634) (PeerChannel).")),
+        )
 
     def test_start_login_persists_session_in_pending_state(self) -> None:
         key = Fernet.generate_key().decode("ascii")
@@ -441,3 +445,148 @@ class TelegramAcquisitionTests(unittest.TestCase):
             records = asyncio.run(service._download_media_group(FakeClient(), channel, messages, Path(raw_dir)))
         self.assertEqual([record["message_id"] for record in records], [1, 3])
         self.assertTrue(all(record["caption"] == "相册" for record in records))
+
+    def test_serialize_forum_topics_uses_fallback_title(self) -> None:
+        topics = TelegramService._serialize_forum_topics(SimpleNamespace(topics=[
+            SimpleNamespace(id=1, title="公告", closed=False, pinned=True, date=None),
+            SimpleNamespace(id=2, title="", closed=True, pinned=False, date=None),
+        ]))
+        self.assertEqual(topics[0]["topic_id"], 1)
+        self.assertEqual(topics[0]["title"], "公告")
+        self.assertTrue(topics[0]["pinned"])
+        self.assertEqual(topics[1]["title"], "未命名话题")
+        self.assertTrue(topics[1]["closed"])
+
+    def test_scan_forum_topics_requires_channel_ref(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key))
+        with self.assertRaisesRegex(ValueError, "请输入频道链接"):
+            service.scan_forum_topics(SimpleNamespace(), "  ")
+
+    def test_scan_forum_topics_lists_forum_topics(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key))
+        called = {"topics": False}
+
+        class FakeClient:
+            async def get_peer_id(self, entity):
+                return -100555
+
+            async def __call__(self, request):
+                called["topics"] = True
+                return SimpleNamespace(topics=[
+                    SimpleNamespace(id=11, title="公告", closed=False, pinned=True, date=None),
+                ])
+
+            async def disconnect(self):
+                return None
+
+        forum = SimpleNamespace(title="测试论坛", username="testforum", megagroup=True, forum=True, bot=False)
+
+        async def fake_open(_account):
+            return FakeClient()
+
+        async def fake_resolve(_client, channel_ref):
+            self.assertIn(channel_ref, {"@testforum", "https://t.me/testforum", "testforum"})
+            return forum
+
+        with patch.object(service, "_open_client", side_effect=fake_open), patch.object(
+            TelegramService, "_resolve_channel", side_effect=fake_resolve
+        ):
+            result = service.scan_forum_topics(SimpleNamespace(), "https://t.me/testforum")
+        self.assertTrue(result["is_forum"])
+        self.assertEqual(result["peer_id"], "-100555")
+        self.assertEqual(result["title"], "测试论坛")
+        self.assertEqual(result["username"], "testforum")
+        self.assertEqual(result["topics"][0]["topic_id"], 11)
+        self.assertTrue(called["topics"])
+
+    def test_scan_forum_topics_returns_empty_when_not_forum(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key))
+        called = {"topics": False}
+
+        class FakeClient:
+            async def get_peer_id(self, entity):
+                return -100777
+
+            async def __call__(self, request):
+                called["topics"] = True
+                raise AssertionError("非论坛频道不应请求话题列表")
+
+            async def disconnect(self):
+                return None
+
+        channel = SimpleNamespace(title="普通频道", username="plain", megagroup=False, forum=False, bot=False)
+
+        async def fake_open(_account):
+            return FakeClient()
+
+        async def fake_resolve(_client, _channel_ref):
+            return channel
+
+        with patch.object(service, "_open_client", side_effect=fake_open), patch.object(
+            TelegramService, "_resolve_channel", side_effect=fake_resolve
+        ):
+            result = service.scan_forum_topics(SimpleNamespace(), "@plain")
+        self.assertFalse(result["is_forum"])
+        self.assertEqual(result["title"], "普通频道")
+        self.assertEqual(result["topics"], [])
+        self.assertFalse(called["topics"])
+
+    def test_resolve_candidates_prefer_username_over_peer_id(self) -> None:
+        candidates = TelegramService._resolve_candidates(
+            "https://t.me/public/12",
+            peer_id="-1002653573634",
+            username="public",
+        )
+        self.assertEqual(candidates[0], "@public")
+        self.assertIn("https://t.me/public/12", candidates)
+        self.assertEqual(candidates[-1], "-1002653573634")
+        self.assertEqual(TelegramService._public_ref_lookup("https://t.me/c/2653573634/8"), "-1002653573634")
+        self.assertEqual(TelegramService._peer_id_aliases("2653573634"), {"2653573634", "-1002653573634"})
+
+    def test_resolve_target_falls_back_from_peer_id_to_username(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key))
+        seen: list[str] = []
+        channel = SimpleNamespace(id=2653573634, title="公开频道", username="public")
+
+        async def fake_resolve(_client, candidate):
+            seen.append(candidate)
+            if candidate in {"@public", "public"}:
+                return channel
+            raise ValueError("Could not find the input entity for PeerChannel(channel_id=2653573634) (PeerChannel).")
+
+        with patch.object(TelegramService, "_resolve_channel", side_effect=fake_resolve):
+            result = asyncio.run(service._resolve_target(
+                SimpleNamespace(),
+                channel_ref="https://t.me/public",
+                peer_id="-1002653573634",
+                username="public",
+            ))
+        self.assertIs(result, channel)
+        self.assertEqual(seen[0], "@public")
+
+    def test_resolve_target_finds_joined_private_channel_in_dialogs(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key))
+        entity = SimpleNamespace(id=2653573634, title="私有频道", username=None)
+
+        class FakeClient:
+            async def get_peer_id(self, item):
+                return -1002653573634 if item is entity else 0
+
+            async def iter_dialogs(self):
+                yield SimpleNamespace(entity=entity)
+
+        async def fake_resolve(_client, _candidate):
+            raise ValueError("Could not find the input entity for PeerChannel(channel_id=2653573634) (PeerChannel).")
+
+        with patch.object(TelegramService, "_resolve_channel", side_effect=fake_resolve):
+            result = asyncio.run(service._resolve_target(
+                FakeClient(),
+                channel_ref="-1002653573634",
+                peer_id="-1002653573634",
+            ))
+        self.assertIs(result, entity)
