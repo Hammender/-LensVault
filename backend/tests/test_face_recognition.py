@@ -282,14 +282,16 @@ def test_rerecognition_preserves_manual_and_import_person_tags() -> None:
     with Session(engine) as db:
         manual = Person(name="manual", display_name="人工", is_unknown=False)
         imported = Person(name="imported", display_name="导入", is_unknown=False)
+        debug = Person(name="debug", display_name="临时调试人物1", is_unknown=False)
         face_manual = Person(name="face-manual", display_name="人脸手工", is_unknown=False)
         automatic = Person(name="automatic", display_name="自动", is_unknown=False)
         photo = GalleryPhoto(filename="photo.jpg", sha256="b" * 64, object_key="gallery/photo.jpg")
-        db.add_all([manual, imported, face_manual, automatic, photo])
+        db.add_all([manual, imported, debug, face_manual, automatic, photo])
         db.flush()
         db.add_all([
             GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=manual.id, source="manual"),
             GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=imported.id, source="import"),
+            GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=debug.id, source="debug"),
             GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=face_manual.id, source="face_manual"),
             GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=automatic.id, source="auto"),
         ])
@@ -306,8 +308,89 @@ def test_rerecognition_preserves_manual_and_import_person_tags() -> None:
         assert {(link.person_id, link.source) for link in links} == {
             (manual.id, "manual"),
             (imported.id, "import"),
-            (face_manual.id, "face_manual"),
+            (debug.id, "debug"),
         }
+
+
+def test_face_manual_source_upgrades_auto_but_not_manual() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    service = make_picture_service()
+    with Session(engine) as db:
+        automatic = Person(name="auto", display_name="自动", is_unknown=False)
+        tagged = Person(name="tagged", display_name="图片标签", is_unknown=False)
+        photo = GalleryPhoto(filename="photo.jpg", sha256="aa" * 32, object_key="gallery/photo.jpg")
+        db.add_all([automatic, tagged, photo])
+        db.flush()
+        service.ensure_gallery_person_tag(db, photo.id, automatic.id, "auto")
+        service.ensure_gallery_person_tag(db, photo.id, tagged.id, "manual")
+        db.flush()
+
+        service.ensure_gallery_person_tag(db, photo.id, automatic.id, "face_manual")
+        service.ensure_gallery_person_tag(db, photo.id, tagged.id, "face_manual")
+        db.flush()
+
+        auto_link = db.scalar(select(GalleryPhotoPersonTag).where(GalleryPhotoPersonTag.person_id == automatic.id))
+        tagged_link = db.scalar(select(GalleryPhotoPersonTag).where(GalleryPhotoPersonTag.person_id == tagged.id))
+        assert auto_link is not None and auto_link.source == "face_manual"
+        assert tagged_link is not None and tagged_link.source == "manual"
+
+
+def test_rerecognition_overwrites_face_manual_binding_when_below_threshold() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    storage = FakeStorage()
+    service = PictureService(
+        storage,  # type: ignore[arg-type]
+        NoopFaceService(),  # type: ignore[arg-type]
+        FakeVectorStore([]),  # type: ignore[arg-type]
+        NoopOcrService(),
+        Settings(),
+    )
+    with Session(engine) as db:
+        bound = Person(name="ning", display_name="宁艺卓", is_unknown=False)
+        predicted = Person(name="kim", display_name="金玟庭", is_unknown=False)
+        photo = GalleryPhoto(filename="photo.jpg", sha256="bb" * 32, object_key="gallery/photo.jpg")
+        db.add_all([bound, predicted, photo])
+        db.flush()
+        old_face = FaceRecord(
+            gallery_photo_id=photo.id,
+            bbox_left=10,
+            bbox_top=10,
+            bbox_right=90,
+            bbox_bottom=90,
+            matched_person_id=bound.id,
+            predicted_person_id=predicted.id,
+            match_score=0.33,
+            needs_review=False,
+        )
+        db.add(old_face)
+        db.add(GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=bound.id, source="face_manual"))
+        db.commit()
+        detected = DetectedFace(
+            (10, 10, 90, 90), 0.95, np.ones(512, dtype=np.float32), 80, 90, 0
+        )
+        service._recognition_plan = lambda *_args, **_kwargs: [  # type: ignore[method-assign]
+            (detected, PersonMatch(predicted.id, 0.2))
+        ]
+        storage.objects[photo.object_key] = make_image_bytes()
+
+        service.re_recognize_gallery_photo(db, photo, commit=False)
+        db.flush()
+
+        faces = db.scalars(select(FaceRecord).where(FaceRecord.gallery_photo_id == photo.id)).all()
+        assert len(faces) == 1
+        assert faces[0].needs_review is True
+        matched = db.get(Person, faces[0].matched_person_id)
+        assert matched is not None and matched.is_unknown
+        remaining = {
+            (link.person_id, link.source)
+            for link in db.scalars(
+                select(GalleryPhotoPersonTag).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id)
+            ).all()
+        }
+        assert (bound.id, "face_manual") not in remaining
+        assert any(source == "unknown" for _person_id, source in remaining)
 
 
 def test_rerecognition_remaps_promoted_sample_face_and_keeps_human_identity() -> None:

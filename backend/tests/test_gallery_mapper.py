@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.mappers.gallery import gallery_photo_to_detail, gallery_photo_to_list_item
-from app.models import FaceRecord, GalleryPhoto, SamplePhoto
+from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, Person, SamplePhoto
 
 
 def make_gallery_photo(photo_id: int, sha256: str) -> GalleryPhoto:
@@ -60,3 +60,40 @@ def test_gallery_detail_orders_faces_and_maps_exact_promoted_face() -> None:
     assert [face.face_index for face in detail.faces] == [1, 2]
     assert detail.faces[0].promoted_sample_id is None
     assert detail.faces[1].promoted_sample_id == 77
+
+
+def test_gallery_detail_binding_source_uses_person_tag_not_prediction_mismatch() -> None:
+    photo = make_gallery_photo(42, "a" * 64)
+    bound = Person(id=16, name="ning", display_name="宁艺卓", is_unknown=False)
+    unknown = Person(id=1, name="unknown", display_name="未知人物", is_unknown=True)
+    confirmed = FaceRecord(
+        id=4,
+        bbox_left=100,
+        bbox_top=100,
+        bbox_right=200,
+        bbox_bottom=200,
+        matched_person_id=16,
+        needs_review=False,
+    )
+    confirmed.matched_person = bound
+    pending = FaceRecord(
+        id=9,
+        bbox_left=500,
+        bbox_top=300,
+        bbox_right=600,
+        bbox_bottom=400,
+        matched_person_id=1,
+        needs_review=True,
+    )
+    pending.matched_person = unknown
+    photo.faces = [confirmed, pending]
+    photo.person_tags = [
+        GalleryPhotoPersonTag(person_id=16, source="face_manual", person=bound),
+        GalleryPhotoPersonTag(person_id=1, source="unknown", person=unknown),
+    ]
+
+    detail = gallery_photo_to_detail(photo)
+
+    by_id = {face.id: face for face in detail.faces}
+    assert by_id[4].binding_source == "manual"
+    assert by_id[9].binding_source == "unknown"

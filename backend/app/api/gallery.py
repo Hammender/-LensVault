@@ -1044,10 +1044,6 @@ def add_gallery_photo_person(
     picture_service.ensure_gallery_person_tag(db, photo_id, person.id, "manual")
     picture_service.apply_person_tags_to_gallery_photo(db, photo_id, person.id)
 
-    faces = db.scalars(select(FaceRecord).where(FaceRecord.gallery_photo_id == photo_id)).all()
-    if len(faces) == 1:
-        picture_service.move_gallery_face_to_known(db, faces[0], person)
-
     mark_similarity_scans_stale(db, current.workspace_id, {person.id})
     db.commit()
     return get_gallery_photo(photo_id, db, current)

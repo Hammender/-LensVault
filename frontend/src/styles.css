@@ -1238,6 +1238,15 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--unknown);
 }
 
+.pill-source {
+  margin-left: 6px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.78;
+}
+
 .action-pill { cursor: pointer; transition: transform 0.2s; }
 .action-pill:hover { transform: translate(-2px, -2px); box-shadow: 2px 2px 0 var(--panel-border); }
 
@@ -1702,6 +1711,7 @@ input:focus, select:focus, textarea:focus {
 .face-status.confirmed { color: #39744e; }
 .face-status.review { color: var(--unknown); }
 .face-status.ignored { color: var(--accent-strong); }
+.face-status.override { color: #8a5a12; }
 
 .face-candidates {
   display: grid;
@@ -1719,6 +1729,11 @@ input:focus, select:focus, textarea:focus {
 
 .face-candidate-row + .face-candidate-row {
   border-top: 1px solid rgba(53, 37, 29, 0.08);
+}
+
+.face-candidate-row.current {
+  grid-template-columns: auto minmax(70px, 1fr) auto;
+  background: rgba(118, 104, 93, 0.08);
 }
 
 .face-candidate-row.primary {

@@ -1,7 +1,16 @@
 from __future__ import annotations
 
-from app.models import GalleryPhoto
+from app.models import FaceRecord, GalleryPhoto
 from app.schemas import FaceRead, GalleryPersonTagRead, GalleryPhotoDetail, GalleryPhotoListItem, GalleryTagRead
+
+
+def _face_binding_source(face: FaceRecord, person_tag_sources: dict[int, str]) -> str:
+    person = face.matched_person
+    if person is not None and person.is_unknown:
+        return "unknown"
+    if person is not None and person_tag_sources.get(face.matched_person_id) == "face_manual":
+        return "manual"
+    return "auto"
 
 
 def gallery_photo_to_list_item(photo: GalleryPhoto) -> GalleryPhotoListItem:
@@ -54,6 +63,7 @@ def gallery_photo_to_detail(
         photo.faces,
         key=lambda face: (float(face.bbox_top), float(face.bbox_left), face.id),
     )
+    person_tag_sources = {tag.person_id: tag.source for tag in photo.person_tags}
     faces = [
         FaceRead(
             id=face.id,
@@ -65,11 +75,7 @@ def gallery_photo_to_detail(
             matched_person_id=face.matched_person_id,
             matched_person_name=face.matched_person.display_name if face.matched_person else None,
             matched_person_is_unknown=bool(face.matched_person and face.matched_person.is_unknown),
-            binding_source=(
-                "unknown" if face.matched_person and face.matched_person.is_unknown
-                else "manual" if face.predicted_person_id != face.matched_person_id
-                else "auto"
-            ),
+            binding_source=_face_binding_source(face, person_tag_sources),
             predicted_person_id=face.predicted_person_id,
             predicted_person_name=face.predicted_person.display_name if face.predicted_person else None,
             match_score=face.match_score,

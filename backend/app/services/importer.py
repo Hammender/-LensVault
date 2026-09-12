@@ -348,7 +348,7 @@ class PictureService:
 
     @staticmethod
     def _is_preserved_person_tag_source(source: str) -> bool:
-        return source in {"manual", "face_manual", "import", "import_unknown"}
+        return source in {"manual", "import", "import_unknown", "debug"}
 
     def _recompute_person_centroid(self, db: Session, person_id: int, workspace_id: int | None) -> None:
         faces = db.scalars(
@@ -438,13 +438,16 @@ class PictureService:
         if existing is None:
             db.add(GalleryPhotoPersonTag(gallery_photo_id=gallery_photo_id, person_id=person_id, source=source))
             return
+        if self._is_preserved_person_tag_source(existing.source):
+            return
         source_priority = {
             "unknown": 0,
             "auto": 0,
+            "debug": 1,
             "import_unknown": 1,
             "import": 1,
             "manual": 2,
-            "face_manual": 2,
+            "face_manual": 3,
         }
         if source_priority.get(source, 0) > source_priority.get(existing.source, 0):
             existing.source = source
@@ -1471,9 +1474,6 @@ class PictureService:
         locked_detection_indexes: dict[int, FaceRecord] = {}
         promoted_samples_by_face: dict[int, list[SamplePhoto]] = {}
         if not only_unknown:
-            manual_person_ids = {
-                tag.person_id for tag in photo.person_tags if tag.source == "face_manual"
-            }
             promoted_samples = db.scalars(
                 select(SamplePhoto).where(
                     SamplePhoto.source_gallery_photo_id == photo.id,
@@ -1484,10 +1484,7 @@ class PictureService:
             promoted_samples_by_face = self._resolve_promoted_sample_faces(
                 photo, promoted_samples, recognition_plan
             )
-            locked_faces = [
-                face for face in photo.faces
-                if face.matched_person_id in manual_person_ids or face.id in promoted_samples_by_face
-            ]
+            locked_faces = [face for face in photo.faces if face.id in promoted_samples_by_face]
             candidate_pairs = sorted(
                 [(
                     FaceRuntime.bbox_iou(
@@ -1513,7 +1510,7 @@ class PictureService:
             unmapped_locked_faces = sorted(face.id for face in locked_faces if face.id not in assigned_face_ids)
             if unmapped_locked_faces:
                 raise RuntimeError(
-                    f"无法在新检测结果中重定位人工或样本来源人脸：{unmapped_locked_faces}"
+                    f"无法在新检测结果中重定位样本来源人脸：{unmapped_locked_faces}"
                 )
         protected_person_ids = {face.matched_person_id for face in protected_faces}
         old_person_ids = {tag.person_id for tag in photo.person_tags}
@@ -1645,6 +1642,7 @@ class PictureService:
         for person_id, source in preserved_person_links:
             self.ensure_gallery_person_tag(db, photo.id, person_id, source)
             self.apply_person_tags_to_gallery_photo(db, photo.id, person_id)
+        self.sync_inherited_gallery_tags(db, photo.id)
         db.flush()
         new_person_ids = set(
             db.scalars(

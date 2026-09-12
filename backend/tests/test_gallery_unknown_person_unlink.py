@@ -151,7 +151,7 @@ def test_unbind_one_of_two_faces_sharing_person_preserves_other_face(db_session)
     ) is not None
 
 
-def test_add_person_to_single_face_photo_rebinds_face_and_removes_unknown_tag(db_session) -> None:
+def test_add_person_to_single_face_photo_does_not_rebind_face(db_session) -> None:
     workspace, unknown, first, _, photo = _add_workspace_people_and_photo(db_session)
     unknown_link = GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=unknown.id, source="unknown")
     face = _face(workspace.id, photo.id, unknown.id)
@@ -165,21 +165,26 @@ def test_add_person_to_single_face_photo_rebinds_face_and_removes_unknown_tag(db
         response = client.post(f"/api/gallery/photos/{photo.id}/persons", json={"person_id": first.id})
 
     assert response.status_code == 200
-    rebound_face = db_session.get(FaceRecord, face_id)
-    assert rebound_face is not None
-    assert rebound_face.matched_person_id == first.id
-    assert rebound_face.needs_review is False
+    unchanged_face = db_session.get(FaceRecord, face_id)
+    assert unchanged_face is not None
+    assert unchanged_face.matched_person_id == unknown.id
+    assert unchanged_face.needs_review is True
     person_ids = set(
         db_session.scalars(
             select(GalleryPhotoPersonTag.person_id).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id)
         ).all()
     )
-    assert person_ids == {first.id}
-    correction = db_session.scalar(
+    assert person_ids == {unknown.id, first.id}
+    assert db_session.scalar(
         select(FaceRecognitionCorrection).where(FaceRecognitionCorrection.face_record_id == face_id)
-    )
-    assert correction is not None
-    assert correction.corrected_person_id == first.id
+    ) is None
+    sources = {
+        link.person_id: link.source
+        for link in db_session.scalars(
+            select(GalleryPhotoPersonTag).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id)
+        ).all()
+    }
+    assert sources[first.id] == "manual"
 
 
 def _tag_names(payload: dict) -> set[str]:

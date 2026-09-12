@@ -118,9 +118,6 @@ def _read_only_preview(service: PictureService, db, photo: GalleryPhoto, *, only
     locked_detection_indexes: dict[int, FaceRecord] = {}
     sample_remaps: list[dict[str, object]] = []
     if not only_unknown:
-        manual_person_ids = {
-            tag.person_id for tag in photo.person_tags if tag.source == "face_manual"
-        }
         promoted_samples = db.scalars(
             select(SamplePhoto).where(
                 SamplePhoto.source_gallery_photo_id == photo.id,
@@ -131,10 +128,7 @@ def _read_only_preview(service: PictureService, db, photo: GalleryPhoto, *, only
         samples_by_face = service._resolve_promoted_sample_faces(
             photo, promoted_samples, recognition_plan
         )
-        locked_faces = [
-            face for face in photo.faces
-            if face.matched_person_id in manual_person_ids or face.id in samples_by_face
-        ]
+        locked_faces = [face for face in photo.faces if face.id in samples_by_face]
         pairs = sorted(
             [(
                 FaceRuntime.bbox_iou(
@@ -164,7 +158,7 @@ def _read_only_preview(service: PictureService, db, photo: GalleryPhoto, *, only
                 })
         unmapped = sorted(face.id for face in locked_faces if face.id not in assigned_face_ids)
         if unmapped:
-            raise RuntimeError(f"无法在新检测结果中重定位人工或样本来源人脸：{unmapped}")
+            raise RuntimeError(f"无法在新检测结果中重定位样本来源人脸：{unmapped}")
 
     known = 0
     rejected = 0

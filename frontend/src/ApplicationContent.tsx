@@ -46,7 +46,7 @@ import AcquisitionCenter from "./AcquisitionCenter";
 import BiliVideoPlayer from "./BiliVideoPlayer";
 import VideoLightbox from "./VideoLightbox";
 import { useConfirm } from "./ConfirmDialog";
-import { galleryFaceStatusLabel } from "./galleryFaceStatus";
+import { faceBindingSourceLabel, galleryFaceStatusKind, galleryFaceStatusLabel, personTagSourceLabel } from "./galleryFaceStatus";
 import { availablePhotoPersons, filterPersonMatches, mergePersonIds, resolveExistingPerson } from "./personPicker";
 import { routeFromHash, setRoute, type PageKey } from "./routing";
 import { sortByPinyin, sortByPinyinName } from "./sort";
@@ -3513,28 +3513,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                 </div>
 
                 {activeGalleryDetailTab === "people" && <div className="editor-block detail-tab-panel" role="tabpanel">
-                  <label>{selectedPhoto.faces.length > 1 ? "人物绑定总览" : "人物标签"}</label>
-                  {selectedPhoto.faces.length > 1 && (
-                    <div className="face-binding-overview">
-                      {selectedPhoto.faces.map((face) => (
-                        <div key={face.id} className="face-binding-row">
-                          <button type="button" className="face-binding-row-main" onClick={() => { setSelectedFaceId(face.id); setActiveGalleryDetailTab("faces"); }}>
-                            <strong>人脸 {face.face_index}</strong>
-                            <span className={face.matched_person_is_unknown || face.matched_person_id === null ? "pending-binding" : undefined}>
-                              {face.matched_person_is_unknown ? "待绑定" : face.matched_person_name ?? "待绑定"}
-                            </span>
-                            <small>{face.binding_source === "manual" ? "人工确认" : face.binding_source === "unknown" ? "未知人物" : "自动识别"}</small>
-                          </button>
-                          {face.matched_person_id !== null && (
-                            <button className="ghost-button face-binding-remove" type="button" disabled={busy} onClick={() => void (face.matched_person_is_unknown ? handleDeletePhotoPerson(face.matched_person_id!) : handleUnbindFace(face.id, false))}>
-                              {face.matched_person_is_unknown ? "移除绑定" : "解除绑定"}
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {selectedPhoto.faces.length <= 1 && <>
+                  <label>人物标签</label>
                   <div className="micro-row wrap">
                     {selectedPhoto.persons.map((person) => (
                       <span key={person.person_id} className="micro-row">
@@ -3544,6 +3523,9 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                           title="移除此人物标签"
                         >
                           {person.person_name}
+                          {personTagSourceLabel(person.source) && (
+                            <small className="pill-source">{personTagSourceLabel(person.source)}</small>
+                          )}
                         </button>
                         {!person.is_unknown && person.promoted_sample_id === null && (
                           <button
@@ -3598,9 +3580,31 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                   </div>
                   {manualPersonNotice && <p className="searchable-picker-notice" role="alert">{manualPersonNotice}</p>}
                   <p className="tip">
-                    单脸图片可在此快速添加人物；多人脸图片请切换到“人脸”页签，为具体人脸绑定人物。
+                    添加人物只会给这张图打上人名，不会改人脸绑定。要给某张脸指定人物，请到「人脸」页。
                   </p>
-                  </>}
+                  {selectedPhoto.faces.length > 0 && (
+                    <>
+                      <label>人脸绑定</label>
+                      <div className="face-binding-overview">
+                        {selectedPhoto.faces.map((face) => (
+                          <div key={face.id} className="face-binding-row">
+                            <button type="button" className="face-binding-row-main" onClick={() => { setSelectedFaceId(face.id); setActiveGalleryDetailTab("faces"); }}>
+                              <strong>人脸 {face.face_index}</strong>
+                              <span className={face.matched_person_is_unknown || face.matched_person_id === null ? "pending-binding" : undefined}>
+                                {face.matched_person_is_unknown ? "待绑定" : face.matched_person_name ?? "待绑定"}
+                              </span>
+                              <small>{faceBindingSourceLabel(face.binding_source)}</small>
+                            </button>
+                            {face.matched_person_id !== null && (
+                              <button className="ghost-button face-binding-remove" type="button" disabled={busy} onClick={() => void (face.matched_person_is_unknown ? handleDeletePhotoPerson(face.matched_person_id!) : handleUnbindFace(face.id, false))}>
+                                {face.matched_person_is_unknown ? "移除绑定" : "解除绑定"}
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>}
 
                 {activeGalleryDetailTab === "tags" && <div className="editor-block detail-tab-panel" role="tabpanel">
@@ -3685,11 +3689,22 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
                     <article className={`face-card${selectedFaceId === face.id ? " selected" : ""}`} key={face.id} onClick={() => setSelectedFaceId(face.id)}>
                       <header className="face-card-head">
                         <strong>人脸 {face.face_index} <small>#{face.id}</small></strong>
-                        <span className={`face-status${face.needs_review ? " review" : face.matched_person_id === null ? " ignored" : " confirmed"}`}>
-                          {galleryFaceStatusLabel(face.needs_review, face.matched_person_id)}
+                        <span className={`face-status ${galleryFaceStatusKind(face)}`}>
+                          {galleryFaceStatusLabel(face)}
                         </span>
                       </header>
                       <div className="face-candidates">
+                        <div className="face-candidate-row current">
+                          <span className="face-candidate-rank">当前绑定</span>
+                          <strong>
+                            {face.matched_person_id === null
+                              ? "未绑定"
+                              : face.matched_person_is_unknown
+                                ? "未知人物"
+                                : face.matched_person_name ?? "已删除人物"}
+                          </strong>
+                          <small>{faceBindingSourceLabel(face.binding_source)}</small>
+                        </div>
                         {face.predicted_person_id !== null && face.match_score !== null ? (
                           <div className="face-candidate-row primary">
                             <span className="face-candidate-rank">第一候选</span>
