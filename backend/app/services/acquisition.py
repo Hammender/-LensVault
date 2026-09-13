@@ -43,6 +43,7 @@ from app.models import (
     AcquisitionTelegramHashtag,
     AcquisitionTelegramMessage,
     GalleryPhoto,
+    VideoItem,
 )
 from app.services.importer import PictureService
 from app.services.acquisition_adapters import (
@@ -75,6 +76,7 @@ from app.services.similarity import (
 )
 from app.services.storage import MinioStorage
 from app.services.telegram import TelegramService
+from app.services.video_processing import extract_video_cover_frame
 
 
 def _stable_key(value: str) -> str:
@@ -582,10 +584,7 @@ class AcquisitionService:
             suffix = Path(filename).suffix.lower()
             if not content_type.startswith("video/") and suffix not in {".3gp", ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".ts", ".webm", ".wmv"}:
                 raise RuntimeError(f"{resolved_url}: 返回内容不是视频")
-            with tempfile.NamedTemporaryFile(suffix=suffix or ".mp4") as temporary:
-                temporary.write(payload)
-                temporary.flush()
-                duration, width, height = self._probe_video_file(Path(temporary.name))
+            duration = width = height = None
             blur = None
             warnings = []
             perceptual_phash = None
@@ -945,6 +944,8 @@ class AcquisitionService:
         sha256 = hashlib.sha256(payload).hexdigest()
         media_type = str(record["media_type"])
         content_type = mimetypes.guess_type(path.name)[0] or ("image/jpeg" if media_type == "image" else "video/mp4")
+        if self._mark_library_duplicate_if_exists(db, run, source_item, run_item, sha256, media_type):
+            return
         asset = db.scalar(select(AcquisitionAsset).where(
             AcquisitionAsset.workspace_id == run.workspace_id, AcquisitionAsset.sha256 == sha256
         ))
@@ -962,7 +963,9 @@ class AcquisitionService:
                 width, height, blur, warnings, features = self._analyze_image_payload(payload)
                 phash, dhash, quality = features.phash, features.dhash, features.quality_score
             else:
-                duration, width, height = self._probe_video_file(path)
+                duration = record.get("duration_seconds")
+                width = record.get("width")
+                height = record.get("height")
             asset = AcquisitionAsset(
                 id=asset_id, workspace_id=run.workspace_id, sha256=sha256, filename=path.name,
                 content_type=content_type, media_type=media_type, object_key=object_key, size_bytes=len(payload),
@@ -1171,28 +1174,7 @@ class AcquisitionService:
         run.download_success_count += 1
         object_to_remove: str | None = None
         try:
-            existing_gallery = db.scalar(
-                select(GalleryPhoto).where(
-                    GalleryPhoto.workspace_id == run.workspace_id,
-                    GalleryPhoto.sha256 == downloaded.sha256,
-                    GalleryPhoto.is_rich_text.is_(False),
-                )
-            )
-            if existing_gallery is not None:
-                asset = db.scalar(
-                    select(AcquisitionAsset).where(
-                        AcquisitionAsset.workspace_id == run.workspace_id,
-                        AcquisitionAsset.sha256 == downloaded.sha256,
-                    )
-                )
-                if asset is not None:
-                    run_item.asset_id = asset.id
-                    self._mark_asset_gallery_duplicate(db, asset)
-                item.status = "gallery_duplicate"
-                run_item.status = "gallery_duplicate"
-                run_item.collection_outcome = "gallery_duplicate"
-                run.gallery_duplicate_count += 1
-                db.commit()
+            if self._mark_library_duplicate_if_exists(db, run, item, run_item, downloaded.sha256, downloaded.media_type):
                 return
             asset = db.scalar(
                 select(AcquisitionAsset).where(
@@ -1404,6 +1386,19 @@ class AcquisitionService:
                 if item.target_type == "video":
                     if self.video_service is None:
                         raise RuntimeError("视频导入服务不可用")
+                    existing_video = db.scalar(
+                        select(VideoItem).where(
+                            VideoItem.workspace_id == batch.workspace_id,
+                            VideoItem.sha256 == asset.sha256,
+                        )
+                    )
+                    if existing_video is not None:
+                        item.promotion_intent = "gallery_duplicate"
+                        self._finish_video_duplicate(db, item, asset, existing_video)
+                        self._refresh_import_batch(db, batch_id)
+                        db.commit()
+                        self._cleanup_asset_object(db, asset)
+                        continue
                     metadata = db.scalar(select(AcquisitionTelegramMessage).join(
                         AcquisitionSourceItem, AcquisitionTelegramMessage.source_item_id == AcquisitionSourceItem.id
                     ).join(AcquisitionRunItem, AcquisitionRunItem.source_item_id == AcquisitionSourceItem.id).where(
@@ -1513,6 +1508,55 @@ class AcquisitionService:
             )
         )
 
+    @staticmethod
+    def _existing_library_item(
+        db: Session,
+        workspace_id: int | None,
+        sha256: str,
+        media_type: str,
+    ) -> GalleryPhoto | VideoItem | None:
+        if media_type == "video":
+            return db.scalar(
+                select(VideoItem).where(
+                    VideoItem.workspace_id == workspace_id,
+                    VideoItem.sha256 == sha256,
+                )
+            )
+        return db.scalar(
+            select(GalleryPhoto).where(
+                GalleryPhoto.workspace_id == workspace_id,
+                GalleryPhoto.sha256 == sha256,
+                GalleryPhoto.is_rich_text.is_(False),
+            )
+        )
+
+    def _mark_library_duplicate_if_exists(
+        self,
+        db: Session,
+        run: AcquisitionRun,
+        item: AcquisitionSourceItem,
+        run_item: AcquisitionRunItem,
+        sha256: str,
+        media_type: str,
+    ) -> bool:
+        if self._existing_library_item(db, run.workspace_id, sha256, media_type) is None:
+            return False
+        asset = db.scalar(
+            select(AcquisitionAsset).where(
+                AcquisitionAsset.workspace_id == run.workspace_id,
+                AcquisitionAsset.sha256 == sha256,
+            )
+        )
+        if asset is not None:
+            run_item.asset_id = asset.id
+            self._mark_asset_gallery_duplicate(db, asset)
+        item.status = "gallery_duplicate"
+        run_item.status = "gallery_duplicate"
+        run_item.collection_outcome = "gallery_duplicate"
+        run.gallery_duplicate_count += 1
+        db.commit()
+        return True
+
     def _set_linked_item_statuses(self, db: Session, asset: AcquisitionAsset, status: str) -> None:
         for run_item in db.scalars(select(AcquisitionRunItem).where(AcquisitionRunItem.asset_id == asset.id)).all():
             run_item.status = status
@@ -1605,16 +1649,75 @@ class AcquisitionService:
         item.gallery_photo_id = photo.id
         item.error_message = None
 
-    def _cleanup_asset_object(self, db: Session, asset: AcquisitionAsset, commit: bool = True) -> None:
-        if not asset.object_key:
-            return
-        object_key = asset.object_key
+    def _finish_video_duplicate(
+        self,
+        db: Session,
+        item: AcquisitionImportBatchItem,
+        asset: AcquisitionAsset,
+        video: VideoItem,
+    ) -> None:
+        self._set_linked_item_statuses(db, asset, "gallery_duplicate")
+        asset.status = "gallery_duplicate"
+        asset.error_message = None
+        item.status = "gallery_duplicate"
+        item.video_id = video.id
+        item.error_message = None
+
+    def _preview_key(self, workspace_id: int | None, asset_id: str) -> str:
+        prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""
+        return f"{prefix}acquisition/previews/{asset_id}.jpg"
+
+    def ensure_video_preview(self, db: Session, asset: AcquisitionAsset) -> bytes | None:
+        if asset.preview_object_key:
+            try:
+                return self.storage.get_bytes(asset.preview_object_key)
+            except Exception:
+                asset.preview_object_key = None
+        if asset.media_type != "video" or not asset.object_key:
+            return None
+        suffix = Path(asset.filename).suffix.lower() or ".mp4"
         try:
-            self.storage.remove_object(object_key)
-        except Exception as exc:
-            asset.error_message = f"临时文件待清理：{exc}"
-        else:
-            asset.object_key = None
+            with tempfile.TemporaryDirectory(prefix="acq-preview-") as temp_dir:
+                input_path = Path(temp_dir) / f"input{suffix}"
+                output_path = Path(temp_dir) / "cover.jpg"
+                input_path.write_bytes(self.storage.get_bytes(asset.object_key))
+                extracted = extract_video_cover_frame(
+                    self.settings.ffmpeg_path,
+                    input_path,
+                    output_path,
+                    capture_at=float(getattr(self.settings, "video_cover_capture_seconds", 1.0)),
+                    duration_seconds=asset.duration_seconds,
+                )
+                if not extracted:
+                    return None
+                cover = output_path.read_bytes()
+            key = self._preview_key(asset.workspace_id, asset.id)
+            self.storage.put_bytes(key, cover, "image/jpeg")
+            asset.preview_object_key = key
+            db.commit()
+            return cover
+        except Exception:
+            db.rollback()
+            return None
+
+    def _cleanup_asset_object(self, db: Session, asset: AcquisitionAsset, commit: bool = True) -> None:
+        pending_error: str | None = None
+        if asset.object_key:
+            try:
+                self.storage.remove_object(asset.object_key)
+            except Exception as exc:
+                pending_error = f"临时文件待清理：{exc}"
+            else:
+                asset.object_key = None
+        if asset.preview_object_key:
+            try:
+                self.storage.remove_object(asset.preview_object_key)
+            except Exception:
+                pass
+            else:
+                asset.preview_object_key = None
+        if pending_error:
+            asset.error_message = pending_error
         if commit:
             db.commit()
 

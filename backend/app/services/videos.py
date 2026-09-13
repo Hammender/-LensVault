@@ -32,7 +32,7 @@ from app.models import (
 )
 from app.schemas import VideoUploadCompleteRequest, VideoUploadSessionCreate
 from app.services.storage import MinioStorage
-from app.services.video_processing import VideoProbeInfo, VideoTranscodePlan
+from app.services.video_processing import VideoProbeInfo, VideoTranscodePlan, extract_video_cover_frame
 
 logger = logging.getLogger(__name__)
 
@@ -1177,33 +1177,13 @@ class VideoService:
         return moov_index < mdat_index
 
     def _extract_cover(self, input_path: Path, output_path: Path, duration_seconds: float | None) -> None:
-        capture_at = self.settings.video_cover_capture_seconds
-        if duration_seconds and duration_seconds > 0:
-            capture_at = min(max(capture_at, duration_seconds * 0.1), max(duration_seconds - 0.1, 0))
-        command = [
+        extract_video_cover_frame(
             self.settings.ffmpeg_path,
-            "-y",
-            "-ss",
-            f"{capture_at:.3f}",
-            "-i",
-            str(input_path),
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale=1280:-2:force_original_aspect_ratio=decrease",
-            "-q:v",
-            "3",
-            str(output_path),
-        ]
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
+            input_path,
+            output_path,
+            capture_at=self.settings.video_cover_capture_seconds,
+            duration_seconds=duration_seconds,
         )
-        if result.returncode != 0:
-            logger.warning("Video cover extraction failed: %s", (result.stderr or result.stdout or "").strip()[-1000:])
 
     def _probe_video(self, path: Path) -> "VideoProbeInfo":
         command = [

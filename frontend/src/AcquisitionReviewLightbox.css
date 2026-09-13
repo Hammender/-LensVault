@@ -1,0 +1,319 @@
+.acquisition-review-player {
+  position: relative;
+  display: flex;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% 20%, rgba(35, 123, 117, .18), transparent 55%),
+    #0c1211;
+  cursor: pointer;
+}
+
+.acquisition-review-player video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  outline: none;
+}
+
+.acquisition-review-type-chip {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 4;
+  border: 1px solid rgba(159, 224, 216, .45);
+  background: rgba(12, 18, 17, .72);
+  color: #d7f3ee;
+  padding: 3px 8px;
+  font: 700 .68rem var(--font-mono);
+  letter-spacing: .08em;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+.acquisition-review-pause-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 12, 11, .28);
+  pointer-events: none;
+}
+
+.acquisition-review-pause-icon {
+  display: grid;
+  width: 76px;
+  height: 76px;
+  place-items: center;
+  padding-left: 4px;
+  border: 1.5px solid rgba(255, 253, 248, .88);
+  border-radius: 50%;
+  background: rgba(35, 123, 117, .92);
+  color: #fffdf8;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .35);
+}
+
+.acquisition-review-indicator {
+  position: absolute;
+  top: 46%;
+  left: 50%;
+  z-index: 6;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255, 253, 248, .18);
+  background: rgba(12, 18, 17, .88);
+  color: #fffdf8;
+  padding: 8px 18px;
+  font: 700 .92rem var(--font-sans);
+  letter-spacing: .04em;
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+}
+
+.acquisition-review-controls {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 5;
+  display: grid;
+  gap: 10px;
+  background: linear-gradient(to top, rgba(8, 12, 11, .92) 0%, rgba(8, 12, 11, .42) 58%, transparent 100%);
+  padding: 40px 18px 14px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity .18s ease, transform .18s ease;
+  cursor: default;
+}
+
+.acquisition-review-player.show-controls .acquisition-review-controls,
+.acquisition-review-player:hover .acquisition-review-controls {
+  opacity: 1;
+  transform: none;
+}
+
+.acquisition-review-progress {
+  position: relative;
+  height: 4px;
+  overflow: visible;
+  background: rgba(255, 255, 255, .22);
+  cursor: pointer;
+  transition: height .14s ease;
+}
+
+.acquisition-review-player.show-controls .acquisition-review-progress:hover {
+  height: 8px;
+}
+
+.acquisition-review-progress-fill {
+  position: relative;
+  height: 100%;
+  background: #9fe0d8;
+}
+
+.acquisition-review-progress:hover .acquisition-review-progress-fill::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -6px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fffdf8;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, .45);
+  transform: translateY(-50%);
+}
+
+.acquisition-review-ctrl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #fffdf8;
+}
+
+.acquisition-review-ctrl-left,
+.acquisition-review-ctrl-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.acquisition-review-ctrl-btn {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  opacity: .88;
+  transition: opacity .14s ease, color .14s ease, background-color .14s ease;
+}
+
+.acquisition-review-ctrl-btn:hover,
+.acquisition-review-ctrl-btn.active {
+  opacity: 1;
+  color: #9fe0d8;
+}
+
+.acquisition-review-ctrl-btn.speed-btn {
+  width: auto;
+  min-width: 44px;
+  border: 1px solid rgba(255, 253, 248, .28);
+  padding: 0 8px;
+  font: 700 .78rem var(--font-mono);
+}
+
+.acquisition-review-time {
+  margin-left: 4px;
+  color: rgba(255, 253, 248, .82);
+  font: 700 .8rem var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.acquisition-review-volume {
+  display: flex;
+  align-items: center;
+}
+
+.acquisition-review-volume-slider {
+  display: flex;
+  width: 0;
+  align-items: center;
+  margin-left: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: width .22s ease, opacity .18s ease, margin .22s ease;
+}
+
+.acquisition-review-volume:hover .acquisition-review-volume-slider,
+.acquisition-review-volume:focus-within .acquisition-review-volume-slider {
+  width: 78px;
+  margin-left: 4px;
+  opacity: 1;
+}
+
+.acquisition-review-volume-slider input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 74px;
+  height: 4px;
+  margin: 0;
+  padding: 0;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.acquisition-review-volume-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fffdf8;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
+  cursor: pointer;
+}
+
+.acquisition-review-volume-slider input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: #fffdf8;
+  cursor: pointer;
+}
+
+.acquisition-review-speed {
+  position: relative;
+}
+
+.acquisition-review-speed-menu {
+  position: absolute;
+  right: 0;
+  bottom: 42px;
+  z-index: 20;
+  display: grid;
+  min-width: 72px;
+  border: 1.5px solid var(--panel-border);
+  background: var(--panel);
+  box-shadow: 3px 3px 0 var(--panel-border);
+  padding: 4px;
+}
+
+.acquisition-review-speed-menu button {
+  width: 100%;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: 700 .8rem var(--font-mono);
+}
+
+.acquisition-review-speed-menu button:hover {
+  background: var(--surface);
+}
+
+.acquisition-review-speed-menu button.active {
+  background: #213a3d;
+  color: #fffdf8;
+}
+
+.acquisition-review-copy {
+  background: #f7fbf8;
+}
+
+.acquisition-review-copy h3 {
+  margin: 0 0 12px;
+  color: #213a3d;
+  font-size: 1.05rem;
+}
+
+.acquisition-review-copy p {
+  margin: 0;
+  color: #213a3d;
+  white-space: pre-wrap;
+}
+
+.acquisition-review-copy .micro-row {
+  gap: 8px;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
+.acquisition-review-copy a {
+  color: #237b75;
+  font-weight: 700;
+}
+
+.acquisition-review-copy .acquisition-hashtag,
+.acquisition-hashtag {
+  color: #5a86b5;
+  font-weight: 700;
+}
+
+.acquisition-review-shortcuts {
+  border-top: 1px dashed rgba(53, 37, 29, .18);
+  padding-top: 12px;
+}
+
+.acquisition-review-shortcuts strong {
+  display: block;
+  color: #213a3d;
+  font-size: .72rem;
+}
+
+.acquisition-review-shortcuts p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: .72rem;
+  line-height: 1.5;
+}

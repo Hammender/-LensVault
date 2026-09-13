@@ -80,7 +80,7 @@ from app.services.tasks import create_task, update_task
 from app.services.thumbnails import render_acquisition_preview
 
 
-router = APIRouter(prefix="/api/acquisition", tags=["图片采集"])
+router = APIRouter(prefix="/api/acquisition", tags=["采集"])
 _preview_render_slots: BoundedSemaphore | None = None
 _preview_render_slots_lock = Lock()
 
@@ -486,10 +486,18 @@ def _batch_read(db: Session, batch: AcquisitionImportBatch, include_items: bool 
                 .order_by(AcquisitionImportBatchItem.ordinal.asc())
             ).all()
         ]
+    type_rows = db.execute(
+        select(AcquisitionImportBatchItem.target_type, func.count())
+        .where(AcquisitionImportBatchItem.batch_id == batch.id)
+        .group_by(AcquisitionImportBatchItem.target_type)
+    ).all()
+    type_counts = {target_type: count for target_type, count in type_rows}
     return AcquisitionImportBatchRead(
         id=batch.id,
         status=batch.status,
         is_rich_text=batch.is_rich_text,
+        has_video=type_counts.get("video", 0) > 0,
+        has_image=type_counts.get("image", 0) > 0 or not type_counts,
         total_count=batch.total_count,
         processed_count=batch.processed_count,
         imported_count=batch.imported_count,
@@ -588,6 +596,8 @@ def _batch_item_details(
             ordinal=item.ordinal if item is not None else index + 1,
             status=item.status if item is not None else "imported",
             gallery_photo_id=current_gallery_id,
+            video_id=item.video_id if item is not None else None,
+            target_type=item.target_type if item is not None else ("video" if asset.media_type == "video" else "image"),
             gallery_photo_snapshot_id=snapshot_gallery_id,
             gallery_available=current_gallery_id in available_gallery_ids if current_gallery_id is not None else False,
             attempt_count=item.attempt_count if item is not None else 0,
@@ -1091,6 +1101,7 @@ def list_run_page(
 @router.get("/assets", response_model=PaginatedAcquisitionAssets)
 def list_assets(
     status: str | None = Query(default=None),
+    media_type: Annotated[Literal["image", "video"] | None, Query()] = None,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=60, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -1099,6 +1110,8 @@ def list_assets(
     query = select(AcquisitionAsset).where(AcquisitionAsset.workspace_id == current.workspace_id)
     if status:
         query = query.where(AcquisitionAsset.status == status)
+    if media_type:
+        query = query.where(AcquisitionAsset.media_type == media_type)
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     assets = db.scalars(
         query.order_by(AcquisitionAsset.created_at.desc(), AcquisitionAsset.id.desc()).offset(offset).limit(limit)
@@ -1115,6 +1128,7 @@ def list_assets(
 @router.get("/assets/ids", response_model=list[str])
 def list_asset_ids(
     status: str | None = Query(default=None),
+    media_type: Annotated[Literal["image", "video"] | None, Query()] = None,
     previewable: bool = False,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
@@ -1122,11 +1136,10 @@ def list_asset_ids(
     query = select(AcquisitionAsset.id).where(AcquisitionAsset.workspace_id == current.workspace_id)
     if status:
         query = query.where(AcquisitionAsset.status == status)
+    if media_type:
+        query = query.where(AcquisitionAsset.media_type == media_type)
     if previewable:
-        query = query.where(
-            AcquisitionAsset.object_key.is_not(None),
-            AcquisitionAsset.media_type == "image",
-        )
+        query = query.where(AcquisitionAsset.object_key.is_not(None))
     return list(db.scalars(query.order_by(AcquisitionAsset.created_at.desc(), AcquisitionAsset.id.desc())).all())
 
 
@@ -1136,12 +1149,25 @@ def get_asset_summary(
     current: CurrentContext = Depends(require_context),
 ) -> AcquisitionAssetSummary:
     rows = db.execute(
-        select(AcquisitionAsset.status, func.count(AcquisitionAsset.id))
+        select(AcquisitionAsset.status, AcquisitionAsset.media_type, func.count(AcquisitionAsset.id))
         .where(AcquisitionAsset.workspace_id == current.workspace_id)
-        .group_by(AcquisitionAsset.status)
+        .group_by(AcquisitionAsset.status, AcquisitionAsset.media_type)
     ).all()
-    status_counts = {status: count for status, count in rows}
-    return AcquisitionAssetSummary(total=sum(status_counts.values()), status_counts=status_counts)
+    status_counts: dict[str, int] = {}
+    media_counts: dict[str, int] = {}
+    status_media_counts: dict[str, dict[str, int]] = {}
+    for status, media_type, count in rows:
+        kind = media_type if media_type in {"image", "video"} else "image"
+        status_counts[status] = status_counts.get(status, 0) + count
+        media_counts[kind] = media_counts.get(kind, 0) + count
+        by_media = status_media_counts.setdefault(status, {})
+        by_media[kind] = by_media.get(kind, 0) + count
+    return AcquisitionAssetSummary(
+        total=sum(status_counts.values()),
+        status_counts=status_counts,
+        media_counts=media_counts,
+        status_media_counts=status_media_counts,
+    )
 
 
 @router.get("/assets/{asset_id}", response_model=AcquisitionAssetRead)
@@ -1181,8 +1207,18 @@ def get_asset_preview(
     if asset is None or asset.workspace_id != current.workspace_id or not asset.object_key:
         raise HTTPException(status_code=404, detail="采集临时图片不存在")
 
+    media_type = getattr(asset, "media_type", "image")
+    if media_type not in {"image", "video"}:
+        media_type = "image"
     with _preview_slots():
-        payload = request.app.state.services.storage.get_bytes(asset.object_key)
+        if media_type == "video":
+            payload = _service(request).ensure_video_preview(db, asset)
+            if not payload:
+                raise HTTPException(status_code=404, detail="视频封面不可用")
+        elif getattr(asset, "preview_object_key", None):
+            payload = request.app.state.services.storage.get_bytes(asset.preview_object_key)
+        else:
+            payload = request.app.state.services.storage.get_bytes(asset.object_key)
         preview = render_acquisition_preview(payload, max_edge)
     return Response(
         content=preview.payload,

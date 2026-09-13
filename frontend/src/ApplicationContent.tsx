@@ -4900,7 +4900,7 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
     { key: "home", label: "首页", Icon: HomeIcon },
     { key: "gallery", label: "展示图库", Icon: GalleryHorizontalEnd },
     { key: "similarity", label: "相似整理", Icon: ScanSearch },
-    { key: "acquisition", label: "图片采集", Icon: FolderSync },
+    { key: "acquisition", label: "采集中心", Icon: FolderSync },
     { key: "people", label: "人物样本", Icon: UsersRound },
     { key: "upload", label: "上传", Icon: UploadCloud },
     { key: "videos", label: "视频库", Icon: Clapperboard },

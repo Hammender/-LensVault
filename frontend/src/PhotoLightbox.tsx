@@ -13,6 +13,7 @@ type PhotoLightboxProps = {
   canGoNext: boolean;
   previousLabel?: string;
   nextLabel?: string;
+  ariaLabel?: string;
   onClose: () => void;
   onPrevious: () => void | Promise<void>;
   onNext: () => void | Promise<void>;
@@ -30,6 +31,7 @@ export default function PhotoLightbox({
   canGoNext,
   previousLabel,
   nextLabel,
+  ariaLabel = "图片大图预览",
   onClose,
   onPrevious,
   onNext,
@@ -41,9 +43,9 @@ export default function PhotoLightbox({
       if (busy || isTextEditingTarget(event.target)) return;
       if (event.key === "Escape") {
         onClose();
-      } else if (event.key === "ArrowLeft" && canGoPrevious) {
+      } else if (event.key === "ArrowLeft" && canGoPrevious && !event.shiftKey) {
         void onPrevious();
-      } else if (event.key === "ArrowRight" && canGoNext) {
+      } else if (event.key === "ArrowRight" && canGoNext && !event.shiftKey) {
         void onNext();
       } else {
         onCustomKeyDown?.(event);
@@ -60,7 +62,7 @@ export default function PhotoLightbox({
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="图片大图预览"
+        aria-label={ariaLabel}
       >
         <button className="lightbox-close" onClick={onClose}>关闭</button>
         <button

@@ -30,7 +30,7 @@ from telethon.errors import (
 from telethon.sessions import StringSession
 from telethon import functions, types
 from telethon.tl.functions.messages import CheckChatInviteRequest
-from telethon.tl.types import ChatInviteAlready
+from telethon.tl.types import ChatInviteAlready, DocumentAttributeVideo
 from telethon.tl.types.auth import (
     SentCodeTypeApp,
     SentCodeTypeCall,
@@ -195,6 +195,25 @@ def message_media_type(message: Any) -> str | None:
     if getattr(message, "video", None):
         return "video"
     return None
+
+
+def video_metadata(message: Any) -> tuple[float | None, int | None, int | None]:
+    video = getattr(message, "video", None)
+    for attribute in getattr(video, "attributes", None) or []:
+        if isinstance(attribute, DocumentAttributeVideo):
+            duration, width, height = attribute.duration, attribute.w, attribute.h
+        else:
+            duration = getattr(attribute, "duration", None)
+            width = getattr(attribute, "w", None)
+            height = getattr(attribute, "h", None)
+        if duration is None and width is None and height is None:
+            continue
+        return (
+            float(duration) if duration is not None else None,
+            int(width) if width is not None else None,
+            int(height) if height is not None else None,
+        )
+    return None, None, None
 
 
 def message_published_at(message: Any) -> datetime:
@@ -1145,6 +1164,7 @@ class TelegramService:
     ) -> dict[str, object]:
         username = getattr(channel, "username", None)
         channel_id = str(getattr(channel, "id", ""))
+        duration, width, height = video_metadata(message) if media_type == "video" else (None, None, None)
         return {
             "external_key": f"{channel_id}:{message.id}:{1 if getattr(message, 'is_comment', False) else 0}",
             "source_url": f"https://t.me/{username}/{message.id}" if username else f"tg://resolve?domain={channel_id}&post={message.id}",
@@ -1156,6 +1176,9 @@ class TelegramService:
             "message_id": message.id,
             "grouped_id": str(message.grouped_id) if message.grouped_id else None,
             "media_type": media_type,
+            "duration_seconds": duration,
+            "width": width,
+            "height": height,
             "published_at": as_shanghai_naive(message.date),
             "edited_at": as_shanghai_naive(message.edit_date) if message.edit_date else None,
             "caption": caption or None,

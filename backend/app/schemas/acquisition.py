@@ -259,6 +259,8 @@ class AcquisitionImportAction(AcquisitionAssetAction):
 class AcquisitionAssetSummary(BaseModel):
     total: int
     status_counts: dict[str, int] = Field(default_factory=dict)
+    media_counts: dict[str, int] = Field(default_factory=dict)
+    status_media_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class AcquisitionImportBatchItemRead(BaseModel):
@@ -279,6 +281,8 @@ class AcquisitionImportBatchRead(BaseModel):
     id: str
     status: str
     is_rich_text: bool
+    has_video: bool = False
+    has_image: bool = False
     total_count: int
     processed_count: int
     imported_count: int

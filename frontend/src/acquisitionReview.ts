@@ -75,8 +75,12 @@ export function getAcquisitionRejectContinuation(
 
 export type AcquisitionLightboxShortcut = "toggle_selection" | "reject";
 
-export function getAcquisitionLightboxShortcut(key: string): AcquisitionLightboxShortcut | null {
-  if (key === " ") return "toggle_selection";
+export function getAcquisitionLightboxShortcut(
+  key: string,
+  mediaType: "image" | "video" = "image"
+): AcquisitionLightboxShortcut | null {
+  if (key === "Enter") return "toggle_selection";
+  if (key === " " && mediaType === "image") return "toggle_selection";
   if (key === "Delete") return "reject";
   return null;
 }

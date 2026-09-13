@@ -188,8 +188,8 @@ export default function Statistics() {
         <a className="metric-card collection-card" href="#/acquisition">
           <span>采集待办</span>
           <strong>{pendingReview}</strong>
-          <small>待审核 {pendingReview} 张 · 入库中 {importing} 张 · 失败 {importFailed} 张</small>
-          <em>前往图片采集中心</em>
+          <small>待审核 {pendingReview} 项 · 入库中 {importing} 项 · 失败 {importFailed} 项</small>
+          <em>前往采集中心</em>
         </a>
         <article className="metric-card">
           <span>最近入库</span>

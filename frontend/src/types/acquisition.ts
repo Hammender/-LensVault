@@ -150,6 +150,8 @@ export type PaginatedAcquisitionAssets = {
 export type AcquisitionAssetSummary = {
   total: number;
   status_counts: Record<string, number>;
+  media_counts?: Record<string, number>;
+  status_media_counts?: Record<string, Record<string, number>>;
 };
 
 export type AcquisitionImportBatchItem = {
@@ -168,6 +170,8 @@ export type AcquisitionImportBatch = {
   id: string;
   status: string;
   is_rich_text: boolean;
+  has_video?: boolean;
+  has_image?: boolean;
   total_count: number;
   processed_count: number;
   imported_count: number;
@@ -202,6 +206,8 @@ export type AcquisitionImportBatchItemDetail = {
   ordinal: number;
   status: string;
   gallery_photo_id: number | null;
+  video_id?: number | null;
+  target_type?: "image" | "video";
   gallery_photo_snapshot_id: number | null;
   gallery_available: boolean;
   attempt_count: number;

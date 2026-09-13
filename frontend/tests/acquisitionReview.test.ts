@@ -63,6 +63,14 @@ describe("acquisition review pagination", () => {
     expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets?status=pending_review&offset=120&limit=60");
   });
 
+  it("can request a single media type", async () => {
+    const fetch = installWindow();
+
+    await listAcquisitionAssets("pending_review", 0, 60, "video");
+
+    expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets?status=pending_review&offset=0&limit=60&media_type=video");
+  });
+
   it("can request only the metadata row needed to refill a page", async () => {
     const fetch = installWindow();
 
@@ -79,12 +87,12 @@ describe("acquisition review pagination", () => {
     expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets/ids?status=pending_review");
   });
 
-  it("requests only previewable images when opening a stable large-preview session", async () => {
+  it("requests only previewable assets when opening a stable large-preview session", async () => {
     const fetch = installWindow();
 
-    await listAcquisitionAssetIds("pending_review", true);
+    await listAcquisitionAssetIds("pending_review", true, "video");
 
-    expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets/ids?status=pending_review&previewable=true");
+    expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets/ids?status=pending_review&previewable=true&media_type=video");
   });
 
   it("calculates seven pages and the final range for 377 assets", () => {
@@ -294,8 +302,9 @@ describe("acquisition import batch state", () => {
 describe("acquisition lightbox keyboard review", () => {
   it("maps Space and Delete to review actions", () => {
     expect(getAcquisitionLightboxShortcut(" ")).toBe("toggle_selection");
+    expect(getAcquisitionLightboxShortcut(" ", "video")).toBeNull();
+    expect(getAcquisitionLightboxShortcut("Enter")).toBe("toggle_selection");
     expect(getAcquisitionLightboxShortcut("Delete")).toBe("reject");
-    expect(getAcquisitionLightboxShortcut("Enter")).toBeNull();
   });
 
   it("maps Enter and Escape to confirmation decisions", () => {

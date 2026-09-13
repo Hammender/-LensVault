@@ -60,6 +60,7 @@ import {
   serializeAcquisitionRunParameters
 } from "./acquisitionRunForm";
 import { useConfirm } from "./ConfirmDialog";
+import AcquisitionReviewLightbox from "./AcquisitionReviewLightbox";
 import PhotoLightbox from "./PhotoLightbox";
 import type {
   AcquisitionAsset,
@@ -75,7 +76,7 @@ import type {
   PaginatedAcquisitionAssets
 } from "./types";
 import type { TelegramAccount, TelegramDialog, TelegramForumScan, TelegramTopic } from "./types/telegram";
-import { formatBytes, formatDate, toShanghaiDateTimeBoundary } from "./utils";
+import { formatBytes, formatDate, formatDurationSeconds, toShanghaiDateTimeBoundary } from "./utils";
 import "./AcquisitionCenter.css";
 
 type Tab = "sources" | "runs" | "review" | "history";
@@ -101,9 +102,9 @@ const managementPageSize = 10;
 function statusLabel(status: string): string {
   return ({
     pending: "等待中", running: "运行中", completed: "已完成", interrupted: "已中断", failed: "失败",
-    pending_review: "待审核", imported: "已入图库", rejected: "已丢弃",
+    pending_review: "待审核", imported: "已入库", rejected: "已丢弃",
     import_queued: "等待入库", importing: "正在入库", import_failed: "入库失败",
-    gallery_duplicate: "图库已存在", completed_with_errors: "部分失败", ready: "可下载", downloaded: "已下载", expired: "已过期"
+    gallery_duplicate: "库中已存在", completed_with_errors: "部分失败", ready: "可下载", downloaded: "已下载", expired: "已过期"
   } as Record<string, string>)[status] ?? status;
 }
 
@@ -232,6 +233,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   const [telegramPassword, setTelegramPassword] = useState("");
   const [runMode, setRunMode] = useState<"incremental" | "full" | "verify">("incremental");
   const [assetStatus, setAssetStatus] = useState("pending_review");
+  const [mediaFilter, setMediaFilter] = useState<"all" | "image" | "video">("all");
   const [importAsRichText, setImportAsRichText] = useState(false);
   const [assetActionBusy, setAssetActionBusy] = useState(false);
   const [runSubmitting, setRunSubmitting] = useState(false);
@@ -393,10 +395,11 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     assetRequestIdRef.current = requestId;
     if (showLoading) setAssetLoading(true);
     try {
-      let page = await listAcquisitionAssets(status, Math.max(0, requestedOffset), acquisitionAssetPageSize);
+      const mediaType = mediaFilter === "all" ? undefined : mediaFilter;
+      let page = await listAcquisitionAssets(status, Math.max(0, requestedOffset), acquisitionAssetPageSize, mediaType);
       const validOffset = clampAcquisitionOffset(page.total, requestedOffset, acquisitionAssetPageSize);
       if (validOffset !== page.offset) {
-        page = await listAcquisitionAssets(status, validOffset, acquisitionAssetPageSize);
+        page = await listAcquisitionAssets(status, validOffset, acquisitionAssetPageSize, mediaType);
       }
       if (requestId !== assetRequestIdRef.current) return null;
       setAssets(page.items);
@@ -406,7 +409,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     } finally {
       if (showLoading && requestId === assetRequestIdRef.current) setAssetLoading(false);
     }
-  }, []);
+  }, [mediaFilter]);
 
   const loadSimilarityPage = useCallback(async (requestedOffset: number): Promise<AcquisitionSimilarityResult> => {
     setSimilarityLoading(true);
@@ -531,7 +534,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   useEffect(() => {
     if (tab !== "review" || reviewMode !== "list") return;
     void loadAssetPage(assetStatus, 0).catch((error: Error) => setNotice(error.message));
-  }, [assetStatus, loadAssetPage, reviewMode, tab]);
+  }, [assetStatus, loadAssetPage, mediaFilter, reviewMode, tab]);
 
   useEffect(() => {
     if (tab !== "history") return;
@@ -624,7 +627,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         setNotice(message);
         await loadImportBatchPage(importBatchOffset);
       } catch (error) {
-        setNotice(error instanceof Error ? error.message : "图片入库失败");
+        setNotice(error instanceof Error ? error.message : "素材入库失败");
       } finally {
         setAssetActionBusy(false);
       }
@@ -647,7 +650,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       if (lightboxAsset && assetIds.includes(lightboxAsset.id)) setLightboxSelection(null);
       setNotice(message);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "图片丢弃失败");
+      setNotice(error instanceof Error ? error.message : "素材丢弃失败");
     } finally {
       setAssetActionBusy(false);
     }
@@ -673,7 +676,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     const uniqueIds = [...new Set(assetIds)].filter((assetId) => availableIds.has(assetId));
     if (!uniqueIds.length || !canDelete) return;
     const confirmed = await confirm({
-      title: `丢弃选中的 ${uniqueIds.length} 张图片？`,
+      title: `丢弃选中的 ${uniqueIds.length} 项素材？`,
       message: "将立即删除这些临时文件并保留拒绝状态和来源记录，此操作无法撤销。",
       confirmLabel: "确认丢弃",
       tone: "danger"
@@ -688,9 +691,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         loadSimilarityPage(similarityOffset),
         getAcquisitionAssetSummary().then((summary) => setAssetSummary(summary))
       ]);
-      setNotice(`已丢弃 ${uniqueIds.length} 张临时图片`);
+      setNotice(`已丢弃 ${uniqueIds.length} 项临时素材`);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "图片丢弃失败");
+      setNotice(error instanceof Error ? error.message : "素材丢弃失败");
     } finally {
       setAssetActionBusy(false);
     }
@@ -1031,12 +1034,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setLightboxSnapshotIds([asset.id]);
     setLightboxSnapshotIndex(0);
     setLightboxNavigationBusy(true);
-    void listAcquisitionAssetIds(assetStatus, true).then((ids) => {
+    void listAcquisitionAssetIds(assetStatus, true, mediaFilter === "all" ? undefined : mediaFilter).then((ids) => {
       if (requestId !== lightboxSnapshotRequestIdRef.current) return;
       const currentIndex = ids.indexOf(asset.id);
       if (currentIndex < 0) {
         setLightboxSelection(null);
-        setNotice("当前图片已不在待审核列表中");
+        setNotice("当前素材已不在待审核列表中");
         return;
       }
       setLightboxSnapshotIds(ids);
@@ -1059,17 +1062,17 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     if (busy || assetsTotal === 0) return;
     if (areAllReviewAssetsSelected) {
       setSelectedAssets([]);
-      setNotice("已取消选择全部图片");
+      setNotice("已取消选择全部素材");
       return;
     }
     setBusy(true);
     setNotice(null);
     try {
-      const assetIds = await listAcquisitionAssetIds(assetStatus);
+      const assetIds = await listAcquisitionAssetIds(assetStatus, false, mediaFilter === "all" ? undefined : mediaFilter);
       setSelectedAssets(assetIds);
-      setNotice(`已选中当前状态下的全部 ${assetIds.length} 张图片`);
+      setNotice(`已选中当前状态下的全部 ${assetIds.length} 项素材`);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "全选图片失败");
+      setNotice(error instanceof Error ? error.message : "全选素材失败");
     } finally {
       setBusy(false);
     }
@@ -1087,12 +1090,24 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     setAssetStatus(reset.status);
   }
 
+  function changeMediaFilter(nextFilter: "all" | "image" | "video") {
+    if (nextFilter === mediaFilter) return;
+    setMediaFilter(nextFilter);
+    setAssets([]);
+    setAssetsTotal(0);
+    setAssetLoading(true);
+    setSelectedAssets([]);
+    setLightboxSelection(null);
+    setAssetOffset(0);
+    setAssetJumpPage("");
+  }
+
   async function goToAssetOffset(nextOffset: number) {
     setNotice(null);
     try {
       await loadAssetPage(assetStatus, nextOffset);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "图片列表加载失败");
+      setNotice(error instanceof Error ? error.message : "素材列表加载失败");
     }
   }
 
@@ -1112,14 +1127,14 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     if (!assetId || unavailableLightboxAssetIdsRef.current.has(assetId)) return false;
     try {
       const asset = lightboxAssetCacheRef.current.get(assetId) ?? await getAcquisitionAsset(assetId);
-      if (!asset.original_url || asset.media_type !== "image") throw new Error("该图片已不可预览");
+      if (!asset.original_url) throw new Error("该素材已不可预览");
       lightboxAssetCacheRef.current.set(asset.id, asset);
       setLightboxSelection({ asset, globalIndex: index });
       setLightboxSnapshotIndex(index);
       return true;
     } catch (error) {
       unavailableLightboxAssetIdsRef.current.add(assetId);
-      if (!(error instanceof Error) || !error.message.includes("不存在")) setNotice(error instanceof Error ? error.message : "图片加载失败");
+      if (!(error instanceof Error) || !error.message.includes("不存在")) setNotice(error instanceof Error ? error.message : "素材加载失败");
       return false;
     }
   }
@@ -1153,7 +1168,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     lightboxRejectPendingRef.current = true;
     try {
       const confirmed = await confirm({
-        title: "丢弃这张采集图片？",
+        title: "丢弃这项采集素材？",
         message: `将立即删除临时文件“${lightboxAsset.filename}”，同时保留拒绝状态和来源记录。`,
         confirmLabel: "确认丢弃",
         tone: "danger",
@@ -1184,9 +1199,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       if (nextIndex < 0 || !(await selectLightboxSnapshotAsset(nextSnapshotIds, nextIndex))) {
         setLightboxSelection(null);
       }
-      setNotice("图片已丢弃，临时文件已清除");
+      setNotice("素材已丢弃，临时文件已清除");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "图片丢弃失败");
+      setNotice(error instanceof Error ? error.message : "素材丢弃失败");
     } finally {
       setAssetActionBusy(false);
       lightboxRejectPendingRef.current = false;
@@ -1227,7 +1242,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
 
   return <><main className="acquisition-page">
     <header className="acquisition-heading">
-      <div><p className="acquisition-eyebrow">图片采集工作台</p><h1>图片采集中心</h1></div>
+      <div><p className="acquisition-eyebrow">媒体采集工作台</p><h1>采集中心</h1></div>
       <div className="acquisition-heading-actions">
         <span className="acquisition-counter">采集资产 {assetSummary.total}</span>
         <button className="icon-button" type="button" onClick={() => void refreshCurrentTab()} title="刷新当前页" aria-label="刷新当前页" disabled={busy || currentTabRefreshing}><LoaderCircle size={17} /></button>
@@ -1242,8 +1257,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       <span>待审核 <strong>{assetSummary.status_counts.pending_review ?? 0}</strong></span>
       <span>入库处理中 <strong>{(assetSummary.status_counts.import_queued ?? 0) + (assetSummary.status_counts.importing ?? 0)}</strong></span>
       <span>入库失败 <strong>{assetSummary.status_counts.import_failed ?? 0}</strong></span>
-      <span>已入图库 <strong>{assetSummary.status_counts.imported ?? 0}</strong></span>
-      <span>图库重复 <strong>{assetSummary.status_counts.gallery_duplicate ?? 0}</strong></span>
+      <span>已入库 <strong>{assetSummary.status_counts.imported ?? 0}</strong></span>
+      <span>库内重复 <strong>{assetSummary.status_counts.gallery_duplicate ?? 0}</strong></span>
       <span>已丢弃 <strong>{assetSummary.status_counts.rejected ?? 0}</strong></span>
     </section>
 
@@ -1437,7 +1452,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           return <article className="run-line" key={run.id}>
             <div><strong>{run.source_name} / {telegramCategoryLabel(categoryById.get(run.category_id) ?? ({ name: run.category_name } as AcquisitionCategory))}</strong><small>{run.script_name} · v{run.script_version} · {formatDate(run.created_at)} · {run.mode === "verify" ? "核验更新" : run.mode === "full" || run.parameters.force_full_scan === true ? "全量发现" : "增量"}</small>{runStopLabel(run) && <small>{runStopLabel(run)}</small>}{run.error_message && <p className="run-error">{run.error_message}</p>}</div>
             <div className="run-actions">
-              <div className="run-metrics"><span className={`acquisition-status status-${run.status}`}>{statusLabel(run.status)}</span><small>扫描 {run.total_count} · 跳过 {run.skipped_count} · 忽略 {run.ignored_count}</small><small>下载成功 {run.download_success_count} · 新候选 {run.candidate_count} · 内容重复 {run.content_duplicate_count} · 清晰度重复 {run.resolution_duplicate_count} · 高清替换 {run.resolution_upgrade_count} · 图库重复 {run.gallery_duplicate_count} · 失败 {run.error_count}</small></div>
+              <div className="run-metrics"><span className={`acquisition-status status-${run.status}`}>{statusLabel(run.status)}</span><small>扫描 {run.total_count} · 跳过 {run.skipped_count} · 忽略 {run.ignored_count}</small><small>下载成功 {run.download_success_count} · 新候选 {run.candidate_count} · 内容重复 {run.content_duplicate_count} · 清晰度重复 {run.resolution_duplicate_count} · 高清替换 {run.resolution_upgrade_count} · 库内重复 {run.gallery_duplicate_count} · 失败 {run.error_count}</small></div>
               <button type="button" className="icon-button" title={loadTitle} aria-label={`${loadTitle} ${run.category_name}`} disabled={!canLoadConfiguration} onClick={() => loadRunConfiguration(run)}><RotateCcw size={16} /></button>
               {isActive && <button type="button" className="icon-button danger" title="停止采集" aria-label={`停止采集 ${run.category_name}`} disabled={busy} onClick={() => void perform(async () => { await stopAcquisitionRun(run.id); }, "已请求停止采集")}><Square size={16} /></button>}
             </div>
@@ -1456,7 +1471,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       <div className="review-toolbar">
         <div className="review-toolbar-leading">
           <div className="mode-switch acquisition-review-mode" aria-label="待审核视图">
-            <button type="button" className={reviewMode === "list" ? "active" : ""} onClick={() => changeReviewMode("list")}><Images size={15} /> 图片列表</button>
+            <button type="button" className={reviewMode === "list" ? "active" : ""} onClick={() => changeReviewMode("list")}><Images size={15} /> 素材列表</button>
             <button type="button" className={reviewMode === "similarity" ? "active" : ""} onClick={() => changeReviewMode("similarity")}><ScanSearch size={15} /> 相似整理</button>
           </div>
           {reviewMode === "similarity" && <div className="similarity-scan-options">
@@ -1469,36 +1484,42 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
               <button type="button" className={similarityScope === "pending_to_gallery" ? "active" : ""} disabled={busy} onClick={() => { setSimilarityScope("pending_to_gallery"); setSimilarityOffset(0); setSelectedAssets([]); }}>联查图库</button>
             </div>
           </div>}
-          {reviewMode === "list" && <><select value={assetStatus} disabled={busy} onChange={(event) => changeAssetStatus(event.target.value)}><option value="pending_review">待审核</option><option value="import_failed">入库失败</option><option value="import_queued">等待入库</option><option value="importing">正在入库</option><option value="imported">已入库</option><option value="gallery_duplicate">图库已存在</option></select><span>{assetsTotal} 项</span></>}
+          {reviewMode === "list" && <><select value={assetStatus} disabled={busy} onChange={(event) => changeAssetStatus(event.target.value)}><option value="pending_review">待审核</option><option value="import_failed">入库失败</option><option value="import_queued">等待入库</option><option value="importing">正在入库</option><option value="imported">已入库</option><option value="gallery_duplicate">库中已存在</option></select>
+            <div className="mode-switch review-media-filter" aria-label="素材类型">
+              <button type="button" className={mediaFilter === "all" ? "active" : ""} disabled={busy} onClick={() => changeMediaFilter("all")}>全部 {(assetSummary.status_media_counts?.[assetStatus]?.image ?? 0) + (assetSummary.status_media_counts?.[assetStatus]?.video ?? 0) || ""}</button>
+              <button type="button" className={mediaFilter === "image" ? "active" : ""} disabled={busy} onClick={() => changeMediaFilter("image")}>仅图片 {assetSummary.status_media_counts?.[assetStatus]?.image ?? 0}</button>
+              <button type="button" className={mediaFilter === "video" ? "active" : ""} disabled={busy} onClick={() => changeMediaFilter("video")}>仅视频 {assetSummary.status_media_counts?.[assetStatus]?.video ?? 0}</button>
+            </div>
+            <span>{assetsTotal} 项</span></>}
           {reviewMode === "similarity" && <span>{similarity.total} 组</span>}
           {selectedAssets.length > 0 && <span className="review-selection-count">已选 {selectedAssets.length} 项</span>}
         </div>
         <div className="review-actions">
           {canEdit && <button type="button" title={`扫描${similarityScope === "pending_only" ? "审核区内" : "审核区与图库"}的${similarityScanType === "mirror" ? "镜像" : "普通"}相似图片`} disabled={busy || similarity.task?.status === "pending" || similarity.task?.status === "running"} onClick={() => void startSimilarityScan()}><ScanSearch size={16} /> {similarity.generated_at ? "重新扫描" : "扫描相似"}</button>}
-          {reviewMode === "list" && <button type="button" title={areAllReviewAssetsSelected ? "取消选择当前状态下所有图片" : "选中当前状态下所有页面的图片"} disabled={busy || assetActionBusy || assetsTotal === 0} onClick={() => void selectAllReviewAssets()}><CheckCheck size={16} /> {areAllReviewAssetsSelected ? "取消全选" : `全选 ${assetsTotal}`}</button>}
-          {reviewMode === "list" && canAdd && assets.some((asset) => asset.media_type === "image") && <div className="mode-switch import-type-switch" aria-label="导入图片类型">
+          {reviewMode === "list" && <button type="button" title={areAllReviewAssetsSelected ? "取消选择当前状态下所有素材" : "选中当前状态下所有页面的素材"} disabled={busy || assetActionBusy || assetsTotal === 0} onClick={() => void selectAllReviewAssets()}><CheckCheck size={16} /> {areAllReviewAssetsSelected ? "取消全选" : `全选 ${assetsTotal}`}</button>}
+          {reviewMode === "list" && canAdd && (areAllReviewAssetsSelected ? mediaFilter !== "video" : assets.some((asset) => selectedAssets.includes(asset.id) && asset.media_type === "image")) && <div className="mode-switch import-type-switch" aria-label="导入图片类型">
             <button type="button" className={!importAsRichText ? "active" : ""} disabled={busy || assetActionBusy} onClick={() => setImportAsRichText(false)}>普通图片</button>
             <button type="button" className={importAsRichText ? "active" : ""} disabled={busy || assetActionBusy} onClick={() => setImportAsRichText(true)}>图文图片</button>
           </div>}
-          {reviewMode === "list" && canAdd && <button type="button" disabled={busy || assetActionBusy || !selectedAssets.length} onClick={() => void performSelectedAssetAction("import", assetStatus === "import_failed" ? "已创建媒体重试批次" : "已创建媒体入库批次")}><Check size={16} /> 导入 {selectedAssets.length || ""}</button>}
-          {canDelete && <button type="button" className="danger-command" disabled={busy || assetActionBusy || !selectedAssets.length} onClick={() => reviewMode === "similarity" ? void rejectSimilarityAssets(selectedAssets) : void performSelectedAssetAction("reject", "已丢弃临时图片")}><X size={16} /> 丢弃 {selectedAssets.length || ""}</button>}
+          {reviewMode === "list" && canAdd && <button type="button" disabled={busy || assetActionBusy || !selectedAssets.length} onClick={() => void performSelectedAssetAction("import", assetStatus === "import_failed" ? "已创建入库重试批次" : "已创建入库批次")}><Check size={16} /> 导入 {selectedAssets.length || ""}</button>}
+          {canDelete && <button type="button" className="danger-command" disabled={busy || assetActionBusy || !selectedAssets.length} onClick={() => reviewMode === "similarity" ? void rejectSimilarityAssets(selectedAssets) : void performSelectedAssetAction("reject", "已丢弃临时素材")}><X size={16} /> 丢弃 {selectedAssets.length || ""}</button>}
         </div>
       </div>
       {reviewMode === "list" && <><div className={assetLoading ? "review-grid loading" : "review-grid"} aria-busy={assetLoading}>
           {assets.map((asset, index) => <article className={selectedAssets.includes(asset.id) ? "review-tile selected" : "review-tile"} key={asset.id}>
           <label className="tile-select"><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={() => toggleAsset(asset.id)} /><span>选择</span></label>
-          {asset.media_type === "video" && asset.original_url ? <div className="review-video-frame"><video src={acquisitionDownloadUrl(asset.original_url)} controls preload="metadata" playsInline /></div> : asset.preview_url ? <button className="review-image-button" type="button" onClick={() => showLightboxAsset(asset)} aria-label={`查看大图 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
-          <div className="tile-meta"><strong title={asset.filename}>{asset.media_type === "video" && <Video size={14} />} {asset.filename}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "尺寸未知"}{asset.duration_seconds != null ? ` · ${Math.round(asset.duration_seconds)} 秒` : ""} · {formatBytes(asset.size_bytes)}</small>{asset.source_caption && <p>{asset.source_caption}</p>}{asset.source_hashtags.length > 0 && <small>#{asset.source_hashtags.join(" #")}</small>}{asset.quality_warnings.length > 0 && <p>{asset.quality_warnings.join(" / ")}</p>}</div>
+          {asset.media_type === "video" && asset.original_url ? <button className="review-image-button review-video-card" type="button" onClick={() => showLightboxAsset(asset)} aria-label={`查看视频 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <><span className="review-video-fallback" aria-hidden="true" />{asset.preview_url && <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" onError={(event) => { event.currentTarget.style.display = "none"; }} />}</>}<span className="review-video-play" aria-hidden="true"><Play size={18} fill="currentColor" /></span>{asset.duration_seconds != null && <span className="review-video-duration">{formatDurationSeconds(asset.duration_seconds)}</span>}</button> : asset.preview_url ? <button className="review-image-button" type="button" onClick={() => showLightboxAsset(asset)} aria-label={`查看大图 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
+          <div className="tile-meta"><strong title={asset.filename}>{asset.media_type === "video" && <Video size={14} />} {asset.filename}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "尺寸未知"}{asset.duration_seconds != null ? ` · ${formatDurationSeconds(asset.duration_seconds)}` : ""} · {formatBytes(asset.size_bytes)}</small>{asset.source_hashtags.length > 0 && <p className="review-hashtags">{asset.source_hashtags.map((tag) => `#${tag}`).join(" ")}</p>}{asset.quality_warnings.length > 0 && <p>{asset.quality_warnings.join(" / ")}</p>}</div>
         </article>)}
       </div>
-      {!assets.length && <p className="acquisition-empty review-empty">此状态下没有图片。</p>}
-      {assetPagination.totalPages > 0 && <div className="acquisition-pagination review-pagination" aria-label="审核图片分页">
+      {!assets.length && <p className="acquisition-empty review-empty">此状态下没有素材。</p>}
+      {assetPagination.totalPages > 0 && <div className="acquisition-pagination review-pagination" aria-label="审核素材分页">
         <button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={assetLoading || assetOffset === 0} onClick={() => void goToAssetOffset(assetOffset - acquisitionAssetPageSize)}><ChevronLeft size={22} /></button>
         <span className="pagination-summary">第 {assetPagination.currentPage} / {assetPagination.totalPages} 页 · {assetPagination.rangeStart}-{assetPagination.rangeEnd} / {assetsTotal}</span>
         <button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={assetLoading || assetOffset + acquisitionAssetPageSize >= assetsTotal} onClick={() => void goToAssetOffset(assetOffset + acquisitionAssetPageSize)}><ChevronRight size={22} /></button>
         <form className="pagination-jump" onSubmit={submitAssetPageJump}>
           <label htmlFor="acquisition-page-number">跳至</label>
-          <input id="acquisition-page-number" type="number" min={1} max={assetPagination.totalPages} step={1} value={assetJumpPage} onChange={(event) => setAssetJumpPage(event.target.value)} aria-label="审核图片页码" />
+          <input id="acquisition-page-number" type="number" min={1} max={assetPagination.totalPages} step={1} value={assetJumpPage} onChange={(event) => setAssetJumpPage(event.target.value)} aria-label="审核素材页码" />
           <button type="submit" disabled={assetLoading || !assetJumpPage}>跳转</button>
         </form>
       </div>}</>}
@@ -1554,7 +1575,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       <div className="acquisition-section import-batch-list">
         <div className="acquisition-section-title">
           <span>入库批次</span>
-          <small>{importBatchesTotal} 个批次{unassignedImportedCount > 0 ? ` · ${unassignedImportedCount} 张历史图片未关联批次` : ""}</small>
+          <small>{importBatchesTotal} 个批次{unassignedImportedCount > 0 ? ` · ${unassignedImportedCount} 项历史素材未关联批次` : ""}</small>
         </div>
         <div className="import-history-toolbar">
           <label>批次日期</label>
@@ -1584,7 +1605,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
           >
             <div><strong>{formatDate(batch.created_at)} · 选择 {batch.total_count} 张</strong><small>已处理 {batch.processed_count} · 成功 {batch.imported_count} · 重复 {batch.duplicate_count} · 失败 {batch.failed_count}</small></div>
             <span className="import-batch-state">
-              <span className="import-batch-type">{batch.is_rich_text ? "图文图片" : "普通图片"}</span>
+              <span className="import-batch-type">{batch.has_video && batch.has_image ? (batch.is_rich_text ? "图文 + 视频" : "图片 + 视频") : batch.has_video && !batch.has_image ? "视频" : batch.is_rich_text ? "图文图片" : "普通图片"}</span>
               <span className={`acquisition-status status-${batch.status}`}>{statusLabel(batch.status)}</span>
               <span className="import-batch-current" aria-hidden="true"><Check size={16} /></span>
             </span>
@@ -1601,25 +1622,27 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
       <div className="acquisition-section history-list">
         <div className="acquisition-section-title">
           <span>入库溯源</span>
-          <small>{selectedImportBatchId ? `${importBatchItemsTotal} 张` : "请先选择批次"}</small>
+          <small>{selectedImportBatchId ? `${importBatchItemsTotal} 项` : "请先选择批次"}</small>
         </div>
         <div className="import-history-toolbar">
           <label htmlFor="import-result-status">处理结果</label>
           <select id="import-result-status" value={importBatchItemStatus} onChange={(event) => { setImportBatchItemStatus(event.target.value); setImportBatchItemOffset(0); setExpandedImportAssetId(null); }}>
             <option value="all">全部结果</option>
-            <option value="imported">成功入图库</option>
-            <option value="gallery_duplicate">图库已存在</option>
+            <option value="imported">成功入库</option>
+            <option value="gallery_duplicate">库中已存在</option>
             <option value="failed">导入失败</option>
           </select>
         </div>
         <div className="history-detail-scroll" aria-busy={importHistoryLoading}>
           {importBatchItems.map((item) => {
             const expanded = expandedImportAssetId === item.asset_id;
-            const galleryLabel = item.gallery_available
-              ? `图库 #${item.gallery_photo_id}`
-              : item.gallery_photo_snapshot_id
-                ? `原图库 #${item.gallery_photo_snapshot_id}（文件已删除）`
-                : "未生成图库图片";
+            const galleryLabel = item.target_type === "video"
+              ? (item.video_id ? `视频 #${item.video_id}` : "未生成视频")
+              : item.gallery_available
+                ? `图库 #${item.gallery_photo_id}`
+                : item.gallery_photo_snapshot_id
+                  ? `原图库 #${item.gallery_photo_snapshot_id}（文件已删除）`
+                  : "未生成图库图片";
             return <article className={`history-detail-row ${expanded ? "expanded" : ""}`} key={item.asset_id}>
               <button type="button" className="history-detail-summary" aria-expanded={expanded} onClick={() => setExpandedImportAssetId(expanded ? null : item.asset_id)}>
                 <span className={item.gallery_available ? "history-dot" : "history-dot missing"} />
@@ -1642,7 +1665,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
               </div>}
             </article>;
           })}
-          {selectedImportBatchId && !importBatchItems.length && <p className="acquisition-empty">当前筛选下没有图片。</p>}
+          {selectedImportBatchId && !importBatchItems.length && <p className="acquisition-empty">当前筛选下没有素材。</p>}
           {!selectedImportBatchId && <p className="acquisition-empty">从上方选择一个入库批次查看逐图结果。</p>}
         </div>
         {importBatchItemPagination.totalPages > 1 && <div className="acquisition-pagination compact" aria-label="入库溯源分页">
@@ -1678,51 +1701,21 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
 
   </main>
 
-    {lightboxAsset?.original_url && <PhotoLightbox
-      backdropClassName="acquisition-review-lightbox-backdrop"
-      shellClassName="acquisition-review-lightbox"
+    {lightboxAsset?.original_url && <AcquisitionReviewLightbox
+      asset={lightboxAsset}
+      statusLabel={statusLabel(assetStatus)}
+      indexLabel={`${lightboxGlobalIndex + 1} / ${lightboxSnapshotIds.length}`}
+      selected={selectedAssets.includes(lightboxAsset.id)}
+      canDelete={canDelete}
       busy={assetActionBusy || lightboxNavigationBusy}
       canGoPrevious={canGoToPreviousAsset}
       canGoNext={canGoToNextAsset}
       onClose={closeReviewLightbox}
       onPrevious={() => navigateLightbox(-1)}
       onNext={() => navigateLightbox(1)}
-      onKeyDown={(event) => {
-        const shortcut = getAcquisitionLightboxShortcut(event.key);
-        if (shortcut === "toggle_selection") {
-          event.preventDefault();
-          toggleAsset(lightboxAsset.id);
-        } else if (shortcut === "reject" && canDelete) {
-          event.preventDefault();
-          void rejectLightboxAsset();
-        }
-      }}
-      meta={<>
-        <div className="acquisition-lightbox-heading">
-          <div><p className="acquisition-eyebrow">采集审核</p><h2>{statusLabel(assetStatus)}</h2></div>
-          <strong>{lightboxGlobalIndex + 1} / {lightboxSnapshotIds.length}</strong>
-        </div>
-        <dl className="acquisition-lightbox-facts">
-          <div><dt>文件名</dt><dd title={lightboxAsset.filename}>{lightboxAsset.filename}</dd></div>
-          <div><dt>尺寸</dt><dd>{lightboxAsset.width && lightboxAsset.height ? `${lightboxAsset.width} × ${lightboxAsset.height}` : "未知"}</dd></div>
-          <div><dt>大小</dt><dd>{formatBytes(lightboxAsset.size_bytes)}</dd></div>
-        </dl>
-        <section className={lightboxAsset.quality_warnings.length ? "acquisition-quality-notes has-warning" : "acquisition-quality-notes"}>
-          <strong>质量提示</strong>
-          <p>{lightboxAsset.quality_warnings.length ? lightboxAsset.quality_warnings.join(" / ") : "未发现自动质量提示"}</p>
-        </section>
-        <div className="acquisition-lightbox-actions">
-          <button type="button" className={selectedAssets.includes(lightboxAsset.id) ? "selected" : ""} onClick={() => toggleAsset(lightboxAsset.id)} disabled={assetActionBusy}>
-            <Check size={17} /> {selectedAssets.includes(lightboxAsset.id) ? "取消选择" : "选中当前"}
-          </button>
-          {canDelete && <button type="button" className="danger-command" onClick={() => void rejectLightboxAsset()} disabled={assetActionBusy}>
-            <Trash2 size={17} /> 丢弃当前
-          </button>}
-        </div>
-      </>}
-    >
-      <img className="lightbox-image" src={lightboxAsset.original_url} alt={lightboxAsset.filename} />
-    </PhotoLightbox>}
+      onToggleSelect={() => toggleAsset(lightboxAsset.id)}
+      onReject={() => void rejectLightboxAsset()}
+    />}
 
     {similarityLightboxAsset?.original_url && similarityLightboxGroup && <PhotoLightbox
       backdropClassName="acquisition-review-lightbox-backdrop"

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.api.acquisition import (
+    get_asset_summary,
     list_asset_ids,
     list_assets,
     list_category_page,
@@ -44,6 +45,7 @@ from app.models import (
     AcquisitionSourceItem,
     AcquisitionSource,
     GalleryPhoto,
+    VideoItem,
     Workspace,
 )
 from app.services.acquisition import AcquisitionService
@@ -1193,6 +1195,147 @@ class AcquisitionSimilarityTests(unittest.TestCase):
         self.assertEqual([asset.id for asset in page.items], ["asset-c", "asset-b"])
         self.assertEqual(ids, ["asset-c", "asset-b", "asset-a"])
         self.assertEqual(previewable_ids, ["asset-c", "asset-b"])
+        db.close()
+        engine.dispose()
+
+    def test_asset_lists_filter_media_type_and_treat_videos_as_previewable(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        created_at = datetime(2026, 8, 14, 10, 0, 0)
+        db.add_all([
+            AcquisitionAsset(
+                id="photo",
+                sha256="a" * 64,
+                filename="a.jpg",
+                media_type="image",
+                status="pending_review",
+                created_at=created_at,
+                object_key="acquisition/a.jpg",
+            ),
+            AcquisitionAsset(
+                id="clip",
+                sha256="b" * 64,
+                filename="b.mp4",
+                media_type="video",
+                status="pending_review",
+                created_at=created_at,
+                object_key="acquisition/b.mp4",
+            ),
+        ])
+        db.commit()
+        context = SimpleNamespace(workspace_id=None)
+        videos = list_assets(status="pending_review", media_type="video", offset=0, limit=10, db=db, current=context)
+        self.assertEqual([asset.id for asset in videos.items], ["clip"])
+        self.assertEqual(list_asset_ids(status="pending_review", media_type="image", db=db, current=context), ["photo"])
+        self.assertEqual(set(list_asset_ids(status="pending_review", previewable=True, db=db, current=context)), {"clip", "photo"})
+        summary = get_asset_summary(db=db, current=context)
+        self.assertEqual(summary.status_media_counts["pending_review"], {"image": 1, "video": 1})
+        db.close()
+        engine.dispose()
+
+    def test_library_sha_skips_pending_review_for_photos_and_videos(self) -> None:
+        class MemoryStorage:
+            def __init__(self) -> None:
+                self.objects: dict[str, bytes] = {}
+
+            def put_bytes(self, key: str, payload: bytes, _content_type: str | None = None) -> None:
+                self.objects[key] = payload
+
+            def get_bytes(self, key: str) -> bytes:
+                return self.objects[key]
+
+            def remove_object(self, key: str) -> None:
+                self.objects.pop(key, None)
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        with engine.begin() as connection:
+            connection.execute(text("PRAGMA foreign_keys=ON"))
+        Base.metadata.create_all(engine)
+        db = Session(engine, autoflush=False)
+        storage = MemoryStorage()
+        settings = SimpleNamespace(
+            acquisition_quality_min_pixels=1,
+            acquisition_quality_max_aspect_ratio=10.0,
+            acquisition_quality_blur_threshold=0.0,
+            ffmpeg_path="ffmpeg",
+            video_cover_capture_seconds=1.0,
+        )
+        service = AcquisitionService(storage, SimpleNamespace(), settings)
+        definition = get_script("raindrop-ftxsri-workers-dev")
+        assert definition is not None
+        db.add(AcquisitionScript(
+            key=definition.key,
+            name=definition.name,
+            version=definition.version,
+            page_format_key=definition.page_format_key,
+            parameter_schema_json="[]",
+        ))
+        workspace = Workspace(name="dedup-ws")
+        db.add(workspace)
+        db.commit()
+        source = service.create_source(db, workspace.id, "去重站点", "https://raindrop.ftxsri.workers.dev")
+        service.bind_script(db, source, definition.key)
+        category = service.create_category(db, source, "去重分类", "https://raindrop.ftxsri.workers.dev/collection-1")
+
+        image = Image.new("RGB", (32, 32), color="white")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG")
+        photo_payload = buffer.getvalue()
+        photo_sha = hashlib.sha256(photo_payload).hexdigest()
+        db.add(GalleryPhoto(workspace_id=workspace.id, filename="kept.jpg", sha256=photo_sha, object_key="gallery/kept.jpg", is_rich_text=False))
+        video_payload = b"fake-mp4-bytes"
+        video_sha = hashlib.sha256(video_payload).hexdigest()
+        db.add(VideoItem(workspace_id=workspace.id, title="kept", filename="kept.mp4", sha256=video_sha, object_key="videos/kept.mp4", size_bytes=len(video_payload)))
+        db.commit()
+
+        photo_run = service.start_run(db, workspace.id, category, definition.key, "incremental", {})
+        with patch.object(service, "_download_remote", return_value=(photo_payload, "image/jpeg")):
+            service._process_remote_item(
+                db, photo_run, source, category,
+                RemoteItem("dup-photo", "https://cdn.example.test/kept.jpg"),
+            )
+        db.refresh(photo_run)
+        self.assertEqual(photo_run.gallery_duplicate_count, 1)
+        self.assertEqual(db.query(AcquisitionAsset).filter_by(sha256=photo_sha, status="pending_review").count(), 0)
+        photo_run.status = "completed"
+        db.commit()
+
+        video_run = service.start_run(db, workspace.id, category, definition.key, "incremental", {})
+        with patch.object(service, "_download_remote", return_value=(video_payload, "video/mp4")):
+            service._process_remote_item(
+                db, video_run, source, category,
+                RemoteItem("dup-video", "https://cdn.example.test/kept.mp4", media_type="video"),
+            )
+        db.refresh(video_run)
+        self.assertEqual(video_run.gallery_duplicate_count, 1)
+        self.assertEqual(db.query(AcquisitionAsset).filter_by(sha256=video_sha, status="pending_review").count(), 0)
+        video_run.status = "completed"
+        db.commit()
+
+        telegram_run = service.start_run(db, workspace.id, category, definition.key, "incremental", {})
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as handle:
+            handle.write(video_payload)
+            telegram_path = Path(handle.name)
+        try:
+            service._persist_telegram_record(db, telegram_run, source, category, {
+                "external_key": "1:2:0",
+                "source_url": "https://t.me/c/1/2",
+                "channel_id": "1",
+                "message_id": 2,
+                "media_type": "video",
+                "path": telegram_path,
+                "hashtags": [],
+                "protected_content": False,
+                "duration_seconds": 8.0,
+                "width": 1280,
+                "height": 720,
+            })
+        finally:
+            telegram_path.unlink(missing_ok=True)
+        db.refresh(telegram_run)
+        self.assertEqual(telegram_run.gallery_duplicate_count, 1)
+        self.assertEqual(db.query(AcquisitionAsset).filter_by(sha256=video_sha, status="pending_review").count(), 0)
         db.close()
         engine.dispose()
 

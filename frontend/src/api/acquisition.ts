@@ -180,8 +180,14 @@ export async function listAcquisitionRunPage(offset = 0, limit = 10): Promise<Pa
   return parse<PaginatedAcquisitionRuns>(await fetch(`/api/acquisition/runs/page?${params.toString()}`));
 }
 
-export async function listAcquisitionAssets(status = "pending_review", offset = 0, limit = 60): Promise<PaginatedAcquisitionAssets> {
+export async function listAcquisitionAssets(
+  status = "pending_review",
+  offset = 0,
+  limit = 60,
+  mediaType?: "image" | "video"
+): Promise<PaginatedAcquisitionAssets> {
   const params = new URLSearchParams({ status, offset: String(offset), limit: String(limit) });
+  if (mediaType) params.set("media_type", mediaType);
   return parse<PaginatedAcquisitionAssets>(await fetch(`/api/acquisition/assets?${params.toString()}`));
 }
 
@@ -189,9 +195,14 @@ export async function getAcquisitionAsset(assetId: string): Promise<AcquisitionA
   return parse<AcquisitionAsset>(await fetch(`/api/acquisition/assets/${encodeURIComponent(assetId)}`));
 }
 
-export async function listAcquisitionAssetIds(status: string, previewable = false): Promise<string[]> {
+export async function listAcquisitionAssetIds(
+  status: string,
+  previewable = false,
+  mediaType?: "image" | "video"
+): Promise<string[]> {
   const params = new URLSearchParams({ status });
   if (previewable) params.set("previewable", "true");
+  if (mediaType) params.set("media_type", mediaType);
   return parse<string[]>(await fetch(`/api/acquisition/assets/ids?${params.toString()}`));
 }
 

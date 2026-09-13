@@ -23,6 +23,7 @@ from app.services.telegram import (
     scan_iter_kwargs,
     select_matching_media_groups,
     translate_telegram_error,
+    video_metadata,
 )
 
 
@@ -61,6 +62,11 @@ def _text(message_id: int, published_at: datetime, caption: str = "纯文本") -
 
 
 class TelegramAcquisitionTests(unittest.TestCase):
+    def test_video_metadata_reads_document_attributes(self) -> None:
+        message = SimpleNamespace(video=SimpleNamespace(attributes=[SimpleNamespace(duration=12, w=1920, h=1080)]))
+        self.assertEqual(video_metadata(message), (12.0, 1920, 1080))
+        self.assertEqual(video_metadata(SimpleNamespace(video=None)), (None, None, None))
+
     def test_extract_hashtags_deduplicates_normalized_values(self) -> None:
         tags = extract_hashtags("#旅行 今天的 #旅行 #Tokyo")
         self.assertEqual(tags, [("旅行", "旅行"), ("Tokyo", "tokyo")])
