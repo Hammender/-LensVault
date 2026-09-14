@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { filterTagMatches, resolveExistingTag, type SelectableTag } from "../src/tagPicker";
+import { filterTagMatches, resolveExistingTag, type SelectableTag } from "../src/lib/tagPicker";
 
 const tags: SelectableTag[] = [
   { id: 1, name: "旅行", is_system: false },

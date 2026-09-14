@@ -16,8 +16,8 @@ import {
   X
 } from "lucide-react";
 
-import type { VideoItem } from "./types";
-import { formatDate, formatDurationSeconds, formatBytes } from "./utils";
+import type { VideoItem } from "../types";
+import { formatDate, formatDurationSeconds, formatBytes } from "../lib/utils";
 import "./VideoLightbox.css";
 
 function formatTime(seconds: number): string {

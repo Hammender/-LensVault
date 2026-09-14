@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ApplicationContent } from "./ApplicationContent";
 import AuthScreen from "./components/AuthScreen";
 import {
+  AUTH_EXPIRED_EVENT,
   bootstrapAdmin,
   clearAuthToken,
   clearSelectedWorkspaceId,
@@ -22,6 +23,16 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onExpired = () => {
+      clearAuthToken();
+      clearSelectedWorkspaceId();
+      setAuthSession(null);
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

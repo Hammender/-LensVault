@@ -7,7 +7,7 @@ import type {
   UploadHistory,
   UploadSummary
 } from "../types";
-import { authFetch, parseResponse } from "../apiClient";
+import { authFetch, parseResponse } from "../lib/apiClient";
 
 export async function getTagStatistics(isSystem?: boolean): Promise<TagStatistics[]> {
   const url = new URL("/api/statistics/tags", window.location.origin);

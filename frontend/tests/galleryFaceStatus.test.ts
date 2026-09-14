@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { galleryFaceStatusLabel, personTagSourceLabel } from "../src/galleryFaceStatus";
+import { galleryFaceStatusLabel, personTagSourceLabel } from "../src/lib/galleryFaceStatus";
 
 describe("galleryFaceStatusLabel", () => {
   it("labels faces waiting for review", () => {

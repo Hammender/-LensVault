@@ -1,5 +1,5 @@
-import type { VideoDetail } from "./types";
-import type { WorkspacePermissionsPayload } from "./api";
+import type { VideoDetail } from "../types";
+import type { WorkspacePermissionsPayload } from "../types";
 
 export const videoPartSize = 16 * 1024 * 1024;
 export const videoResumeStorageKey = "pictureshow-video-upload-session";

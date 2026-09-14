@@ -4,7 +4,7 @@ import type {
   AcquisitionScript,
   AcquisitionScriptParameter,
   AcquisitionSource
-} from "./types";
+} from "../types";
 import { toShanghaiDateTimeLocalValue, toShanghaiDateTimeOffset } from "./utils";
 
 export type AcquisitionRunFormParameters = Record<string, string | boolean>;

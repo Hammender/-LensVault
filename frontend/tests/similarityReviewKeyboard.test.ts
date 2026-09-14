@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findPreviewAfterCurrentDelete, getSimilarityLightboxShortcut } from "../src/similarityReviewKeyboard";
+import { findPreviewAfterCurrentDelete, getSimilarityLightboxShortcut } from "../src/lib/similarityReviewKeyboard";
 
 describe("similarity review lightbox keyboard", () => {
   it("maps Space and Delete to current-image actions", () => {

@@ -7,7 +7,7 @@ import type {
   VideoSubtitleTrack,
   VideoUploadSession
 } from "../types";
-import { authFetch, jsonHeaders, parseResponse } from "../apiClient";
+import { authFetch, jsonHeaders, parseResponse } from "../lib/apiClient";
 
 export async function listVideoCategoryTags(): Promise<VideoCategoryTag[]> {
   return parseResponse<VideoCategoryTag[]>(await authFetch("/api/video-category-tags"));

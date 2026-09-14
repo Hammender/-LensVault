@@ -8,7 +8,7 @@ import type {
   PaginatedGalleryPhotos,
   Task
 } from "../types";
-import { authFetch, jsonHeaders, parseResponse, withWorkspaceContext } from "../apiClient";
+import { authFetch, jsonHeaders, parseBlobResponse, parseResponse, withWorkspaceContext } from "../lib/apiClient";
 
 export type GalleryUploadMetadata = {
   person_ids: number[];
@@ -166,21 +166,7 @@ export async function downloadGalleryExport(options: GalleryExportOptions): Prom
       exclude_tag_ids: options.excludeTagIds ?? []
     })
   });
-  if (!response.ok) {
-    const text = await response.text();
-    let message = text || "导出失败。";
-    try {
-      const payload = JSON.parse(text) as { detail?: string | Array<{ msg?: string }> };
-      if (typeof payload.detail === "string") message = payload.detail;
-      if (Array.isArray(payload.detail)) message = payload.detail[0]?.msg ?? message;
-    } catch {
-      // 非 JSON 错误直接显示响应文本。
-    }
-    throw new Error(message);
-  }
-  const disposition = response.headers.get("Content-Disposition") ?? "";
-  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] ?? "gallery_export.zip";
-  return { blob: await response.blob(), filename };
+  return parseBlobResponse(response, "gallery_export.zip", "导出失败。");
 }
 export async function importGalleryExportZip(file: File): Promise<Task> { const formData = new FormData(); formData.append("file", file); return parseResponse<Task>(await authFetch("/api/gallery/photos/import-zip", { method: "POST", body: formData })); }
 export async function updateGalleryPhotoRichText(photoId: number, richText: string): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/rich-text`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ rich_text: richText }) })); }

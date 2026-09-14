@@ -8,7 +8,7 @@ import {
   listAcquisitionSimilarity,
   startAcquisitionSimilarityScan
 } from "../src/api/acquisition";
-import { getConfirmDialogKeyboardDecision } from "../src/ConfirmDialog";
+import { getConfirmDialogKeyboardDecision } from "../src/components/ConfirmDialog";
 import {
   acquisitionAssetPageSize,
   clampAcquisitionOffset,
@@ -25,7 +25,7 @@ import {
   isAcquisitionImportBatchActive,
   removeAcquisitionSelection,
   toggleAcquisitionSelection
-} from "../src/acquisitionReview";
+} from "../src/lib/acquisitionReview";
 
 function installWindow() {
   const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({

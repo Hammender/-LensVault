@@ -4,11 +4,12 @@ import {
   availablePhotoPersons,
   availableUploadPersons,
   filterPersonMatches,
+  isSystemUnknownPerson,
   mergePersonIds,
   matchesPersonSearch,
   resolveExistingPerson,
   type SelectablePerson
-} from "../src/personPicker";
+} from "../src/lib/personPicker";
 
 const persons: SelectablePerson[] = [
   { id: 4, display_name: "张三", is_unknown: false },
@@ -32,6 +33,12 @@ describe("人物搜索选择", () => {
       "未知人物",
       "张三"
     ]);
+  });
+
+  it("识别系统未知人物", () => {
+    expect(isSystemUnknownPerson({ is_unknown: true, display_name: "未知人物" })).toBe(true);
+    expect(isSystemUnknownPerson({ is_unknown: true, display_name: "未知人物 2" })).toBe(false);
+    expect(isSystemUnknownPerson({ is_unknown: false, display_name: "未知人物" })).toBe(false);
   });
 
   it("详情候选排除未知人物和已经添加的人物", () => {

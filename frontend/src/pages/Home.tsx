@@ -17,7 +17,7 @@ import {
   UsersRound
 } from "lucide-react";
 
-import { listPersons, listTags, listGalleryPhotos, listVideos } from "./api/index";
+import { listPersons, listTags, listGalleryPhotos, listVideos } from "../api";
 import "./Home.css";
 
 const workstations = [

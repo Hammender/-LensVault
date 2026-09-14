@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sortByPinyin } from "../src/sort";
+import { sortByPinyin } from "../src/lib/sort";
 
 describe("pinyin sorting", () => {
   it("sorts Chinese display names by pinyin and mixes English names alphabetically", () => {

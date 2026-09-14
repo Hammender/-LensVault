@@ -5,7 +5,7 @@ import {
   getAcquisitionRunFormConfiguration,
   restoreAcquisitionRunParameters,
   serializeAcquisitionRunParameters
-} from "../src/acquisitionRunForm";
+} from "../src/lib/acquisitionRunForm";
 import type { AcquisitionCategory, AcquisitionRun, AcquisitionScript, AcquisitionSource } from "../src/types";
 
 const script: AcquisitionScript = {

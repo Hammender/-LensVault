@@ -5,8 +5,8 @@ import {
   availableUploadPersons,
   filterPersonMatches,
   resolveExistingPerson
-} from "./personPicker";
-import type { Person } from "./types";
+} from "../lib/personPicker";
+import type { Person } from "../types";
 
 type UploadPersonPickerProps = {
   id: string;

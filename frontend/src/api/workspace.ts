@@ -1,17 +1,7 @@
-import type { WorkspaceInvitation, WorkspaceMember, WorkspaceRead } from "../types";
-import { authFetch, jsonHeaders, parseResponse as parse } from "../apiClient";
+import type { WorkspaceInvitation, WorkspaceMember, WorkspacePermissionsPayload, WorkspaceRead } from "../types";
+import { authFetch, jsonHeaders, parseResponse as parse } from "../lib/apiClient";
 
-export type WorkspacePermissionsPayload = {
-  can_add_gallery?: boolean;
-  can_delete_gallery?: boolean;
-  can_edit_gallery?: boolean;
-  can_add_samples?: boolean;
-  can_delete_samples?: boolean;
-  can_edit_samples?: boolean;
-  can_add_videos?: boolean;
-  can_delete_videos?: boolean;
-  can_edit_videos?: boolean;
-};
+export type { WorkspacePermissionsPayload };
 
 export async function createWorkspace(name: string): Promise<WorkspaceRead> {
   return parse<WorkspaceRead>(

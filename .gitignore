@@ -15,3 +15,4 @@ newweb
 *.jar
 alembic.ini
 alembic/
+data/

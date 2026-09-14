@@ -18,8 +18,8 @@ import type {
   Task
 } from "../types";
 import type { TelegramAccount, TelegramDialog, TelegramForumScan, TelegramTopic } from "../types/telegram";
-import { authFetch, jsonHeaders, parseResponse as parse, withWorkspaceContext } from "../apiClient";
-import { toShanghaiDateTimeBoundary } from "../utils";
+import { authFetch, jsonHeaders, parseResponse as parse, withWorkspaceContext } from "../lib/apiClient";
+import { toShanghaiDateTimeBoundary } from "../lib/utils";
 
 const fetch = authFetch;
 

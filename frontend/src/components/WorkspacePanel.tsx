@@ -16,9 +16,9 @@ import {
   setSelectedWorkspaceId,
   updateWorkspaceMember,
   type WorkspacePermissionsPayload
-} from "../api/index";
+} from "../api";
 import type { AuthSession, WorkspaceInvitation, WorkspaceMember } from "../types";
-import { emptyWorkspacePermissions, toWorkspacePermissions } from "../utils";
+import { emptyWorkspacePermissions, toWorkspacePermissions } from "../lib/utils";
 
 type WorkspacePanelProps = {
   session: AuthSession;
@@ -76,7 +76,7 @@ export default function WorkspacePanel({ session, onSessionChange, onClose }: Wo
     <div className="modal-backdrop" onClick={onClose}>
       <section className="export-modal workspace-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-heading">
-          <p className="eyebrow">Workspace</p>
+          <p className="eyebrow">内容空间</p>
           <h2>内容空间</h2>
         </div>
         {message && <p className="inline-error">{message}</p>}

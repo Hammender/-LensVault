@@ -6,7 +6,7 @@ import {
   selectGalleryPage,
   selectGalleryPhotoRange,
   toggleGalleryPhotoSelection
-} from "../src/gallerySelection";
+} from "../src/lib/gallerySelection";
 
 describe("图库跨页选择", () => {
   it("切换单张图片时保留其他页的选择", () => {

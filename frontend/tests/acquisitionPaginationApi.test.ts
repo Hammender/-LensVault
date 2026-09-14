@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   authFetch: vi.fn()
 }));
 
-vi.mock("../src/apiClient", () => ({
+vi.mock("../src/lib/apiClient", () => ({
   authFetch: mocks.authFetch,
   jsonHeaders: { "Content-Type": "application/json" },
   parseResponse: async (response: { json: () => Promise<unknown> }) => response.json(),

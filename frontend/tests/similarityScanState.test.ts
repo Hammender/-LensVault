@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chooseRecoveredScan, findScanForScope, scanScopeKey } from "../src/similarityScanState";
+import { chooseRecoveredScan, findScanForScope, scanScopeKey } from "../src/lib/similarityScanState";
 import type { GallerySimilarityScan } from "../src/types";
 
 function scan(

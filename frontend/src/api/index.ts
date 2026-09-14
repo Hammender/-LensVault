@@ -7,11 +7,14 @@ export * from "./subtitles";
 export * from "./statistics";
 export * from "./acquisition";
 export {
+  AUTH_EXPIRED_EVENT,
+  AuthExpiredError,
   clearAuthToken,
   clearSelectedWorkspaceId,
   getAuthToken,
   getSelectedWorkspaceId,
   setAuthToken,
   setSelectedWorkspaceId
-} from "../apiClient";
-export type { GalleryExportScope, GalleryUploadMetadata, WorkspacePermissionsPayload } from "../api";
+} from "../lib/apiClient";
+export type { GalleryExportOptions, GalleryExportScope, GalleryUploadMetadata } from "./gallery";
+export type { WorkspacePermissionsPayload } from "./workspace";

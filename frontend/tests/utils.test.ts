@@ -12,7 +12,7 @@ import {
   toShanghaiDateTimeLocalValue,
   toShanghaiDateTimeOffset,
   toWorkspacePermissions
-} from "../src/utils";
+} from "../src/lib/utils";
 
 describe("frontend utilities", () => {
   it("formats byte and duration values", () => {

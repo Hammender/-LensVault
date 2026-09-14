@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Maximize2, Minimize2, Pause, Play, Trash2, Volume1, Volume2, VolumeX } from "lucide-react";
 
-import { acquisitionDownloadUrl } from "./api/acquisition";
-import { getAcquisitionLightboxShortcut } from "./acquisitionReview";
+import { acquisitionDownloadUrl } from "../api/acquisition";
+import { getAcquisitionLightboxShortcut } from "../lib/acquisitionReview";
 import PhotoLightbox from "./PhotoLightbox";
-import type { AcquisitionAsset } from "./types";
-import { formatBytes, formatDate, formatDurationSeconds } from "./utils";
+import type { AcquisitionAsset } from "../types";
+import { formatBytes, formatDate, formatDurationSeconds } from "../lib/utils";
 import "./AcquisitionReviewLightbox.css";
 
 function formatClock(seconds: number): string {

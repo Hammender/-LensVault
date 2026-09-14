@@ -1,5 +1,5 @@
 import type { SubtitleJob, SubtitleServiceLogs, SubtitleServiceStatus } from "../types";
-import { authFetch, parseResponse } from "../apiClient";
+import { authFetch, parseResponse } from "../lib/apiClient";
 
 export async function getSubtitleServiceStatus(): Promise<SubtitleServiceStatus> {
   return parseResponse<SubtitleServiceStatus>(await authFetch("/api/subtitle-service/status"));

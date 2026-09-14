@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import "./Statistics.css";
-import { compareByPinyin } from "./sort";
+import { compareByPinyin } from "../lib/sort";
 import {
   getImageIntakeHistory,
   getPersonStatistics,
   getStatisticsOverview,
   getTagStatistics
-} from "./api/index";
+} from "../api";
 import type {
   ImageIntakeActivity,
   PersonStatistics,
   StatisticsOverview,
   TagStatistics
-} from "./types";
-import { formatCompactDate } from "./utils";
+} from "../types";
+import { formatCompactDate } from "../lib/utils";
 
 type TagFilter = "all" | "system" | "custom";
 type PersonFilter = "all" | "known" | "unknown";

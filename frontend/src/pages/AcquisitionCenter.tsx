@@ -40,7 +40,7 @@ import {
   updateAcquisitionSource,
   verifyTelegramLogin,
   logoutTelegramAccount
-} from "./api/acquisition";
+} from "../api/acquisition";
 import {
   acquisitionAssetPageSize,
   clampAcquisitionOffset,
@@ -53,15 +53,15 @@ import {
   isAcquisitionImportBatchActive,
   removeAcquisitionSelection,
   toggleAcquisitionSelection
-} from "./acquisitionReview";
+} from "../lib/acquisitionReview";
 import {
   defaultAcquisitionRunParameters,
   getAcquisitionRunFormConfiguration,
   serializeAcquisitionRunParameters
-} from "./acquisitionRunForm";
-import { useConfirm } from "./ConfirmDialog";
-import AcquisitionReviewLightbox from "./AcquisitionReviewLightbox";
-import PhotoLightbox from "./PhotoLightbox";
+} from "../lib/acquisitionRunForm";
+import { useConfirm } from "../components/ConfirmDialog";
+import AcquisitionReviewLightbox from "../components/AcquisitionReviewLightbox";
+import PhotoLightbox from "../components/PhotoLightbox";
 import type {
   AcquisitionAsset,
   AcquisitionAssetSummary,
@@ -74,9 +74,9 @@ import type {
   AcquisitionSimilarityResult,
   AcquisitionSource,
   PaginatedAcquisitionAssets
-} from "./types";
-import type { TelegramAccount, TelegramDialog, TelegramForumScan, TelegramTopic } from "./types/telegram";
-import { formatBytes, formatDate, formatDurationSeconds, toShanghaiDateTimeBoundary } from "./utils";
+} from "../types";
+import type { TelegramAccount, TelegramDialog, TelegramForumScan, TelegramTopic } from "../types/telegram";
+import { formatBytes, formatDate, formatDurationSeconds, toShanghaiDateTimeBoundary } from "../lib/utils";
 import "./AcquisitionCenter.css";
 
 type Tab = "sources" | "runs" | "review" | "history";

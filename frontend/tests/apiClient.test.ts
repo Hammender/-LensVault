@@ -1,19 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AUTH_EXPIRED_EVENT,
+  AuthExpiredError,
   authFetch,
   decorateMediaUrls,
+  formatApiErrorDetail,
   getAuthToken,
   getSelectedWorkspaceId,
   parseResponse,
   setAuthToken,
   setSelectedWorkspaceId,
   withWorkspaceContext
-} from "../src/apiClient";
+} from "../src/lib/apiClient";
 
 function installWindow() {
   const values = new Map<string, string>();
   const fetch = vi.fn();
+  const listeners = new Map<string, Set<EventListener>>();
   Object.assign(globalThis, {
     window: {
       location: { origin: "http://localhost:5173" },
@@ -21,6 +25,18 @@ function installWindow() {
         getItem: (key: string) => values.get(key) ?? null,
         setItem: (key: string, value: string) => values.set(key, value),
         removeItem: (key: string) => values.delete(key)
+      },
+      addEventListener: (type: string, listener: EventListener) => {
+        const set = listeners.get(type) ?? new Set();
+        set.add(listener);
+        listeners.set(type, set);
+      },
+      removeEventListener: (type: string, listener: EventListener) => {
+        listeners.get(type)?.delete(listener);
+      },
+      dispatchEvent: (event: Event) => {
+        listeners.get(event.type)?.forEach((listener) => listener(event));
+        return true;
       },
       fetch
     }
@@ -57,5 +73,22 @@ describe("shared API client", () => {
     await expect(parseResponse(response)).rejects.toThrow("权限不足");
     const success = new Response(JSON.stringify({ original_url: "/api/media/2" }), { status: 200 });
     expect(await parseResponse(success)).toMatchObject({ original_url: "/api/media/2?workspace_id=7" });
+  });
+
+  it("joins FastAPI validation detail arrays", () => {
+    expect(formatApiErrorDetail(JSON.stringify({ detail: [{ msg: "标题不能为空" }, { msg: "文件过大" }] }))).toBe(
+      "标题不能为空；文件过大"
+    );
+  });
+
+  it("clears the token and notifies on 401", async () => {
+    installWindow();
+    setAuthToken("token");
+    const expired = vi.fn();
+    window.addEventListener(AUTH_EXPIRED_EVENT, expired);
+    const response = new Response(JSON.stringify({ detail: "登录已过期，请重新登录" }), { status: 401 });
+    await expect(parseResponse(response)).rejects.toBeInstanceOf(AuthExpiredError);
+    expect(getAuthToken()).toBeNull();
+    expect(expired).toHaveBeenCalledTimes(1);
   });
 });

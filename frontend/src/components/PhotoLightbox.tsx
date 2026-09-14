@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from "react";
 
-import { isTextEditingTarget } from "./utils";
+import { isTextEditingTarget } from "../lib/utils";
 
 type PhotoLightboxProps = {
   children: ReactNode;

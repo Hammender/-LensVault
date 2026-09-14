@@ -8,6 +8,12 @@ export type SelectablePerson = {
   is_unknown: boolean;
 };
 
+export const systemUnknownPersonName = "未知人物";
+
+export function isSystemUnknownPerson(person: { is_unknown?: boolean; display_name?: string } | null | undefined): boolean {
+  return Boolean(person?.is_unknown && person.display_name === systemUnknownPersonName);
+}
+
 type AssignedPerson = {
   person_id: number;
 };

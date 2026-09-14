@@ -5,7 +5,7 @@ import {
   normalizeVideoQueueItem,
   saveStoredVideoUploadQueue,
   videoUploadQueueReducer
-} from "../src/videoUploadQueue";
+} from "../src/lib/videoUploadQueue";
 
 function storage(): Storage {
   const values = new Map<string, string>();

@@ -1,4 +1,4 @@
-import type { GallerySimilarityScan } from "./types";
+import type { GallerySimilarityScan } from "../types";
 
 export function scanScopeKey(personId: number | null, includeCrossType: boolean, scanType: "normal" | "mirror" = "normal"): string {
   return `${personId ?? "all"}:${includeCrossType ? "cross" : "separate"}:${scanType}`;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pageFromHash } from "../src/routing";
+import { pageFromHash } from "../src/lib/routing";
 
 describe("pageFromHash", () => {
   it.each([

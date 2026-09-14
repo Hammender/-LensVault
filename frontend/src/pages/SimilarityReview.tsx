@@ -10,13 +10,13 @@ import {
   listGallerySimilarityGroups,
   previewNormalNearDuplicateAutoDelete,
   updateGallerySimilarityGroup
-} from "./api";
-import PhotoLightbox from "./PhotoLightbox";
-import { useConfirm } from "./ConfirmDialog";
-import SearchableSelect from "./SearchableSelect";
-import { filterPersonMatches, matchesPersonSearch } from "./personPicker";
-import { chooseRecoveredScan, findScanForScope } from "./similarityScanState";
-import { findPreviewAfterCurrentDelete, getSimilarityLightboxShortcut } from "./similarityReviewKeyboard";
+} from "../api";
+import PhotoLightbox from "../components/PhotoLightbox";
+import { useConfirm } from "../components/ConfirmDialog";
+import SearchableSelect from "../components/SearchableSelect";
+import { filterPersonMatches, matchesPersonSearch } from "../lib/personPicker";
+import { chooseRecoveredScan, findScanForScope } from "../lib/similarityScanState";
+import { findPreviewAfterCurrentDelete, getSimilarityLightboxShortcut } from "../lib/similarityReviewKeyboard";
 import type {
   GallerySimilarityAutoDeletePreview,
   GallerySimilarityAutoDeletePreviewCluster,
@@ -26,8 +26,8 @@ import type {
   GallerySimilarityMember,
   GallerySimilarityScan,
   Person
-} from "./types";
-import { formatBytes, formatDate, withImageWidth } from "./utils";
+} from "../types";
+import { formatBytes, formatDate, withImageWidth } from "../lib/utils";
 
 type SimilarityReviewProps = {
   persons: Person[];

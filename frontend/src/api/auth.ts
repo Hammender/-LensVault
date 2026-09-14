@@ -1,5 +1,5 @@
 import type { AuthSession, BootstrapStatus } from "../types";
-import { authFetch, jsonHeaders, parseResponse as parse } from "../apiClient";
+import { authFetch, jsonHeaders, parseResponse as parse } from "../lib/apiClient";
 
 export async function getBootstrapStatus(): Promise<BootstrapStatus> {
   return parse<BootstrapStatus>(await authFetch("/api/auth/bootstrap-status"));

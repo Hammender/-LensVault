@@ -1,5 +1,5 @@
 import type { Person, SamplePhoto, Tag, Task } from "../types";
-import { authFetch, jsonHeaders, parseResponse, withWorkspaceContext } from "../apiClient";
+import { authFetch, jsonHeaders, parseBlobResponse, parseResponse } from "../lib/apiClient";
 
 export async function listPersons(isUnknown?: boolean): Promise<Person[]> {
   const url = new URL("/api/persons", window.location.origin);
@@ -107,8 +107,12 @@ export async function createTag(name: string): Promise<Tag> {
   );
 }
 
-export function getPersonExportUrl(): string {
-  return withWorkspaceContext("/api/persons/export");
+export async function downloadPersonExport(): Promise<{ blob: Blob; filename: string }> {
+  return parseBlobResponse(
+    await authFetch("/api/persons/export"),
+    "person_samples.zip",
+    "导出样本库失败。"
+  );
 }
 
 export async function importPersonSamples(file: File): Promise<Task> {

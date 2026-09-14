@@ -1,5 +1,5 @@
-import type { WorkspacePermissionsPayload } from "../api/index";
-import { workspacePermissionFields } from "../utils";
+import type { WorkspacePermissionsPayload } from "../types";
+import { workspacePermissionFields } from "../lib/utils";
 
 type PermissionEditorProps = {
   value: WorkspacePermissionsPayload;
