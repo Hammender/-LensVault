@@ -1,6 +1,7 @@
 import { Clapperboard, ImagePlus, UploadCloud } from "lucide-react";
 
 import UploadPersonPicker from "../components/UploadPersonPicker";
+import VideoUploadModal from "../components/VideoUploadModal";
 import type { UploadModel } from "../hooks/useUpload";
 import type { VideosModel } from "../hooks/useVideos";
 import { mergePersonIds } from "../lib/personPicker";
@@ -74,6 +75,7 @@ export default function UploadPage({ upload, videos }: { upload: UploadModel; vi
     }
 
   return (
+    <>
         <main className="page-grid upload-page">
           <section className="panel upload-main">
             <div className="section-head">
@@ -278,5 +280,7 @@ export default function UploadPage({ upload, videos }: { upload: UploadModel; vi
             </div>
           </aside>
         </main>
+        <VideoUploadModal model={videos} />
+    </>
   );
 }
