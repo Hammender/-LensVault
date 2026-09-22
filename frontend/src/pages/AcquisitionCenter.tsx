@@ -1122,12 +1122,17 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
     void goToAssetOffset((pageNumber - 1) * acquisitionAssetPageSize);
   }
 
-  async function selectLightboxSnapshotAsset(snapshotIds: string[], index: number): Promise<boolean> {
+  async function selectLightboxSnapshotAsset(
+    snapshotIds: string[],
+    index: number,
+    expectedGeneration?: number
+  ): Promise<boolean> {
     const assetId = snapshotIds[index];
     if (!assetId || unavailableLightboxAssetIdsRef.current.has(assetId)) return false;
     try {
       const asset = lightboxAssetCacheRef.current.get(assetId) ?? await getAcquisitionAsset(assetId);
       if (!asset.original_url) throw new Error("该素材已不可预览");
+      if (expectedGeneration !== undefined && lightboxSnapshotRequestIdRef.current !== expectedGeneration) return false;
       lightboxAssetCacheRef.current.set(asset.id, asset);
       setLightboxSelection({ asset, globalIndex: index });
       setLightboxSnapshotIndex(index);
@@ -1165,7 +1170,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
 
   async function rejectLightboxAsset() {
     if (!lightboxAsset || !canDelete || lightboxRejectPendingRef.current) return;
-    lightboxRejectPendingRef.current = true;
     try {
       const confirmed = await confirm({
         title: "丢弃这项采集素材？",
@@ -1174,10 +1178,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         tone: "danger",
         backdrop: "transparent"
       });
-      if (!confirmed) return;
+      if (!confirmed || lightboxRejectPendingRef.current) return;
 
       const rejectedId = lightboxAsset.id;
       const rejectedSnapshotIndex = lightboxSnapshotIndex;
+      const closeGeneration = lightboxSnapshotRequestIdRef.current;
+      lightboxRejectPendingRef.current = true;
       setAssetActionBusy(true);
       setNotice(null);
       await changeAcquisitionAssets("reject", [rejectedId]);
@@ -1191,14 +1197,15 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
         return { ...current, status_counts: statusCounts };
       });
       reviewReconcileNeededRef.current = true;
+      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
       const nextSnapshotIds = lightboxSnapshotIds.filter((assetId) => assetId !== rejectedId);
       lightboxAssetCacheRef.current.delete(rejectedId);
       unavailableLightboxAssetIdsRef.current.delete(rejectedId);
       setLightboxSnapshotIds(nextSnapshotIds);
       const nextIndex = Math.min(rejectedSnapshotIndex, nextSnapshotIds.length - 1);
-      if (nextIndex < 0 || !(await selectLightboxSnapshotAsset(nextSnapshotIds, nextIndex))) {
-        setLightboxSelection(null);
-      }
+      const opened = nextIndex >= 0 && (await selectLightboxSnapshotAsset(nextSnapshotIds, nextIndex, closeGeneration));
+      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
+      if (!opened) setLightboxSelection(null);
       setNotice("素材已丢弃，临时文件已清除");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "素材丢弃失败");
@@ -1209,7 +1216,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete }: Acquis
   }
 
   function closeReviewLightbox() {
-    if (lightboxRejectPendingRef.current) return;
     lightboxSnapshotRequestIdRef.current += 1;
     setLightboxSelection(null);
     setLightboxSnapshotIds([]);

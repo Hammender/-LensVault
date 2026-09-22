@@ -23,6 +23,8 @@
 | `restore_legacy_auto_bindings.py` | 按迁移前快照恢复指定图片的旧自动人物绑定。 | 写 SQLite；使用前必须有备份 |
 | `reconcile_gallery_person_tags.py` | 按迁移前标签和当前 AdaFace 人脸结果，对全图库人物标签分类重整。 | 预演只写报告，`--apply` 写 SQLite |
 | `verify_gallery_tag_reconcile.py` | 核验标签重整计划与当前数据库逐图一致性，并检查临时调试人物是否绑定人脸。 | 否 |
+| `summarize_gallery_rerecognition.py` | 按迁移冻结快照汇总新人脸模型对全图库的重构效果。 | 否 |
+| `cleanup_debug2_spurious_jenny.py` | 清理临时调试人物2队列中新模型误加的金珍妮-Jenny 标签和对应人脸。 | 预演只写报告，`--apply` 写 SQLite |
 
 ## 通用、数据库和资源工具
 

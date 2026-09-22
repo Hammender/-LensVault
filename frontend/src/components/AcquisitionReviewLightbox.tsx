@@ -3,6 +3,7 @@ import { Check, Maximize2, Minimize2, Pause, Play, Trash2, Volume1, Volume2, Vol
 
 import { acquisitionDownloadUrl } from "../api/acquisition";
 import { getAcquisitionLightboxShortcut } from "../lib/acquisitionReview";
+import { releaseHtmlVideo } from "../lib/htmlVideo";
 import PhotoLightbox from "./PhotoLightbox";
 import type { AcquisitionAsset } from "../types";
 import { formatBytes, formatDate, formatDurationSeconds } from "../lib/utils";
@@ -86,12 +87,30 @@ export default function AcquisitionReviewLightbox({
   }, [asset.id, asset.duration_seconds]);
 
   useEffect(() => {
-    if (!isVideo || !videoRef.current) return;
-    videoRef.current.currentTime = 0;
-    videoRef.current.playbackRate = playbackRate;
-    videoRef.current.volume = volume;
-    videoRef.current.muted = isMuted;
-    videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    const video = videoRef.current;
+    if (!isVideo || !video) return undefined;
+    let cancelled = false;
+    let started = false;
+    const tryPlay = () => {
+      if (cancelled || started) return;
+      started = true;
+      video.playbackRate = playbackRate;
+      video.volume = volume;
+      video.muted = isMuted;
+      void video.play().then(() => {
+        if (!cancelled) setIsPlaying(true);
+      }).catch(() => {
+        if (!cancelled) setIsPlaying(false);
+      });
+    };
+    video.addEventListener("loadeddata", tryPlay);
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) tryPlay();
+    return () => {
+      cancelled = true;
+      video.removeEventListener("loadeddata", tryPlay);
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+      releaseHtmlVideo(video);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asset.id, isVideo]);
 
@@ -128,6 +147,12 @@ export default function AcquisitionReviewLightbox({
       showIndicator("暂停");
     }
   }, [showIndicator]);
+
+  const handleReject = useCallback(() => {
+    videoRef.current?.pause();
+    setIsPlaying(false);
+    onReject();
+  }, [onReject]);
 
   const toggleMute = useCallback(() => {
     if (!videoRef.current) return;
@@ -176,6 +201,7 @@ export default function AcquisitionReviewLightbox({
       }}
     >
       <video
+        key={asset.id}
         ref={videoRef}
         src={acquisitionDownloadUrl(asset.original_url)}
         poster={asset.preview_url ?? undefined}
@@ -191,6 +217,10 @@ export default function AcquisitionReviewLightbox({
           revealControls();
         }}
         onPause={() => {
+          setIsPlaying(false);
+          setShowControls(true);
+        }}
+        onEnded={() => {
           setIsPlaying(false);
           setShowControls(true);
         }}
@@ -361,7 +391,7 @@ export default function AcquisitionReviewLightbox({
           onToggleSelect();
         } else if (shortcut === "reject" && canDelete) {
           event.preventDefault();
-          onReject();
+          handleReject();
         }
       }}
       meta={
@@ -403,7 +433,7 @@ export default function AcquisitionReviewLightbox({
               <Check size={17} /> {selected ? "取消选择" : "选中当前"}
             </button>
             {canDelete && (
-              <button type="button" className="danger-command" onClick={onReject} disabled={busy}>
+              <button type="button" className="danger-command" onClick={handleReject} disabled={busy}>
                 <Trash2 size={17} /> 丢弃当前
               </button>
             )}
