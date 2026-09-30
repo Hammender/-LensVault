@@ -1,5 +1,23 @@
 [
   {
+    "path": "/api/acquisition/telegram/dialogs",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/telegram/dialogs/{peer_id}/topics",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/telegram/topics",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/acquisition/telegram/account",
     "methods": [
       "GET"
@@ -7,6 +25,18 @@
   },
   {
     "path": "/api/acquisition/telegram/account/login/start",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/telegram/account/login/resend",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/telegram/account/login/cancel",
     "methods": [
       "POST"
     ]
@@ -237,6 +267,78 @@
     "path": "/api/acquisition/exports/{job_id}/download",
     "methods": [
       "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/{key}/versions/{version}/prepare",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/{key}/versions/{version}/activate",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/{key}/versions/{version}/disable",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/{key}/versions/{version}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/{key}/guide",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/{key}/preview",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/{key}/credentials",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/{key}/credentials",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/credentials/{credential_id}/test",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/plugins/credentials/{credential_id}",
+    "methods": [
+      "DELETE"
     ]
   },
   {

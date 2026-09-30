@@ -97,6 +97,7 @@ class PaginatedAcquisitionCategories(BaseModel):
 
 class AcquisitionRunCreate(BaseModel):
     script_key: str = Field(min_length=1, max_length=128)
+    credential_id: int | None = None
     mode: Literal["incremental", "full", "verify"] = "incremental"
     parameters: dict[str, object] = Field(default_factory=dict)
 
@@ -106,6 +107,7 @@ class AcquisitionRunRead(BaseModel):
     source_id: int
     category_id: int
     script_key: str | None
+    credential_id: int | None = None
     script_name: str
     script_version: str
     source_name: str
@@ -171,6 +173,8 @@ class AcquisitionScriptRead(BaseModel):
     page_format_key: str
     description: str
     parameters: list[AcquisitionScriptParameterRead] = Field(default_factory=list)
+    credentials: list[dict[str, object]] = Field(default_factory=list)
+    is_plugin: bool = False
 
 
 class AcquisitionSourceScriptBind(BaseModel):

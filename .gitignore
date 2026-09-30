@@ -16,3 +16,12 @@ newweb
 alembic.ini
 alembic/
 data/
+face-eval/
+acquisition-plugin-packages/
+
+# 保留本次采集插件结构迁移，旧版 Alembic 文件仍遵循现有忽略规则。
+!backend/alembic/
+backend/alembic/*
+!backend/alembic/versions/
+backend/alembic/versions/*
+!backend/alembic/versions/20260926_19a44fe179ff_新增采集插件版本与账号配置.py

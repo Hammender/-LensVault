@@ -55,6 +55,11 @@ class RemoteItem:
     referer_url: str | None = None
     abort_on_access_block: bool = False
     media_type: Literal["image", "video"] = "image"
+    plugin_data: dict[str, object] | None = None
+    caption: str | None = None
+    hashtags: tuple[str, ...] = ()
+    published_at: str | None = None
+    channel_title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,11 +146,6 @@ class ScriptDefinition:
             if parameter.type == "select" and str(value) not in {option[0] for option in parameter.options}:
                 raise ValueError(f"参数“{parameter.label}”的选项无效")
             result[parameter.key] = value
-        if self.key == "shfwzwz-raindrop-page":
-            if "max_pages" in result:
-                if any(key in raw for key in ("start_page", "end_page")):
-                    raise ValueError("旧参数 max_pages 不能与起止页同时使用")
-                result = {"start_page": 1, "end_page": int(result["max_pages"])}
         if any(parameter.key == "start_page" for parameter in self.parameters):
             start_page = int(result.get("start_page", 1))
             end_page = result.get("end_page")

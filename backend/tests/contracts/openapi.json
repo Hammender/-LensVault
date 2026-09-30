@@ -246,11 +246,28 @@
       },
       "AcquisitionAssetSummary": {
         "properties": {
+          "media_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Media Counts",
+            "type": "object"
+          },
           "status_counts": {
             "additionalProperties": {
               "type": "integer"
             },
             "title": "Status Counts",
+            "type": "object"
+          },
+          "status_media_counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "title": "Status Media Counts",
             "type": "object"
           },
           "total": {
@@ -289,6 +306,78 @@
               }
             ],
             "title": "Notes"
+          },
+          "telegram_entity_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "channel",
+                  "group",
+                  "bot"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Entity Type"
+          },
+          "telegram_peer_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Peer Id"
+          },
+          "telegram_source_mode": {
+            "default": "manual",
+            "enum": [
+              "manual",
+              "dialog"
+            ],
+            "title": "Telegram Source Mode",
+            "type": "string"
+          },
+          "telegram_topic_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Topic Id"
+          },
+          "telegram_topic_title": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Topic Title"
+          },
+          "telegram_username": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Username"
           }
         },
         "required": [
@@ -335,6 +424,66 @@
           "source_id": {
             "title": "Source Id",
             "type": "integer"
+          },
+          "telegram_entity_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Entity Type"
+          },
+          "telegram_peer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Peer Id"
+          },
+          "telegram_source_mode": {
+            "default": "manual",
+            "title": "Telegram Source Mode",
+            "type": "string"
+          },
+          "telegram_topic_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Topic Id"
+          },
+          "telegram_topic_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Topic Title"
+          },
+          "telegram_username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Username"
           },
           "updated_at": {
             "format": "date-time",
@@ -405,6 +554,84 @@
               }
             ],
             "title": "Notes"
+          },
+          "telegram_entity_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "channel",
+                  "group",
+                  "bot"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Entity Type"
+          },
+          "telegram_peer_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Peer Id"
+          },
+          "telegram_source_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "manual",
+                  "dialog"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Source Mode"
+          },
+          "telegram_topic_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Topic Id"
+          },
+          "telegram_topic_title": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Topic Title"
+          },
+          "telegram_username": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Username"
           }
         },
         "title": "AcquisitionCategoryUpdate",
@@ -836,6 +1063,16 @@
             "title": "Failed Count",
             "type": "integer"
           },
+          "has_image": {
+            "default": false,
+            "title": "Has Image",
+            "type": "boolean"
+          },
+          "has_video": {
+            "default": false,
+            "title": "Has Video",
+            "type": "boolean"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -934,6 +1171,17 @@
       },
       "AcquisitionRunCreate": {
         "properties": {
+          "credential_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Id"
+          },
           "mode": {
             "default": "incremental",
             "enum": [
@@ -1000,6 +1248,17 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "credential_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Id"
           },
           "download_success_count": {
             "title": "Download Success Count",
@@ -1300,9 +1559,22 @@
       },
       "AcquisitionScriptRead": {
         "properties": {
+          "credentials": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Credentials",
+            "type": "array"
+          },
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "is_plugin": {
+            "default": false,
+            "title": "Is Plugin",
+            "type": "boolean"
           },
           "key": {
             "title": "Key",
@@ -1539,10 +1811,17 @@
       "AcquisitionSourceCreate": {
         "properties": {
           "base_url": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Base Url",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
           },
           "name": {
             "maxLength": 128,
@@ -1561,11 +1840,23 @@
               }
             ],
             "title": "Notes"
+          },
+          "script_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Script Key"
           }
         },
         "required": [
-          "name",
-          "base_url"
+          "name"
         ],
         "title": "AcquisitionSourceCreate",
         "type": "object"
@@ -2025,6 +2316,20 @@
         "title": "Body_update_video_person_api_video_people__person_id__patch",
         "type": "object"
       },
+      "Body_upload_plugin_api_acquisition_plugins_post": {
+        "properties": {
+          "file": {
+            "format": "binary",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_plugin_api_acquisition_plugins_post",
+        "type": "object"
+      },
       "Body_upload_video_part_api_videos_upload_sessions__session_id__parts__part_index__put": {
         "properties": {
           "file": {
@@ -2107,6 +2412,27 @@
           "required"
         ],
         "title": "BootstrapStatus",
+        "type": "object"
+      },
+      "CredentialSave": {
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "values": {
+            "additionalProperties": true,
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "values"
+        ],
+        "title": "CredentialSave",
         "type": "object"
       },
       "FaceRead": {
@@ -4125,6 +4451,42 @@
         "title": "PersonUpdate",
         "type": "object"
       },
+      "PluginPreviewRequest": {
+        "properties": {
+          "category_id": {
+            "title": "Category Id",
+            "type": "integer"
+          },
+          "credential_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Id"
+          },
+          "limit": {
+            "default": 3,
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "title": "Parameters",
+            "type": "object"
+          }
+        },
+        "required": [
+          "category_id"
+        ],
+        "title": "PluginPreviewRequest",
+        "type": "object"
+      },
       "RegisterRequest": {
         "properties": {
           "display_name": {
@@ -4761,6 +5123,28 @@
       },
       "TelegramAccountRead": {
         "properties": {
+          "api_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Id"
+          },
+          "code_delivery": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Delivery"
+          },
           "last_login_at": {
             "anyOf": [
               {
@@ -4840,6 +5224,22 @@
             "title": "Channel Ref",
             "type": "string"
           },
+          "entity_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "channel",
+                  "group",
+                  "bot"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Type"
+          },
           "name": {
             "maxLength": 256,
             "minLength": 1,
@@ -4857,6 +5257,62 @@
               }
             ],
             "title": "Notes"
+          },
+          "peer_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peer Id"
+          },
+          "source_mode": {
+            "default": "manual",
+            "enum": [
+              "manual",
+              "dialog"
+            ],
+            "title": "Source Mode",
+            "type": "string"
+          },
+          "topic_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic Id"
+          },
+          "topic_title": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic Title"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
           }
         },
         "required": [
@@ -4864,6 +5320,102 @@
           "channel_ref"
         ],
         "title": "TelegramChannelCreate",
+        "type": "object"
+      },
+      "TelegramDialogRead": {
+        "properties": {
+          "entity_type": {
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "is_bot": {
+            "default": false,
+            "title": "Is Bot",
+            "type": "boolean"
+          },
+          "is_forum": {
+            "default": false,
+            "title": "Is Forum",
+            "type": "boolean"
+          },
+          "peer_id": {
+            "title": "Peer Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "unread_count": {
+            "default": 0,
+            "title": "Unread Count",
+            "type": "integer"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "peer_id",
+          "title",
+          "entity_type"
+        ],
+        "title": "TelegramDialogRead",
+        "type": "object"
+      },
+      "TelegramForumScanRead": {
+        "properties": {
+          "entity_type": {
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "is_forum": {
+            "title": "Is Forum",
+            "type": "boolean"
+          },
+          "peer_id": {
+            "title": "Peer Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "topics": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TelegramTopicRead"
+            },
+            "title": "Topics",
+            "type": "array"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "is_forum",
+          "peer_id",
+          "title",
+          "entity_type"
+        ],
+        "title": "TelegramForumScanRead",
         "type": "object"
       },
       "TelegramLoginStartRequest": {
@@ -4919,6 +5471,46 @@
           "code"
         ],
         "title": "TelegramLoginVerifyRequest",
+        "type": "object"
+      },
+      "TelegramTopicRead": {
+        "properties": {
+          "closed": {
+            "default": false,
+            "title": "Closed",
+            "type": "boolean"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "topic_id": {
+            "title": "Topic Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "topic_id",
+          "title"
+        ],
+        "title": "TelegramTopicRead",
         "type": "object"
       },
       "UploadHistoryRead": {
@@ -6440,6 +7032,26 @@
           },
           {
             "in": "query",
+            "name": "media_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "image",
+                    "video"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Media Type"
+            }
+          },
+          {
+            "in": "query",
             "name": "offset",
             "required": false,
             "schema": {
@@ -6550,7 +7162,7 @@
         },
         "summary": "List Assets",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -6571,6 +7183,26 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "media_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "image",
+                    "video"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Media Type"
             }
           },
           {
@@ -6676,7 +7308,7 @@
         },
         "summary": "List Asset Ids",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -6782,7 +7414,7 @@
         },
         "summary": "Import Assets",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -6892,7 +7524,7 @@
         },
         "summary": "Reject Assets",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -6988,7 +7620,7 @@
         },
         "summary": "Get Asset Summary",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -7093,7 +7725,7 @@
         },
         "summary": "Get Asset",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -7196,7 +7828,7 @@
         },
         "summary": "Get Asset Original",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -7306,7 +7938,7 @@
         },
         "summary": "Get Asset Preview",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -7422,7 +8054,7 @@
         },
         "summary": "List Categories",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -7541,7 +8173,7 @@
         },
         "summary": "List Category Page",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -7650,7 +8282,7 @@
         },
         "summary": "Delete Category",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       },
       "patch": {
@@ -7763,7 +8395,7 @@
         },
         "summary": "Update Category",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -7878,7 +8510,7 @@
         },
         "summary": "Start Run",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -7978,7 +8610,7 @@
         },
         "summary": "List Exports",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       },
       "post": {
@@ -8082,7 +8714,7 @@
         },
         "summary": "Create Export",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -8185,7 +8817,7 @@
         },
         "summary": "Download Export",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -8368,7 +9000,7 @@
         },
         "summary": "List History",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -8521,7 +9153,7 @@
         },
         "summary": "List Import Batches",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -8626,7 +9258,7 @@
         },
         "summary": "Get Import Batch",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -8798,7 +9430,1287 @@
         },
         "summary": "List Import Batch Items",
         "tags": [
-          "图片采集"
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/plugins": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Plugins",
+        "tags": [
+          "采集插件"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_plugin_api_acquisition_plugins_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Plugin",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/credentials/{credential_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credential_id",
+            "required": true,
+            "schema": {
+              "title": "Credential Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Credential",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/credentials/{credential_id}/test": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credential_id",
+            "required": true,
+            "schema": {
+              "title": "Credential Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Credential",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/{key}/credentials": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Credentials",
+        "tags": [
+          "采集插件"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Credential",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/{key}/guide": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plugin Guide",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/{key}/preview": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Plugin",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/{key}/versions/{version}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Uninstall Plugin",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/{key}/versions/{version}/activate": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Plugin",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/{key}/versions/{version}/disable": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable Plugin",
+        "tags": [
+          "采集插件"
+        ]
+      }
+    },
+    "/api/acquisition/plugins/{key}/versions/{version}/prepare": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Plugin",
+        "tags": [
+          "采集插件"
         ]
       }
     },
@@ -8914,7 +10826,7 @@
         },
         "summary": "List Runs",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -9033,7 +10945,7 @@
         },
         "summary": "List Run Page",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -9138,7 +11050,7 @@
         },
         "summary": "Stop Run",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -9238,7 +11150,7 @@
         },
         "summary": "List Scripts",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -9385,7 +11297,7 @@
         },
         "summary": "List Similarity",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -9498,7 +11410,7 @@
         },
         "summary": "Start Similarity Scan",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -9598,7 +11510,7 @@
         },
         "summary": "List Sources",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       },
       "post": {
@@ -9702,7 +11614,7 @@
         },
         "summary": "Create Source",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -9821,7 +11733,7 @@
         },
         "summary": "List Source Page",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -9930,7 +11842,7 @@
         },
         "summary": "Delete Source",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       },
       "patch": {
@@ -10043,7 +11955,7 @@
         },
         "summary": "Update Source",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -10158,7 +12070,7 @@
         },
         "summary": "Create Category",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -10273,7 +12185,7 @@
         },
         "summary": "Bind Source Script",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -10387,7 +12299,7 @@
         },
         "summary": "Unbind Source Script",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -10502,7 +12414,7 @@
         },
         "summary": "Create Telegram Channel",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -10606,7 +12518,199 @@
         },
         "summary": "Get Telegram Account",
         "tags": [
-          "图片采集"
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/telegram/account/login/cancel": {
+      "post": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramAccountRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Telegram Login",
+        "tags": [
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/telegram/account/login/resend": {
+      "post": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramAccountRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resend Telegram Login",
+        "tags": [
+          "采集"
         ]
       }
     },
@@ -10712,7 +12816,7 @@
         },
         "summary": "Start Telegram Login",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -10818,7 +12922,7 @@
         },
         "summary": "Verify Telegram Login",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -10914,7 +13018,7 @@
         },
         "summary": "Logout Telegram Account",
         "tags": [
-          "图片采集"
+          "采集"
         ]
       }
     },
@@ -11010,7 +13114,323 @@
         },
         "summary": "Test Telegram Account",
         "tags": [
-          "图片采集"
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/telegram/dialogs": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TelegramDialogRead"
+                  },
+                  "title": "Response List Telegram Dialogs Api Acquisition Telegram Dialogs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Telegram Dialogs",
+        "tags": [
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/telegram/dialogs/{peer_id}/topics": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "peer_id",
+            "required": true,
+            "schema": {
+              "title": "Peer Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TelegramTopicRead"
+                  },
+                  "title": "Response List Telegram Topics Api Acquisition Telegram Dialogs  Peer Id  Topics Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Telegram Topics",
+        "tags": [
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/telegram/topics": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "channel_ref",
+            "required": true,
+            "schema": {
+              "maxLength": 2048,
+              "minLength": 1,
+              "title": "Channel Ref",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramForumScanRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scan Telegram Forum Topics",
+        "tags": [
+          "采集"
         ]
       }
     },

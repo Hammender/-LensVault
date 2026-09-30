@@ -58,6 +58,31 @@ CREATE INDEX ix_users_is_active ON users (is_active);
 CREATE INDEX ix_users_is_admin ON users (is_admin);
 CREATE UNIQUE INDEX ix_users_username ON users (username);
 
+-- 表名：acquisition_plugin_versions
+-- 表说明：已上传采集插件的不可变版本及准备状态
+-- 字段说明：
+--   id：主键标识
+--   script_key：插件脚本稳定标识
+--   version：插件版本号
+--   manifest_json：插件清单快照
+--   package_sha256：原始上传包的 SHA256
+--   status：上传、就绪或失败状态
+--   created_at：记录创建时间（上海时区无时区值）
+CREATE TABLE acquisition_plugin_versions (
+	id INTEGER NOT NULL, 
+	script_key VARCHAR(128) NOT NULL, 
+	version VARCHAR(64) NOT NULL, 
+	manifest_json TEXT NOT NULL, 
+	package_sha256 VARCHAR(64) NOT NULL, 
+	status VARCHAR(32) NOT NULL, 
+	created_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_acquisition_plugin_version UNIQUE (script_key, version), 
+	FOREIGN KEY(script_key) REFERENCES acquisition_scripts ("key") ON DELETE CASCADE
+);
+CREATE INDEX ix_acquisition_plugin_versions_script_key ON acquisition_plugin_versions (script_key);
+CREATE INDEX ix_acquisition_plugin_versions_status ON acquisition_plugin_versions (status);
+
 -- 表名：workspaces
 -- 表说明：数据隔离工作区
 -- 字段说明：
@@ -233,6 +258,36 @@ CREATE TABLE acquisition_import_batches (
 CREATE INDEX ix_acquisition_import_batches_created_at ON acquisition_import_batches (created_at);
 CREATE INDEX ix_acquisition_import_batches_status ON acquisition_import_batches (status);
 CREATE INDEX ix_acquisition_import_batches_workspace_id ON acquisition_import_batches (workspace_id);
+
+-- 表名：acquisition_plugin_credentials
+-- 表说明：工作区内按插件隔离的加密登录凭据
+-- 字段说明：
+--   id：主键标识
+--   workspace_id：所属工作区
+--   script_key：所属采集插件
+--   name：账号配置名称
+--   encrypted_json：加密后的插件凭据
+--   status：连接测试状态
+--   last_tested_at：最近测试时间
+--   created_at：记录创建时间（上海时区无时区值）
+--   updated_at：记录最后更新时间（上海时区无时区值）
+CREATE TABLE acquisition_plugin_credentials (
+	id INTEGER NOT NULL, 
+	workspace_id INTEGER NOT NULL, 
+	script_key VARCHAR(128) NOT NULL, 
+	name VARCHAR(128) NOT NULL, 
+	encrypted_json TEXT NOT NULL, 
+	status VARCHAR(32) NOT NULL, 
+	last_tested_at DATETIME, 
+	created_at DATETIME NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_acquisition_plugin_credential UNIQUE (workspace_id, script_key, name), 
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
+	FOREIGN KEY(script_key) REFERENCES acquisition_scripts ("key") ON DELETE CASCADE
+);
+CREATE INDEX ix_acquisition_plugin_credentials_script_key ON acquisition_plugin_credentials (script_key);
+CREATE INDEX ix_acquisition_plugin_credentials_workspace_id ON acquisition_plugin_credentials (workspace_id);
 
 -- 表名：acquisition_sources
 -- 表说明：图片采集站点来源配置
@@ -1248,6 +1303,7 @@ CREATE INDEX ix_video_upload_parts_session_id ON video_upload_parts (session_id)
 --   source_id：关联采集来源标识
 --   category_id：关联采集分类标识
 --   script_key：关联采集脚本唯一键
+--   credential_id：本次采集使用的工作区账号配置
 --   script_name_snapshot：运行时采集脚本名称快照
 --   script_version_snapshot：运行时采集脚本版本快照
 --   source_name_snapshot：运行时采集来源名称快照
@@ -1284,6 +1340,7 @@ CREATE TABLE acquisition_runs (
 	source_id INTEGER NOT NULL, 
 	category_id INTEGER NOT NULL, 
 	script_key VARCHAR(128), 
+	credential_id INTEGER, 
 	script_name_snapshot VARCHAR(128) NOT NULL, 
 	script_version_snapshot VARCHAR(64) NOT NULL, 
 	source_name_snapshot VARCHAR(128) NOT NULL, 
@@ -1318,7 +1375,8 @@ CREATE TABLE acquisition_runs (
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
 	FOREIGN KEY(source_id) REFERENCES acquisition_sources (id) ON DELETE CASCADE, 
 	FOREIGN KEY(category_id) REFERENCES acquisition_categories (id) ON DELETE CASCADE, 
-	FOREIGN KEY(script_key) REFERENCES acquisition_scripts ("key") ON DELETE SET NULL
+	FOREIGN KEY(script_key) REFERENCES acquisition_scripts ("key") ON DELETE SET NULL, 
+	CONSTRAINT fk_acquisition_runs_credential_id FOREIGN KEY(credential_id) REFERENCES acquisition_plugin_credentials (id) ON DELETE SET NULL
 );
 CREATE INDEX ix_acquisition_runs_category_id ON acquisition_runs (category_id);
 CREATE INDEX ix_acquisition_runs_created_at ON acquisition_runs (created_at);
@@ -1339,6 +1397,7 @@ CREATE INDEX ix_acquisition_runs_workspace_id ON acquisition_runs (workspace_id)
 --   source_url：远端条目或图片地址
 --   preview_url：远端预览图片地址
 --   title：标题
+--   metadata_json：来源文案、标签和发布时间的结构化快照
 --   status：采集条目状态：pending、pending_review、gallery_duplicate、imported、rejected、failed 或 ignored_video
 --   last_error：最近一次处理失败原因
 --   last_seen_at：最近一次发现时间
@@ -1355,6 +1414,7 @@ CREATE TABLE acquisition_source_items (
 	source_url VARCHAR(2048) NOT NULL, 
 	preview_url VARCHAR(2048), 
 	title VARCHAR(512), 
+	metadata_json TEXT, 
 	status VARCHAR(32) NOT NULL, 
 	last_error TEXT, 
 	last_seen_at DATETIME NOT NULL, 

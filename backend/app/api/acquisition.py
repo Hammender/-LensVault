@@ -27,6 +27,7 @@ from app.models import (
     AcquisitionRunItem,
     AcquisitionSimilarityCandidate,
     AcquisitionSource,
+    AcquisitionSourceItem,
     AcquisitionSourceScript,
     AcquisitionTelegramHashtag,
     AcquisitionTelegramMessage,
@@ -243,6 +244,22 @@ def _asset_read(
     if telegram_metadata is None and db is not None:
         telegram_metadata = _telegram_metadata_by_asset(db, [asset.id]).get(asset.id)
     telegram, hashtags = telegram_metadata if telegram_metadata else (None, [])
+    source_metadata: dict[str, object] = {}
+    if telegram is None and db is not None:
+        source_item = db.scalar(
+            select(AcquisitionSourceItem)
+            .join(AcquisitionRunItem, AcquisitionRunItem.source_item_id == AcquisitionSourceItem.id)
+            .where(AcquisitionRunItem.asset_id == asset.id)
+            .order_by(AcquisitionRunItem.id.asc())
+            .limit(1)
+        )
+        if source_item and source_item.metadata_json:
+            try:
+                parsed = json.loads(source_item.metadata_json)
+                if isinstance(parsed, dict):
+                    source_metadata = parsed
+            except json.JSONDecodeError:
+                pass
     return AcquisitionAssetRead(
         id=asset.id,
         filename=asset.filename,
@@ -263,11 +280,11 @@ def _asset_read(
         created_at=asset.created_at,
         preview_url=f"/api/acquisition/assets/{asset.id}/preview?v={asset.sha256}" if asset.object_key else None,
         original_url=f"/api/acquisition/assets/{asset.id}/original?v={asset.sha256}" if asset.object_key else None,
-        source_caption=telegram.caption if telegram else None,
-        source_hashtags=hashtags,
-        source_published_at=telegram.published_at if telegram else None,
-        source_message_url=telegram.message_url if telegram else None,
-        source_channel_title=telegram.channel_title if telegram else None,
+        source_caption=telegram.caption if telegram else source_metadata.get("caption"),
+        source_hashtags=hashtags if telegram else source_metadata.get("hashtags") or [],
+        source_published_at=telegram.published_at if telegram else source_metadata.get("published_at"),
+        source_message_url=telegram.message_url if telegram else (source_item.source_url if db is not None and source_item else None),
+        source_channel_title=telegram.channel_title if telegram else source_metadata.get("channel_title"),
     )
 
 
@@ -411,6 +428,7 @@ def _run_read(run: AcquisitionRun) -> AcquisitionRunRead:
         source_id=run.source_id,
         category_id=run.category_id,
         script_key=run.script_key,
+        credential_id=run.credential_id,
         script_name=run.script_name_snapshot,
         script_version=run.script_version_snapshot,
         source_name=run.source_name_snapshot,
@@ -1049,6 +1067,7 @@ def start_run(
             payload.script_key,
             payload.mode,
             payload.parameters,
+            payload.credential_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -43,6 +43,8 @@ export type AcquisitionScript = {
   page_format_key: string;
   description: string;
   parameters: AcquisitionScriptParameter[];
+  credentials?: Array<{ key: string; label: string; required?: boolean; description?: string; secret?: boolean }>;
+  is_plugin?: boolean;
 };
 
 export type AcquisitionCategory = {
@@ -74,6 +76,7 @@ export type AcquisitionRun = {
   source_id: number;
   category_id: number;
   script_key: string | null;
+  credential_id?: number | null;
   script_name: string;
   script_version: string;
   source_name: string;

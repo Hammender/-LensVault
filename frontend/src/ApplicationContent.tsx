@@ -230,7 +230,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
         <SimilarityReview persons={catalog.persons} canEdit={canEditGallery} canDelete={canDeleteGallery} />
       )}
       {page === "acquisition" && (
-        <AcquisitionCenter canEdit={canEditGallery} canAdd={canAddGallery} canDelete={canDeleteGallery} />
+        <AcquisitionCenter canEdit={canEditGallery} canAdd={canAddGallery} canDelete={canDeleteGallery}
+          canAdmin={authSession.user.is_admin} canManageAccounts={authSession.workspace.role === "owner"} />
       )}
       {page === "people" && <PeoplePage model={people} />}
       {page === "upload" && <UploadPage upload={upload} videos={videos} />}

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -105,5 +106,5 @@ def test_face_cleanup_runs_via_alembic_0003(tmp_path) -> None:
         )
         version = connection.scalar(text("SELECT version_num FROM alembic_version"))
     assert marker_count == 1
-    assert version == "0003"
+    assert version == ScriptDirectory.from_config(Config(str(ALEMBIC_CONFIG))).get_current_head()
     engine.dispose()

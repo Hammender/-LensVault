@@ -4,12 +4,14 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
 from app.db import Base
 from app.lifecycle import initialize_database, run_database_migrations
 
 ALEMBIC_CONFIG = Path(__file__).resolve().parents[2] / "alembic.ini"
+ALEMBIC_HEAD = ScriptDirectory.from_config(Config(str(ALEMBIC_CONFIG))).get_current_head()
 
 
 def _table_names(engine) -> set[str]:
@@ -40,12 +42,12 @@ def test_initialize_database_builds_fresh_schema_via_alembic(tmp_path) -> None:
     assert "app_schema_migrations" in tables
 
     with engine.connect() as connection:
-        assert _alembic_version(connection) == "0003"
+        assert _alembic_version(connection) == ALEMBIC_HEAD
 
     # 重复启动幂等
     initialize_database(engine)
     with engine.connect() as connection:
-        assert _alembic_version(connection) == "0003"
+        assert _alembic_version(connection) == ALEMBIC_HEAD
     engine.dispose()
 
 
@@ -65,7 +67,7 @@ def test_initialize_database_stamps_legacy_database_without_schema_fixup(tmp_pat
     assert "legacy_marker" in tables
 
     with engine.connect() as connection:
-        assert _alembic_version(connection) == "0003"
+        assert _alembic_version(connection) == ALEMBIC_HEAD
 
     # 再次启动：已有 alembic_version，走常规升级（no-op）
     outcome2 = run_database_migrations(engine)
@@ -73,14 +75,14 @@ def test_initialize_database_stamps_legacy_database_without_schema_fixup(tmp_pat
     engine.dispose()
 
 
-def test_initialize_database_seeds_acquisition_scripts_on_fresh_database(tmp_path) -> None:
+def test_fresh_database_seeds_only_builtin_telegram(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{(tmp_path / 'seed.db').as_posix()}")
 
     initialize_database(engine)
 
     with engine.connect() as connection:
-        script_count = connection.scalar(text("SELECT COUNT(*) FROM acquisition_scripts"))
-    assert script_count > 0
+        rows = connection.execute(text("SELECT key, name FROM acquisition_scripts ORDER BY key")).all()
+    assert rows == [("telegram-channel-mtproto", "Telegram 频道")]
     engine.dispose()
 
 

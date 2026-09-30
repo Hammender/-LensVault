@@ -9,10 +9,10 @@ import {
 import type { AcquisitionCategory, AcquisitionRun, AcquisitionScript, AcquisitionSource } from "../src/types";
 
 const script: AcquisitionScript = {
-  key: "raindrop",
-  name: "Raindrop",
+  key: "example-gallery",
+  name: "示例图集",
   version: "1",
-  page_format_key: "raindrop-v1",
+  page_format_key: "example-gallery-v1",
   description: "",
   parameters: [
     { key: "max_pages", label: "最大扫描页数", type: "integer", required: false, default: null, description: null, minimum: 1, maximum: null, options: [] },
@@ -22,10 +22,10 @@ const script: AcquisitionScript = {
 };
 
 const pageScript: AcquisitionScript = {
-  key: "shfwzwz-raindrop-page",
-  name: "shfwzwz-raindrop-page",
+  key: "paged-gallery",
+  name: "分页图集",
   version: "1.2.0",
-  page_format_key: "raindrop-public-page-v1",
+  page_format_key: "paged-gallery-v1",
   description: "",
   parameters: [
     { key: "start_page", label: "起始页", type: "integer", required: false, default: 1, description: null, minimum: 1, maximum: 1001, options: [] },
@@ -38,7 +38,7 @@ const source: AcquisitionSource = {
   name: "站点",
   base_url: "https://example.test",
   notes: null,
-  page_format_key: "raindrop-v1",
+  page_format_key: "example-gallery-v1",
   script_keys: [script.key],
   enabled: true,
   created_at: "2026-01-01T00:00:00",
@@ -106,7 +106,7 @@ describe("acquisition run form configuration", () => {
   it("loads the original category, script, mode and parameters when they are still available", () => {
     expect(getAcquisitionRunFormConfiguration(run, [category], [source], [script])).toEqual({
       categoryId: "2",
-      scriptKey: "raindrop",
+      scriptKey: "example-gallery",
       mode: "incremental",
       parameters: { max_pages: "10", include_video: false, order: "newest" }
     });
@@ -116,9 +116,9 @@ describe("acquisition run form configuration", () => {
     expect(getAcquisitionRunFormConfiguration(run, [category], [{ ...source, script_keys: [] }], [script])).toBeNull();
   });
 
-  it("maps the historical max page snapshot to the new inclusive page fields", () => {
-    expect(restoreAcquisitionRunParameters(pageScript, { max_pages: 5 })).toEqual({
-      start_page: "1",
+  it("restores inclusive page fields from the snapshot", () => {
+    expect(restoreAcquisitionRunParameters(pageScript, { start_page: 2, end_page: 5 })).toEqual({
+      start_page: "2",
       end_page: "5"
     });
   });

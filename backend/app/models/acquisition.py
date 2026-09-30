@@ -58,6 +58,34 @@ class AcquisitionScript(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
 
 
+class AcquisitionPluginVersion(Base):
+    __tablename__ = "acquisition_plugin_versions"
+    __table_args__ = (UniqueConstraint("script_key", "version", name="uq_acquisition_plugin_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    script_key: Mapped[str] = mapped_column(ForeignKey("acquisition_scripts.key", ondelete="CASCADE"), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
+    package_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="uploaded", nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+
+
+class AcquisitionPluginCredential(Base):
+    __tablename__ = "acquisition_plugin_credentials"
+    __table_args__ = (UniqueConstraint("workspace_id", "script_key", "name", name="uq_acquisition_plugin_credential"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    script_key: Mapped[str] = mapped_column(ForeignKey("acquisition_scripts.key", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    encrypted_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="untested", nullable=False)
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, onupdate=shanghai_now, nullable=False)
+
+
 class AcquisitionSourceScript(Base):
     __tablename__ = "acquisition_source_scripts"
     __table_args__ = (UniqueConstraint("source_id", "script_key", name="uq_acquisition_source_script"),)
@@ -100,6 +128,7 @@ class AcquisitionRun(Base):
     source_id: Mapped[int] = mapped_column(ForeignKey("acquisition_sources.id", ondelete="CASCADE"), nullable=False, index=True)
     category_id: Mapped[int] = mapped_column(ForeignKey("acquisition_categories.id", ondelete="CASCADE"), nullable=False, index=True)
     script_key: Mapped[str | None] = mapped_column(ForeignKey("acquisition_scripts.key", ondelete="SET NULL"), nullable=True, index=True)
+    credential_id: Mapped[int | None] = mapped_column(ForeignKey("acquisition_plugin_credentials.id", ondelete="SET NULL", name="fk_acquisition_runs_credential_id"), nullable=True)
     script_name_snapshot: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     script_version_snapshot: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     source_name_snapshot: Mapped[str] = mapped_column(String(128), default="", nullable=False)
@@ -145,6 +174,7 @@ class AcquisitionSourceItem(Base):
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     preview_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)

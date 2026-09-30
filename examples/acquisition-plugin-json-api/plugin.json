@@ -1,0 +1,15 @@
+{
+  "protocol_version": 1,
+  "key": "example-json-gallery",
+  "name": "JSON 图集示例",
+  "version": "1.0.0",
+  "page_format_key": "example-json-gallery-v1",
+  "description": "演示读取无需登录的分页 JSON，并交付原始图片或视频文件。",
+  "entrypoint": "plugin.py",
+  "requirements": [],
+  "credentials": [],
+  "parameters": [
+    { "key": "max_pages", "label": "最多采集页数", "type": "integer", "default": 10, "minimum": 1, "maximum": 1000 }
+  ],
+  "max_download_workers": 3
+}

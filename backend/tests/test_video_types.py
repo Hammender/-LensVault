@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+from types import SimpleNamespace
+
+import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
@@ -68,6 +72,9 @@ class _FakeStorage:
     def compose_object(self, target_key: str, source_keys: list[str]) -> None:
         merged = b"".join(self.files[k] for k in source_keys)
         self.files[target_key] = merged
+
+    def copy_object(self, target_key: str, source_key: str) -> None:
+        self.files[target_key] = self.files[source_key]
 
     def get_stream(self, key: str):
         import io
@@ -237,7 +244,7 @@ def test_process_video_preserves_original_sha256_and_updates_size(db_session: Se
     monkeypatch.setattr(service, "_download_object_to_file", lambda key, path: path.write_bytes(raw_bytes))
     monkeypatch.setattr(service, "_probe_video", lambda path: VideoProbeInfo(duration_seconds=5.0, width=1280, height=720, video_codec="h264", audio_codec="aac"))
     monkeypatch.setattr(service, "_estimate_keyframe_interval", lambda path: 1.0)
-    monkeypatch.setattr(service, "_extract_cover", lambda in_p, out_p, dur: None)
+    monkeypatch.setattr(service, "_extract_cover", lambda in_p, out_p, dur: out_p.write_bytes(b"generated-cover"))
 
     transcoded_bytes = b"optimized-playback-bytes-with-smaller-or-different-size"
     def fake_faststart(in_p, out_p):
@@ -253,5 +260,183 @@ def test_process_video_preserves_original_sha256_and_updates_size(db_session: Se
     assert updated.status == "ready"
     assert updated.sha256 == raw_sha  # SHA256 must remain the original uploaded file's SHA256!
     assert updated.size_bytes == len(transcoded_bytes)  # size_bytes must be updated to the transcode output size!
+    assert updated.cover_object_key is not None
+    assert storage.files[updated.cover_object_key] == b"generated-cover"
+
+
+def test_acquisition_video_import_runs_upload_processing(db_session: Session, monkeypatch) -> None:
+    from app.models import AcquisitionAsset, AcquisitionImportBatchItem, Workspace
+    from app.services.acquisition import AcquisitionService
+    from app.services.video_processing import VideoProbeInfo
+    from app.services.videos import VideoService
+
+    workspace = Workspace(name="采集视频入库测试")
+    db_session.add(workspace)
+    db_session.commit()
+    payload = b"acquired-video"
+    sha256 = hashlib.sha256(payload).hexdigest()
+    asset = AcquisitionAsset(
+        id="acquired-video",
+        workspace_id=workspace.id,
+        sha256=sha256,
+        filename="clip.mp4",
+        content_type="video/mp4",
+        object_key="acquisition/clip.mp4",
+        media_type="video",
+        size_bytes=len(payload),
+        status="pending_review",
+        duration_seconds=8.0,
+    )
+    db_session.add(asset)
+    db_session.commit()
+    storage = _FakeStorage()
+    storage.put_bytes(asset.object_key, payload)
+    video_service = VideoService(storage)
+    monkeypatch.setattr(video_service, "_probe_object", lambda *_: VideoProbeInfo(8.0, 1920, 1080, "h264", "aac"))
+    optimized_ids: list[int] = []
+    monkeypatch.setattr(video_service, "optimize_video_faststart", optimized_ids.append)
+    acquisition = AcquisitionService(storage, SimpleNamespace(), similarity_extractor=SimpleNamespace(), video_service=video_service)
+
+    batch = acquisition.create_import_batch(db_session, workspace.id, [asset.id])
+    acquisition.process_import_batch(db_session, batch.id)
+
+    item = db_session.scalar(select(AcquisitionImportBatchItem).where(AcquisitionImportBatchItem.batch_id == batch.id))
+    video = db_session.get(VideoItem, item.video_id)
+    assert item.status == "imported"
+    assert video is not None
+    assert (video.sha256, video.status, video.video_type) == (sha256, "uploaded", "short")
+    assert storage.files[video.object_key] == payload
+    assert asset.object_key is None
+    assert optimized_ids == [video.id]
+
+    failed_payload = b"video-with-optimization-error"
+    failed_asset = AcquisitionAsset(
+        id="failed-optimization", workspace_id=workspace.id,
+        sha256=hashlib.sha256(failed_payload).hexdigest(), filename="failed.mp4",
+        content_type="video/mp4", object_key="acquisition/failed.mp4", media_type="video",
+        size_bytes=len(failed_payload), status="pending_review",
+    )
+    db_session.add(failed_asset)
+    db_session.commit()
+    storage.put_bytes(failed_asset.object_key, failed_payload)
+
+    def fail_optimization(_video_id: int) -> None:
+        raise RuntimeError("模拟优化失败")
+
+    monkeypatch.setattr(video_service, "optimize_video_faststart", fail_optimization)
+    failed_batch = acquisition.create_import_batch(db_session, workspace.id, [failed_asset.id])
+    acquisition.process_import_batch(db_session, failed_batch.id)
+    failed_item = db_session.scalar(select(AcquisitionImportBatchItem).where(AcquisitionImportBatchItem.batch_id == failed_batch.id))
+    db_session.expire_all()
+    failed_video = db_session.get(VideoItem, failed_item.video_id)
+    assert failed_item.status == "imported", failed_item.error_message
+    assert failed_video.status == "processing_failed"
+    assert failed_video.processing_error == "模拟优化失败"
+
+
+def test_acquisition_video_duplicate_does_not_reprocess(db_session: Session, monkeypatch) -> None:
+    from app.models import AcquisitionAsset, AcquisitionImportBatchItem, Workspace
+    from app.services.acquisition import AcquisitionService
+    from app.services.videos import VideoService
+
+    workspace = Workspace(name="采集视频去重测试")
+    db_session.add(workspace)
+    db_session.commit()
+    payload = b"duplicate-video"
+    sha256 = hashlib.sha256(payload).hexdigest()
+    existing = VideoItem(
+        workspace_id=workspace.id, title="已有视频", filename="original.mp4",
+        sha256=sha256, object_key="videos/original.mp4", size_bytes=len(payload), status="ready",
+    )
+    asset = AcquisitionAsset(
+        id="duplicate-video", workspace_id=workspace.id, sha256=sha256, filename="duplicate.mp4",
+        object_key="acquisition/duplicate.mp4", media_type="video", size_bytes=len(payload), status="pending_review",
+    )
+    db_session.add_all([existing, asset])
+    db_session.commit()
+    storage = _FakeStorage()
+    storage.put_bytes(existing.object_key, payload)
+    storage.put_bytes(asset.object_key, payload)
+    video_service = VideoService(storage)
+    optimized_ids: list[int] = []
+    monkeypatch.setattr(video_service, "optimize_video_faststart", optimized_ids.append)
+    acquisition = AcquisitionService(storage, SimpleNamespace(), similarity_extractor=SimpleNamespace(), video_service=video_service)
+
+    batch = acquisition.create_import_batch(db_session, workspace.id, [asset.id])
+    acquisition.process_import_batch(db_session, batch.id)
+
+    item = db_session.scalar(select(AcquisitionImportBatchItem).where(AcquisitionImportBatchItem.batch_id == batch.id))
+    assert (item.status, item.video_id) == ("gallery_duplicate", existing.id)
+    assert optimized_ids == []
+    assert storage.files[existing.object_key] == payload
+
+
+def test_acquisition_video_hash_mismatch_cleans_new_object(db_session: Session) -> None:
+    from app.models import AcquisitionAsset
+    from app.services.videos import VideoService
+
+    payload = b"unexpected-video-content"
+    storage = _FakeStorage()
+    storage.put_bytes("acquisition/unexpected.mp4", payload)
+    asset = AcquisitionAsset(
+        id="unexpected-video", sha256="0" * 64, filename="unexpected.mp4",
+        object_key="acquisition/unexpected.mp4", media_type="video", size_bytes=len(payload), status="pending_review",
+    )
+
+    with pytest.raises(ValueError, match="SHA256"):
+        VideoService(storage).import_acquisition_asset(db_session, asset, None, None)
+
+    assert list(storage.files) == [asset.object_key]
+    assert db_session.scalar(select(VideoItem)) is None
+
+
+def test_regular_upload_uses_shared_video_creation(db_session: Session, monkeypatch) -> None:
+    from app.schemas.videos import VideoUploadCompleteRequest, VideoUploadSessionCreate
+    from app.services.video_processing import VideoProbeInfo
+    from app.services.videos import VideoService
+
+    payload = b"regular-upload-video"
+    storage = _FakeStorage()
+    service = VideoService(storage)
+    monkeypatch.setattr(service, "_probe_object", lambda *_: VideoProbeInfo(12.0, 1280, 720, "h264", "aac"))
+    session = service.create_upload_session(
+        db_session,
+        VideoUploadSessionCreate(title="普通上传", filename="regular.mp4", size_bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest()),
+        workspace_id=None,
+    )
+    service.put_upload_part(db_session, session, 0, payload)
+
+    video = service.complete_upload(db_session, session, VideoUploadCompleteRequest())
+
+    assert (video.title, video.sha256, video.status, video.duration_seconds) == (
+        "普通上传", hashlib.sha256(payload).hexdigest(), "uploaded", 12.0,
+    )
+    assert storage.files[video.object_key] == payload
+
+
+def test_upload_cleanup_failure_keeps_committed_video(db_session: Session, monkeypatch) -> None:
+    from app.schemas.videos import VideoUploadCompleteRequest, VideoUploadSessionCreate
+    from app.services.video_processing import VideoProbeInfo
+    from app.services.videos import VideoService
+
+    payload = b"video-before-cleanup-error"
+    storage = _FakeStorage()
+    service = VideoService(storage)
+    monkeypatch.setattr(service, "_probe_object", lambda *_: VideoProbeInfo(5.0, 640, 480, "h264", "aac"))
+    session = service.create_upload_session(
+        db_session, VideoUploadSessionCreate(title="清理失败测试", filename="cleanup.mp4", size_bytes=len(payload)), None,
+    )
+    service.put_upload_part(db_session, session, 0, payload)
+
+    def fail_cleanup(_keys: list[str]) -> None:
+        raise RuntimeError("模拟暂存分片清理失败")
+
+    monkeypatch.setattr(storage, "remove_objects", fail_cleanup)
+    with pytest.raises(RuntimeError, match="暂存分片清理失败"):
+        service.complete_upload(db_session, session, VideoUploadCompleteRequest())
+
+    video = db_session.scalar(select(VideoItem).where(VideoItem.title == "清理失败测试"))
+    assert video is not None
+    assert storage.files[video.object_key] == payload
 
 

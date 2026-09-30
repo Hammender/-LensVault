@@ -37,6 +37,10 @@ from app.services.video_processing import VideoProbeInfo, VideoTranscodePlan, ex
 logger = logging.getLogger(__name__)
 
 
+class DuplicateVideoError(ValueError):
+    pass
+
+
 class VideoService:
     default_part_size = 16 * 1024 * 1024
     min_part_size = 5 * 1024 * 1024
@@ -120,45 +124,91 @@ class VideoService:
     def import_acquisition_asset(self, db: Session, asset: AcquisitionAsset, workspace_id: int | None, caption: str | None) -> VideoItem:
         if asset.media_type != "video" or not asset.object_key:
             raise ValueError("采集资产不是可导入的视频")
-        self._validate_video_file(asset.filename, self._normalize_upload_content_type(asset.filename, asset.content_type))
         existing = db.scalar(select(VideoItem).where(VideoItem.workspace_id == workspace_id, VideoItem.sha256 == asset.sha256))
         if existing is not None:
             return existing
         object_key = self._build_video_object_key(workspace_id, asset.filename)
-        self.storage.copy_object(object_key, asset.object_key)
-        probe = self._probe_object(object_key, asset.filename)
         normalized_caption = (caption or "").strip()
         title = next((line.strip() for line in normalized_caption.splitlines() if line.strip()), Path(asset.filename).stem)
+        try:
+            self.storage.copy_object(object_key, asset.object_key)
+            video = self._create_video_from_object(
+                db,
+                workspace_id=workspace_id,
+                title=title[:256],
+                description=normalized_caption or None,
+                filename=asset.filename,
+                content_type=asset.content_type,
+                object_key=object_key,
+                size_bytes=asset.size_bytes,
+                expected_sha256=asset.sha256,
+                duration_seconds=asset.duration_seconds,
+                width=asset.width,
+                height=asset.height,
+            )
+            for run_item in db.scalars(select(AcquisitionRunItem).where(AcquisitionRunItem.asset_id == asset.id)).all():
+                run = db.get(AcquisitionRun, run_item.run_id)
+                if run is None:
+                    continue
+                if db.scalar(select(AcquisitionImportedVideo).where(AcquisitionImportedVideo.run_id == run.id, AcquisitionImportedVideo.asset_id == asset.id)) is None:
+                    db.add(AcquisitionImportedVideo(
+                        run_id=run.id, asset_id=asset.id, video_id=video.id, video_id_snapshot=video.id,
+                        filename_snapshot=asset.filename, sha256_snapshot=asset.sha256, category_path_snapshot=run.category_name_snapshot,
+                    ))
+            return video
+        except Exception:
+            self.storage.remove_object(object_key)
+            raise
+
+    def _create_video_from_object(
+        self,
+        db: Session,
+        *,
+        workspace_id: int | None,
+        title: str,
+        description: str | None,
+        filename: str,
+        content_type: str | None,
+        object_key: str,
+        size_bytes: int,
+        expected_sha256: str | None = None,
+        video_type: str | None = None,
+        duration_seconds: float | None = None,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> VideoItem:
+        normalized_content_type = self._normalize_upload_content_type(filename, content_type)
+        self._validate_video_file(filename, normalized_content_type)
+        actual_sha256 = self.hash_object(object_key)
+        if expected_sha256 and actual_sha256 != expected_sha256.lower():
+            raise ValueError("视频 SHA256 校验失败")
+        existing = db.scalar(select(VideoItem).where(VideoItem.workspace_id == workspace_id, VideoItem.sha256 == actual_sha256))
+        if existing is not None:
+            raise DuplicateVideoError(f"已存在内容相同的视频（对应已有视频：《{existing.title}》），请勿重复上传")
+        probe = self._probe_object(object_key, filename)
+        resolved_duration = probe.duration_seconds if probe and probe.duration_seconds is not None else duration_seconds
+        resolved_type = video_type or ("short" if (resolved_duration or 0) <= 300 else "long")
         video = VideoItem(
             workspace_id=workspace_id,
-            title=title[:256],
-            description=normalized_caption or None,
-            filename=asset.filename,
-            content_type=self._normalize_upload_content_type(asset.filename, asset.content_type),
-            sha256=asset.sha256,
+            title=title,
+            description=description,
+            filename=filename,
+            content_type=normalized_content_type,
+            sha256=actual_sha256,
             object_key=object_key,
-            size_bytes=asset.size_bytes,
-            duration_seconds=probe.duration_seconds if probe else asset.duration_seconds,
-            width=probe.width if probe else asset.width,
-            height=probe.height if probe else asset.height,
+            size_bytes=size_bytes,
+            duration_seconds=resolved_duration,
+            width=(probe.width if probe and probe.width is not None else width),
+            height=(probe.height if probe and probe.height is not None else height),
             original_video_codec=probe.video_codec if probe else None,
             original_audio_codec=probe.audio_codec if probe else None,
             video_codec=probe.video_codec if probe else None,
             audio_codec=probe.audio_codec if probe else None,
-            video_type="short" if (probe.duration_seconds if probe else asset.duration_seconds or 0) <= 300 else "long",
             status="uploaded",
+            video_type=resolved_type,
         )
         db.add(video)
         db.flush()
-        for run_item in db.scalars(select(AcquisitionRunItem).where(AcquisitionRunItem.asset_id == asset.id)).all():
-            run = db.get(AcquisitionRun, run_item.run_id)
-            if run is None:
-                continue
-            if db.scalar(select(AcquisitionImportedVideo).where(AcquisitionImportedVideo.run_id == run.id, AcquisitionImportedVideo.asset_id == asset.id)) is None:
-                db.add(AcquisitionImportedVideo(
-                    run_id=run.id, asset_id=asset.id, video_id=video.id, video_id_snapshot=video.id,
-                    filename_snapshot=asset.filename, sha256_snapshot=asset.sha256, category_path_snapshot=run.category_name_snapshot,
-                ))
         return video
 
     def put_upload_part(
@@ -226,6 +276,7 @@ class VideoService:
             raise ValueError("视频分片尚未上传完整")
 
         final_key = self._build_video_object_key(session.workspace_id, session.filename)
+        committed = False
         try:
             logger.info(
                 "视频上传开始合并：session_id=%s workspace_id=%s filename=%s parts=%s object_key=%s",
@@ -240,56 +291,18 @@ class VideoService:
             else:
                 self.storage.compose_object(final_key, [part.object_key for part in parts])
 
-            actual_sha256 = self.hash_object(final_key)
-            if session.sha256 and actual_sha256 != session.sha256:
-                self.storage.remove_object(final_key)
-                raise ValueError("视频 SHA256 校验失败")
-
-            existing_by_sha = db.scalar(
-                select(VideoItem).where(
-                    VideoItem.workspace_id == session.workspace_id,
-                    VideoItem.sha256 == actual_sha256,
-                )
-            )
-            if existing_by_sha is not None:
-                self.storage.remove_object(final_key)
-                temp_keys = [part.object_key for part in parts]
-                for part in parts:
-                    db.delete(part)
-                db.delete(session)
-                db.commit()
-                self.storage.remove_objects(temp_keys)
-                raise ValueError(f"已存在内容相同的视频（对应已有视频：《{existing_by_sha.title}》），请勿重复上传")
-
-            probe_info = self._probe_object(final_key, session.filename)
-            resolved_video_type = payload.video_type
-            if not resolved_video_type:
-                if probe_info and probe_info.duration_seconds is not None:
-                    resolved_video_type = "short" if probe_info.duration_seconds <= 300 else "long"
-                else:
-                    resolved_video_type = "short"
-
-            video = VideoItem(
+            video = self._create_video_from_object(
+                db,
                 workspace_id=session.workspace_id,
                 title=session.title,
                 description=session.description,
                 filename=session.filename,
-                content_type=session.content_type or "video/mp4",
-                sha256=actual_sha256,
+                content_type=session.content_type,
                 object_key=final_key,
                 size_bytes=session.size_bytes,
-                duration_seconds=probe_info.duration_seconds if probe_info else None,
-                width=probe_info.width if probe_info else None,
-                height=probe_info.height if probe_info else None,
-                original_video_codec=probe_info.video_codec if probe_info else None,
-                original_audio_codec=probe_info.audio_codec if probe_info else None,
-                video_codec=probe_info.video_codec if probe_info else None,
-                audio_codec=probe_info.audio_codec if probe_info else None,
-                status="uploaded",
-                video_type=resolved_video_type,
+                expected_sha256=session.sha256,
+                video_type=payload.video_type,
             )
-            db.add(video)
-            db.flush()
             self.replace_video_tags(db, video, payload.category_tag_ids, payload.category_tag_names)
             self.replace_video_people(db, video, payload.person_ids)
             temp_keys = [part.object_key for part in parts]
@@ -297,6 +310,7 @@ class VideoService:
                 db.delete(part)
             db.delete(session)
             db.commit()
+            committed = True
             self.storage.remove_objects(temp_keys)
             db.refresh(video)
             logger.info(
@@ -311,6 +325,16 @@ class VideoService:
                 video.size_bytes,
             )
             return video
+        except DuplicateVideoError:
+            db.rollback()
+            self.storage.remove_object(final_key)
+            temp_keys = [part.object_key for part in parts]
+            for part in parts:
+                db.delete(part)
+            db.delete(session)
+            db.commit()
+            self.storage.remove_objects(temp_keys)
+            raise
         except Exception:
             logger.exception(
                 "视频上传合并失败：session_id=%s workspace_id=%s filename=%s object_key=%s",
@@ -320,6 +344,8 @@ class VideoService:
                 final_key,
             )
             db.rollback()
+            if not committed:
+                self.storage.remove_object(final_key)
             raise
 
     def process_video_for_playback(self, video_id: int) -> None:

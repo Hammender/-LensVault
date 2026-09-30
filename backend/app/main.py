@@ -10,6 +10,7 @@ from app.application import create_app
 from app.api import videos as videos_api
 from app.api._helpers import get_workspace_object as _get_workspace_object
 from app.api.acquisition import router as acquisition_router
+from app.api.acquisition_plugins import router as acquisition_plugins_router
 from app.api.gallery import (
     imports_router as gallery_imports_router,
     list_gallery_similarity_groups,
@@ -62,6 +63,7 @@ app = create_app(
     logger=logger,
 )
 app.include_router(acquisition_router)
+app.include_router(acquisition_plugins_router)
 app.include_router(system_router)
 app.include_router(workspaces_router)
 app.include_router(people_router)

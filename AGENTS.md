@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-`backend/` 包含 FastAPI 后端服务。主要 API 路由位于 `backend/app/main.py`，配置位于 `backend/app/core/config.py`，数据库初始化位于 `backend/app/db.py`，领域逻辑位于 `backend/app/services/`。数据库结构迁移由 Alembic 管理：根目录 `alembic.ini` 为配置入口，迁移脚本位于 `backend/alembic/versions/`（基线 `0001`，结构对齐 `0002`，数据迁移 `0003`），迁移环境 `backend/alembic/env.py`，迁移脚本生成工具 `backend/app/tools/generate_migration.py`。`frontend/` 包含 Vite + React 前端，入口文件为 `frontend/src/main.tsx` 和 `frontend/src/App.tsx`。前端通用请求与类型定义位于 `frontend/src/api.ts` 和 `frontend/src/types.ts`。运行时数据位于 `data/`；`data/app.db` 属于本地状态，不是源代码。
+`backend/` 包含 FastAPI 后端服务。主要 API 路由位于 `backend/app/main.py`，配置位于 `backend/app/core/config.py`，数据库初始化位于 `backend/app/db.py`，领域逻辑位于 `backend/app/services/`。数据库结构迁移由 Alembic 管理：根目录 `alembic.ini` 为配置入口，迁移脚本位于 `backend/alembic/versions/`（基线 `0001`，结构对齐 `0002`，数据迁移 `0003`），迁移环境 `backend/alembic/env.py`，迁移脚本生成工具 `backend/app/tools/generate_migration.py`。`frontend/` 包含 Vite + React 前端，入口文件为 `frontend/src/main.tsx` 和 `frontend/src/App.tsx`。前端通用请求与类型定义位于 `frontend/src/api.ts` 和 `frontend/src/types.ts`。
 
 常用手工命令：
 

@@ -36,8 +36,12 @@ ALEMBIC_CONFIG_PATH = Path(__file__).resolve().parents[2] / "alembic.ini"
 
 
 def _upsert_acquisition_scripts(connection) -> None:
-    """把采集脚本注册表同步进 acquisition_scripts 表（幂等 upsert）。"""
+    """把内置采集脚本注册表同步进 acquisition_scripts 表（幂等 upsert）。"""
     for definition in SCRIPT_REGISTRY.values():
+        if "acquisition_plugin_versions" in inspect(connection).get_table_names() and connection.scalar(
+            text("SELECT 1 FROM acquisition_plugin_versions WHERE script_key = :key LIMIT 1"), {"key": definition.key}
+        ) is not None:
+            continue
         values = {
             "key": definition.key,
             "name": definition.name,
@@ -62,7 +66,7 @@ def _upsert_acquisition_scripts(connection) -> None:
 
 
 def seed_acquisition_scripts(engine: Engine) -> None:
-    """启动期同步采集脚本种子数据，保证注册表与代码内定义一致。"""
+    """启动期同步内置采集脚本种子数据，保证注册表与代码内定义一致。"""
     if "acquisition_scripts" not in inspect(engine).get_table_names():
         return
     with engine.begin() as connection:
@@ -136,6 +140,9 @@ def initialize_runtime(
 
     db = session_factory()
     try:
+        acquisition_service = getattr(services, "acquisition", None)
+        if acquisition_service is not None:
+            acquisition_service.refresh_plugins(db)
         for workspace in db.scalars(select(Workspace)).all():
             services.pictures.ensure_system_tags(db, workspace.id)
         recovered = sum(fail_incomplete_tasks(db, task_type) for task_type in INCOMPLETE_TASK_TYPES)

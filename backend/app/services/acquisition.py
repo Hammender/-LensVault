@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import os
+import shutil
 import tempfile
 import threading
 import time
 import subprocess
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections.abc import Callable
@@ -32,6 +34,7 @@ from app.models import (
     AcquisitionExportJob,
     AcquisitionImportBatch,
     AcquisitionImportBatchItem,
+    AcquisitionPluginCredential,
     AcquisitionImportedPhoto,
     AcquisitionRun,
     AcquisitionRunItem,
@@ -48,15 +51,11 @@ from app.models import (
 from app.services.importer import PictureService
 from app.services.acquisition_adapters import (
     AccessBlockedError,
-    LEGACY_SCRIPT_KEYS,
     SCRIPT_REGISTRY,
-    RaindropPageAdapter,
-    RaindropWorkersAdapter,
     RemoteItem,
     curl_request_bytes,
     get_script,
     is_tls_transport_error,
-    script_catalog,
 )
 from app.services.similarity import (
     DinoV2FeatureExtractor,
@@ -76,7 +75,10 @@ from app.services.similarity import (
 )
 from app.services.storage import MinioStorage
 from app.services.telegram import TelegramService
+from app.services.acquisition_plugins.manager import PluginAdapter, PluginManager
 from app.services.video_processing import extract_video_cover_frame
+
+logger = logging.getLogger(__name__)
 
 
 def _stable_key(value: str) -> str:
@@ -174,7 +176,7 @@ class _DownloadPolicyContext:
 
 @dataclass(frozen=True)
 class DownloadedRemote:
-    payload: bytes
+    payload: bytes | None
     content_type: str | None
     resolved_url: str
     resolved_candidate: str
@@ -189,6 +191,8 @@ class DownloadedRemote:
     perceptual_phash: str | None
     perceptual_dhash: str | None
     quality_score: float | None
+    file_path: Path | None = None
+    size_bytes: int = 0
 
 
 class AcquisitionService:
@@ -219,6 +223,7 @@ class AcquisitionService:
         self.storage = storage
         self.pictures = pictures
         self.settings = settings or get_settings()
+        self.plugins = PluginManager(self.settings)
         self._download_policy = threading.local()
         self.similarity_scanner = similarity_scanner
         self.face_service = face_service
@@ -229,9 +234,30 @@ class AcquisitionService:
             similarity_scanner.extractor if similarity_scanner is not None else DinoV2FeatureExtractor(self.settings)
         )
 
-    @staticmethod
-    def scripts() -> list[dict[str, object]]:
-        return script_catalog()
+    def scripts(self) -> list[dict[str, object]]:
+        builtin = [get_script(key).metadata() for key in sorted(SCRIPT_REGISTRY)]
+        installed = []
+        for key in sorted(self.plugins.active):
+            if key in SCRIPT_REGISTRY:
+                continue
+            definition = self.plugins.get_definition(key)
+            if definition is None:
+                continue
+            installed.append({
+                **definition.metadata(),
+                "credentials": self.plugins.active[key].get("credentials", []),
+                "is_plugin": True,
+            })
+        return builtin + installed
+
+    def get_definition(self, key: str, version: str | None = None,
+                       credentials: dict[str, object] | None = None):
+        if key in SCRIPT_REGISTRY:
+            return get_script(key)
+        return self.plugins.get_definition(key, version, credentials)
+
+    def refresh_plugins(self, db: Session) -> None:
+        self.plugins.refresh(db)
 
     def create_source(
         self,
@@ -243,7 +269,7 @@ class AcquisitionService:
         script_key: str | None = None,
     ) -> AcquisitionSource:
         selected_script = (script_key or "").strip() or None
-        definition = get_script(selected_script) if selected_script else None
+        definition = self.get_definition(selected_script) if selected_script else None
         if selected_script and definition is None:
             raise ValueError("采集脚本不存在或未注册")
         if definition and definition.key == "telegram-channel-mtproto":
@@ -293,7 +319,7 @@ class AcquisitionService:
         *,
         commit: bool = True,
     ) -> AcquisitionSourceScript:
-        definition = get_script(script_key)
+        definition = self.get_definition(script_key)
         if definition is None:
             raise ValueError("采集脚本不存在或未注册")
         if source.page_format_key and source.page_format_key != definition.page_format_key:
@@ -397,13 +423,14 @@ class AcquisitionService:
         script_key: str,
         mode: str,
         parameters: dict[str, object] | None = None,
+        credential_id: int | None = None,
     ) -> AcquisitionRun:
         if mode not in {"incremental", "full", "verify"}:
             raise ValueError("采集模式必须为 incremental、full 或 verify")
         source = db.get(AcquisitionSource, category.source_id)
         if source is None or source.workspace_id != workspace_id or not source.enabled or not category.enabled:
             raise ValueError("采集站点或分类不可用")
-        definition = get_script(script_key)
+        definition = self.get_definition(script_key)
         if definition is None:
             raise ValueError("采集脚本不存在或未注册")
         binding = db.scalar(
@@ -417,6 +444,16 @@ class AcquisitionService:
             raise ValueError("该脚本未绑定到分类所属站点")
         if source.page_format_key != definition.page_format_key:
             raise ValueError("脚本网页格式与站点不一致")
+        if script_key in self.plugins.active:
+            fields = self.plugins.active[script_key].get("credentials", [])
+            if fields and credential_id is None:
+                raise ValueError("该插件需要先选择账号配置")
+            if credential_id is not None:
+                account = db.get(AcquisitionPluginCredential, credential_id)
+                if account is None or account.workspace_id != workspace_id or account.script_key != script_key:
+                    raise ValueError("账号配置不可用")
+                if account.status != "valid":
+                    raise ValueError("请先测试账号连接，确认凭据可用")
         default_parameters = json.loads(binding.default_parameters_json or "{}")
         requested_parameters = dict(parameters or {})
         legacy_default_force = self._pop_legacy_force_full_scan(default_parameters)
@@ -444,6 +481,7 @@ class AcquisitionService:
             source_id=source.id,
             category_id=category.id,
             script_key=definition.key,
+            credential_id=credential_id,
             script_name_snapshot=definition.name,
             script_version_snapshot=definition.version,
             source_name_snapshot=source.name,
@@ -564,17 +602,46 @@ class AcquisitionService:
                 errors.append(f"{candidate}: {exc}")
         raise RuntimeError("；".join(errors) or "没有可下载的图片地址")
 
-    def _download_and_analyze(self, remote: RemoteItem, referer: str) -> DownloadedRemote:
-        result = self._download_remote(remote, referer)
-        if len(result) == 2:  # 兼容测试和第三方扩展中的旧下载器实现。
-            payload, content_type = result
-            resolved_url = remote.source_url
+    def _download_and_analyze(self, remote: RemoteItem, referer: str,
+                              plugin_adapter: PluginAdapter | None = None) -> DownloadedRemote:
+        file_path: Path | None = None
+        if plugin_adapter is not None:
+            temporary_root = self.settings.data_dir / "acquisition" / "plugin-tmp"
+            temporary_root.mkdir(parents=True, exist_ok=True)
+            temporary_dir = Path(tempfile.mkdtemp(prefix="download-", dir=temporary_root))
+            try:
+                file_path = plugin_adapter.download(asdict(remote), temporary_dir)
+                limit = self.settings.telegram_max_media_bytes if remote.media_type == "video" else self.settings.acquisition_max_file_bytes
+                if file_path.stat().st_size > limit:
+                    raise ValueError("采集媒体超过大小上限")
+                content_type = mimetypes.guess_type(file_path.name)[0]
+                resolved_url = remote.source_url
+                payload = file_path.read_bytes() if remote.media_type == "image" else None
+            except Exception:
+                shutil.rmtree(temporary_dir, ignore_errors=True)
+                raise
         else:
-            payload, content_type, resolved_url = result
-        filename = Path(urlparse(resolved_url).path).name or Path(urlparse(remote.source_url).path).name
+            result = self._download_remote(remote, referer)
+            if len(result) == 2:  # 兼容测试和第三方扩展中的旧下载器实现。
+                payload, content_type = result
+                resolved_url = remote.source_url
+            else:
+                payload, content_type, resolved_url = result
+        try:
+            return self._analyze_downloaded_media(remote, payload, content_type, resolved_url, file_path)
+        except Exception:
+            if file_path is not None:
+                shutil.rmtree(file_path.parent, ignore_errors=True)
+            raise
+
+    def _analyze_downloaded_media(self, remote: RemoteItem, payload: bytes | None,
+                                   content_type: str | None, resolved_url: str,
+                                   file_path: Path | None) -> DownloadedRemote:
+        filename = file_path.name if file_path else Path(urlparse(resolved_url).path).name or Path(urlparse(remote.source_url).path).name
         media_type = remote.media_type
         content_type = (content_type or "").lower()
         if media_type == "image":
+            assert payload is not None
             width, height, blur, warnings, features = self._analyze_image_payload(payload)
             duration = None
             perceptual_phash = features.phash
@@ -585,6 +652,8 @@ class AcquisitionService:
             if not content_type.startswith("video/") and suffix not in {".3gp", ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".ts", ".webm", ".wmv"}:
                 raise RuntimeError(f"{resolved_url}: 返回内容不是视频")
             duration = width = height = None
+            if file_path is not None:
+                duration, width, height = self._probe_video_file(file_path)
             blur = None
             warnings = []
             perceptual_phash = None
@@ -596,6 +665,17 @@ class AcquisitionService:
             candidate = "preview"
         else:
             candidate = "cache"
+        if file_path is not None:
+            digest = hashlib.sha256()
+            with file_path.open("rb") as media:
+                for chunk in iter(lambda: media.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            sha256 = digest.hexdigest()
+            size_bytes = file_path.stat().st_size
+        else:
+            assert payload is not None
+            sha256 = hashlib.sha256(payload).hexdigest()
+            size_bytes = len(payload)
         return DownloadedRemote(
             payload=payload,
             content_type=content_type,
@@ -608,10 +688,12 @@ class AcquisitionService:
             duration_seconds=duration,
             blur_score=blur,
             quality_warnings=tuple(warnings),
-            sha256=hashlib.sha256(payload).hexdigest(),
+            sha256=sha256,
             perceptual_phash=perceptual_phash,
             perceptual_dhash=perceptual_dhash,
             quality_score=quality_score,
+            file_path=file_path,
+            size_bytes=size_bytes,
         )
 
     def _quality(self, payload: bytes) -> tuple[int, int, float, list[str]]:
@@ -682,7 +764,16 @@ class AcquisitionService:
             run.error_message = "采集站点或分类已被删除"
             db.commit()
             return
-        definition = get_script(run.script_key or "")
+        credentials = {}
+        if run.credential_id is not None:
+            account = db.get(AcquisitionPluginCredential, run.credential_id)
+            if account is None or account.workspace_id != run.workspace_id or account.script_key != run.script_key:
+                run.status = "failed"
+                run.error_message = "账号配置不可用"
+                db.commit()
+                return
+            credentials = self.plugins.credentials(account)
+        definition = self.get_definition(run.script_key or "", run.script_version_snapshot, credentials)
         if definition is None:
             run.status = "failed"
             run.error_message = "运行所使用的采集脚本不可用"
@@ -693,7 +784,8 @@ class AcquisitionService:
         except (TypeError, json.JSONDecodeError):
             parameters = {}
         if definition.key == "telegram-channel-mtproto":
-            self._process_telegram_run(db, run, source, category, parameters)
+            self._process_telegram_run(db, run, source, category, parameters,
+                definition.adapter if isinstance(definition.adapter, PluginAdapter) else None)
             return
         has_failed_sources = db.scalar(
             select(AcquisitionSourceItem.id).where(
@@ -735,6 +827,8 @@ class AcquisitionService:
                     item_referer = prepared.remote.referer_url or referer
                     self._download_policy.context = _DownloadPolicyContext(limiter, abort_event)
                     try:
+                        if isinstance(definition.adapter, PluginAdapter):
+                            return self._download_and_analyze(prepared.remote, item_referer, definition.adapter)
                         return self._download_and_analyze(prepared.remote, item_referer)
                     finally:
                         del self._download_policy.context
@@ -751,7 +845,12 @@ class AcquisitionService:
                         for future in as_completed(futures):
                             prepared = futures[future]
                             try:
-                                self._persist_downloaded_remote(db, run.id, prepared, future.result())
+                                downloaded = future.result()
+                                try:
+                                    self._persist_downloaded_remote(db, run.id, prepared, downloaded)
+                                finally:
+                                    if downloaded.file_path is not None:
+                                        shutil.rmtree(downloaded.file_path.parent, ignore_errors=True)
                             except CancelledError:
                                 abort_event.set()
                                 stopped = True
@@ -801,6 +900,7 @@ class AcquisitionService:
         source: AcquisitionSource,
         category: AcquisitionCategory,
         parameters: dict[str, object],
+        plugin_adapter: PluginAdapter | None = None,
     ) -> None:
         from app.models import TelegramAccount
 
@@ -840,13 +940,37 @@ class AcquisitionService:
                 parameters.setdefault("topic_id", category.telegram_topic_id)
             if category.telegram_entity_type in {"bot", "group"}:
                 parameters["collect_comments"] = False
-            TelegramService(self.settings).read_channel_media(
-                account,
-                category.crawl_url,
-                parameters,
-                temporary_root,
-                on_records=persist_batch,
-            )
+            if plugin_adapter is None:
+                TelegramService(self.settings).read_channel_media(
+                    account, category.crawl_url, parameters, temporary_root,
+                    on_records=persist_batch,
+                )
+            else:
+                credentials = {
+                    "api_id": account.api_id,
+                    "api_hash_encrypted": account.api_hash_encrypted,
+                    "session_encrypted": account.session_encrypted,
+                    "encryption_key": self.settings.telegram_session_encryption_key,
+                    "max_media_bytes": self.settings.telegram_max_media_bytes,
+                    "download_timeout_seconds": self.settings.telegram_download_timeout_seconds,
+                    "flood_wait_max_seconds": self.settings.telegram_flood_wait_max_seconds,
+                }
+                definition = self.plugins.get_definition(run.script_key or "", run.script_version_snapshot, credentials)
+                if definition is None or not isinstance(definition.adapter, PluginAdapter):
+                    raise ValueError("Telegram 插件版本不可用")
+                temporary_root.mkdir(parents=True, exist_ok=True)
+                for page in definition.adapter.enumerate_pages(category.crawl_url, parameters, set(), False):
+                    for item in page.items:
+                        record = dict(item.plugin_data or {})
+                        for field in ("published_at", "edited_at"):
+                            if record.get(field):
+                                record[field] = datetime.fromisoformat(str(record[field]))
+                        if not record.get("protected_content"):
+                            record["path"] = definition.adapter.download(asdict(item), temporary_root)
+                        persist_batch([record])
+                if definition.adapter.last_state and isinstance(definition.adapter.last_state.get("session_encrypted"), str):
+                    account.session_encrypted = definition.adapter.last_state["session_encrypted"]
+                    db.commit()
             run.status = "completed"
             run.reached_collection_end = True
             run.stop_reason = "collection_end"
@@ -940,9 +1064,16 @@ class AcquisitionService:
         path = record.get("path")
         if not isinstance(path, Path) or not path.is_file():
             raise RuntimeError("Telegram 媒体临时文件不存在")
-        payload = path.read_bytes()
-        sha256 = hashlib.sha256(payload).hexdigest()
         media_type = str(record["media_type"])
+        payload = path.read_bytes() if media_type == "image" else None
+        if payload is None:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            sha256 = digest.hexdigest()
+        else:
+            sha256 = hashlib.sha256(payload).hexdigest()
         content_type = mimetypes.guess_type(path.name)[0] or ("image/jpeg" if media_type == "image" else "video/mp4")
         if self._mark_library_duplicate_if_exists(db, run, source_item, run_item, sha256, media_type):
             return
@@ -952,7 +1083,10 @@ class AcquisitionService:
         if asset is None:
             asset_id = uuid4().hex
             object_key = self._asset_key(run.workspace_id, asset_id, path.name)
-            self.storage.put_bytes(object_key, payload, content_type)
+            if payload is None:
+                self.storage.put_file(object_key, path, content_type)
+            else:
+                self.storage.put_bytes(object_key, payload, content_type)
             width = height = None
             blur = None
             phash = dhash = None
@@ -960,6 +1094,7 @@ class AcquisitionService:
             warnings: list[str] = []
             duration = None
             if media_type == "image":
+                assert payload is not None
                 width, height, blur, warnings, features = self._analyze_image_payload(payload)
                 phash, dhash, quality = features.phash, features.dhash, features.quality_score
             else:
@@ -968,7 +1103,8 @@ class AcquisitionService:
                 height = record.get("height")
             asset = AcquisitionAsset(
                 id=asset_id, workspace_id=run.workspace_id, sha256=sha256, filename=path.name,
-                content_type=content_type, media_type=media_type, object_key=object_key, size_bytes=len(payload),
+                content_type=content_type, media_type=media_type, object_key=object_key,
+                size_bytes=path.stat().st_size,
                 width=width, height=height, duration_seconds=duration, blur_score=blur,
                 perceptual_phash=phash, perceptual_dhash=dhash, quality_score=quality,
                 quality_warnings=json.dumps(warnings, ensure_ascii=False),
@@ -1031,6 +1167,8 @@ class AcquisitionService:
                 source_url=remote.source_url,
                 preview_url=remote.preview_url,
                 title=remote.title,
+                metadata_json=json.dumps({"caption": remote.caption, "hashtags": remote.hashtags,
+                    "published_at": remote.published_at, "channel_title": remote.channel_title}, ensure_ascii=False),
             )
             db.add(item)
             db.flush()
@@ -1041,6 +1179,8 @@ class AcquisitionService:
             item.source_url = remote.source_url
             item.preview_url = remote.preview_url
             item.title = remote.title
+            item.metadata_json = json.dumps({"caption": remote.caption, "hashtags": remote.hashtags,
+                "published_at": remote.published_at, "channel_title": remote.channel_title}, ensure_ascii=False)
             item.last_seen_at = now
         existing_run_item = db.scalar(
             select(AcquisitionRunItem).where(
@@ -1137,7 +1277,11 @@ class AcquisitionService:
     def _create_asset(self, run: AcquisitionRun, downloaded: DownloadedRemote) -> AcquisitionAsset:
         asset_id = uuid4().hex
         object_key = self._asset_key(run.workspace_id, asset_id, downloaded.filename)
-        self.storage.put_bytes(object_key, downloaded.payload, downloaded.content_type)
+        if downloaded.file_path is not None:
+            self.storage.put_file(object_key, downloaded.file_path, downloaded.content_type)
+        else:
+            assert downloaded.payload is not None
+            self.storage.put_bytes(object_key, downloaded.payload, downloaded.content_type)
         return AcquisitionAsset(
             id=asset_id,
             workspace_id=run.workspace_id,
@@ -1146,7 +1290,7 @@ class AcquisitionService:
             content_type=downloaded.content_type or mimetypes.guess_type(downloaded.filename)[0],
             media_type=downloaded.media_type,
             object_key=object_key,
-            size_bytes=len(downloaded.payload),
+            size_bytes=downloaded.size_bytes or len(downloaded.payload or b""),
             width=downloaded.width,
             height=downloaded.height,
             duration_seconds=downloaded.duration_seconds,
@@ -1186,7 +1330,7 @@ class AcquisitionService:
                 variant = self._find_resolution_variant(db, run, downloaded) if downloaded.media_type == "image" else None
                 if variant is not None:
                     incoming_rank = self._asset_rank(
-                        downloaded.width, downloaded.height, downloaded.quality_score, len(downloaded.payload)
+                        downloaded.width, downloaded.height, downloaded.quality_score, downloaded.size_bytes or len(downloaded.payload or b"")
                     )
                     existing_rank = self._asset_rank(
                         int(variant.width or 0), int(variant.height or 0), float(variant.quality_score or 0), int(variant.size_bytes)
@@ -1415,6 +1559,17 @@ class AcquisitionService:
                     self._refresh_import_batch(db, batch_id)
                     db.commit()
                     self._cleanup_asset_object(db, asset)
+                    try:
+                        self.video_service.optimize_video_faststart(video.id)
+                    except Exception as exc:
+                        logger.exception("采集视频后台优化未完成：video_id=%s", video.id)
+                        db.rollback()
+                        failed_video = db.get(VideoItem, video.id)
+                        if failed_video is not None and failed_video.status in {"uploaded", "processing"}:
+                            failed_video.status = "processing_failed"
+                            failed_video.processing_error = str(exc)[:2000]
+                            failed_video.processed_at = shanghai_now()
+                            db.commit()
                     continue
                 gallery_photo = self._gallery_photo_by_sha(
                     db,
@@ -2240,6 +2395,51 @@ class AcquisitionService:
         return len(runs)
 
 
+_CATCHPICS_DIRECTORIES = {
+    "raindrop-ftxsri-workers-dev": {
+        "base_url": "https://raindrop.ftxsri.workers.dev",
+        "script_name": "raindrop-ftxsri-workers-dev",
+        "script_version": "1.0.2",
+        "page_format_key": "raindrop-workers-json-v1",
+    },
+    "shfwzwz-raindrop-page": {
+        "base_url": "https://shfwzwz.raindrop.page",
+        "script_name": "shfwzwz-raindrop-page",
+        "script_version": "1.2.0",
+        "page_format_key": "raindrop-public-page-v1",
+    },
+}
+
+
+def _bind_historical_script(db: Session, source: AcquisitionSource, script_key: str, page_format_key: str) -> None:
+    """把历史目录记到站点上，不把该脚本放进可选脚本列表。"""
+    meta = _CATCHPICS_DIRECTORIES[script_key]
+    if db.get(AcquisitionScript, script_key) is None:
+        db.add(AcquisitionScript(
+            key=script_key,
+            name=meta["script_name"],
+            version=meta["script_version"],
+            page_format_key=page_format_key,
+            description="历史目录迁入记录",
+            parameter_schema_json="[]",
+            enabled=False,
+        ))
+        db.flush()
+    binding = db.scalar(
+        select(AcquisitionSourceScript).where(
+            AcquisitionSourceScript.source_id == source.id,
+            AcquisitionSourceScript.script_key == script_key,
+        )
+    )
+    if binding is None:
+        binding = AcquisitionSourceScript(source_id=source.id, script_key=script_key)
+        db.add(binding)
+    binding.enabled = True
+    binding.default_parameters_json = "{}"
+    source.page_format_key = page_format_key
+    db.commit()
+
+
 def migrate_catchpics_history(
     service: AcquisitionService,
     db: Session,
@@ -2248,13 +2448,11 @@ def migrate_catchpics_history(
     dry_run: bool,
 ) -> dict[str, int]:
     """只读取旧目录；实际迁入会复制图片到采集工作区，绝不删除旧文件。"""
-    supported_roots = {
-        "raindrop-ftxsri-workers-dev": ("raindrop-ftxsri-workers-dev", "https://raindrop.ftxsri.workers.dev"),
-        "shfwzwz-raindrop-page": ("shfwzwz-raindrop-page", "https://shfwzwz.raindrop.page"),
-    }
-    if root.name not in supported_roots:
-        raise ValueError("仅支持迁移 catchPics 中已注册的两个脚本目录")
-    script_key, base_url = supported_roots[root.name]
+    meta = _CATCHPICS_DIRECTORIES.get(root.name)
+    if meta is None:
+        raise ValueError("仅支持迁移 catchPics 中已登记的两个历史目录")
+    script_key = root.name
+    base_url = meta["base_url"]
     resource = root / "resource"
     image_extensions = {".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".jxl", ".png", ".tif", ".tiff", ".webp", ".img"}
     images = [
@@ -2277,11 +2475,11 @@ def migrate_catchpics_history(
     source = db.scalar(select(AcquisitionSource).where(AcquisitionSource.workspace_id == workspace_id, AcquisitionSource.name == root.name))
     if source is None:
         source = service.create_source(db, workspace_id, root.name, base_url, "由 catchPics 历史资源迁入")
-        service.bind_script(db, source, script_key)
+        _bind_historical_script(db, source, script_key, meta["page_format_key"])
         stats["sources"] = 1
     else:
         if db.scalar(select(AcquisitionSourceScript).where(AcquisitionSourceScript.source_id == source.id, AcquisitionSourceScript.script_key == script_key)) is None:
-            service.bind_script(db, source, script_key)
+            _bind_historical_script(db, source, script_key, meta["page_format_key"])
     source.settings_json = json.dumps({
         "legacy_root": str(root),
         "legacy_records": records,
@@ -2305,15 +2503,14 @@ def migrate_catchpics_history(
             stats["categories"] += 1
         run = run_by_category.get(category_path)
         if run is None:
-            definition = SCRIPT_REGISTRY[script_key]
             run = AcquisitionRun(
                 id=uuid4().hex,
                 workspace_id=workspace_id,
                 source_id=source.id,
                 category_id=category.id,
                 script_key=script_key,
-                script_name_snapshot=definition.name,
-                script_version_snapshot=definition.version,
+                script_name_snapshot=meta["script_name"],
+                script_version_snapshot=meta["script_version"],
                 source_name_snapshot=source.name,
                 category_name_snapshot=category.name,
                 category_url_snapshot=category.crawl_url,

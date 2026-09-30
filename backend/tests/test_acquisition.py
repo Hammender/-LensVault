@@ -50,147 +50,63 @@ from app.models import (
 )
 from app.services.acquisition import AcquisitionService
 from app.services.acquisition_adapters import (
-    RaindropPageAdapter,
-    RaindropWorkersAdapter,
     RemoteItem,
     RemotePage,
+    ScriptDefinition,
+    ScriptParameter,
     curl_request_bytes,
     get_script,
     script_catalog,
-    stable_key,
 )
+from tests.support.plain_site import IdleAdapter, install_plain_site_scripts, remove_plain_site_scripts
 
 
 class AcquisitionAdapterTests(unittest.TestCase):
-    def test_registered_script_names_match_catchpics_directories(self) -> None:
+    def test_registered_script_catalog_contains_only_telegram(self) -> None:
         catalog = script_catalog()
+        self.assertEqual([item["name"] for item in catalog], ["Telegram 频道"])
+        self.assertEqual([item["key"] for item in catalog], ["telegram-channel-mtproto"])
+        self.assertEqual({item["version"] for item in catalog}, {"1.1.0"})
+
+    def test_script_parameters_are_validated(self) -> None:
+        definition = ScriptDefinition(
+            key="plain-site",
+            name="普通站点",
+            version="1.0.0",
+            page_format_key="plain-site-v1",
+            description="测试用普通站点脚本",
+            adapter=IdleAdapter(),
+            parameters=(
+                ScriptParameter("max_pages", "最大扫描页数", "integer", default=None, minimum=1, maximum=1000),
+            ),
+        )
+        self.assertEqual(definition.validate_parameters({}), {})
+        self.assertEqual(definition.validate_parameters({"max_pages": "2"}), {"max_pages": 2})
+        with self.assertRaisesRegex(ValueError, "不能小于"):
+            definition.validate_parameters({"max_pages": 0})
+        with self.assertRaisesRegex(ValueError, "未知参数"):
+            definition.validate_parameters({"category_name": "不能传给脚本"})
+
+        page_definition = ScriptDefinition(
+            key="paged-site",
+            name="分页站点",
+            version="1.0.0",
+            page_format_key="paged-site-v1",
+            description="测试用分页脚本",
+            adapter=IdleAdapter(),
+            parameters=(
+                ScriptParameter("start_page", "起始页", "integer", default=1, minimum=1),
+                ScriptParameter("end_page", "结束页", "integer", default=None, minimum=1),
+            ),
+        )
         self.assertEqual(
-            {item["name"] for item in catalog},
-            {"idolxxx-gallery", "raindrop-ftxsri-workers-dev", "shfwzwz-raindrop-page", "Telegram 频道"},
+            page_definition.validate_parameters({"start_page": "2", "end_page": "4"}),
+            {"start_page": 2, "end_page": 4},
         )
-        self.assertEqual({item["version"] for item in catalog}, {"1.1.0", "1.0.2", "1.2.0"})
-
-    def test_raindrop_page_normalizes_relative_image_urls(self) -> None:
-        payload = (
-            b'<article><img src="/images/a.jpg" alt="A">'
-            b'<a href="https://cdn.example.test/a.jpg">source</a></article>'
-        )
-        with patch(
-            "app.services.acquisition_adapters._request_bytes",
-            return_value=(payload, "text/html; charset=utf-8"),
-        ):
-            items = list(
-                RaindropPageAdapter().enumerate(
-                    "https://shfwzwz.raindrop.page/album",
-                    {"max_pages": 1},
-                    set(),
-                    False,
-                )
-            )
-        self.assertEqual(items[0].source_url, "https://cdn.example.test/a.jpg")
-        self.assertEqual(items[0].preview_url, "https://shfwzwz.raindrop.page/images/a.jpg")
-        self.assertTrue(items[0].external_key)
-
-    def test_raindrop_page_skips_items_repeated_across_dynamic_pages(self) -> None:
-        first_page = (
-            b'<a href="/album/sort=-created&amp;perpage=30&amp;page=1">next</a>'
-            b'<span>60 bookmarks</span>'
-            b'<article><a href="https://cdn.example.test/a.jpg">a</a></article>'
-            b'<article><a href="https://cdn.example.test/shared.jpg">shared</a></article>'
-        )
-        second_page = (
-            b'<article><a href="https://cdn.example.test/shared.jpg">shared</a></article>'
-            b'<article><a href="https://cdn.example.test/c.jpg">c</a></article>'
-        )
-        with patch(
-            "app.services.acquisition_adapters._request_bytes",
-            side_effect=[
-                (first_page, "text/html; charset=utf-8"),
-                (second_page, "text/html; charset=utf-8"),
-            ],
-        ) as request:
-            items = list(
-                RaindropPageAdapter().enumerate(
-                    "https://shfwzwz.raindrop.page/album/sort=-created&perpage=30&page=0",
-                    {},
-                    set(),
-                    False,
-                )
-            )
-
-        self.assertEqual(len(items), 3)
-        self.assertEqual(request.call_count, 2)
-
-    def test_raindrop_page_scans_inclusive_one_based_page_range(self) -> None:
-        first_page = (
-            b'<span>90 bookmarks</span>'
-            b'<article><a href="https://cdn.example.test/a.jpg">a</a></article>'
-        )
-        second_page = b'<article><a href="https://cdn.example.test/b.jpg">b</a></article>'
-        third_page = b'<article><a href="https://cdn.example.test/c.jpg">c</a></article>'
-        with patch(
-            "app.services.acquisition_adapters._request_bytes",
-            side_effect=[
-                (first_page, "text/html; charset=utf-8"),
-                (second_page, "text/html; charset=utf-8"),
-                (third_page, "text/html; charset=utf-8"),
-            ],
-        ) as request:
-            pages = list(
-                RaindropPageAdapter().enumerate_pages(
-                    "https://shfwzwz.raindrop.page/album",
-                    {"start_page": 2, "end_page": 3},
-                    set(),
-                    True,
-                )
-            )
-
-        self.assertEqual([page.page_number for page in pages], [2, 3])
-        self.assertEqual([page.items[0].source_url for page in pages], [
-            "https://cdn.example.test/b.jpg",
-            "https://cdn.example.test/c.jpg",
-        ])
-        self.assertEqual(pages[-1].stop_reason, "collection_end")
-        self.assertEqual(request.call_count, 3)
-
-    def test_raindrop_page_full_mode_ignores_known_page_early_stop(self) -> None:
-        first_page = (
-            b'<span>60 bookmarks</span>'
-            b'<article><a href="https://cdn.example.test/a.jpg">a</a></article>'
-        )
-        second_page = b'<article><a href="https://cdn.example.test/b.jpg">b</a></article>'
-        known = {stable_key("https://cdn.example.test/a.jpg")}
-        with patch(
-            "app.services.acquisition_adapters._request_bytes",
-            return_value=(first_page, "text/html; charset=utf-8"),
-        ):
-            normal_pages = list(
-                RaindropPageAdapter().enumerate_pages(
-                    "https://shfwzwz.raindrop.page/album",
-                    {"start_page": 1},
-                    known,
-                    True,
-                )
-            )
-        with patch(
-            "app.services.acquisition_adapters._request_bytes",
-            side_effect=[
-                (first_page, "text/html; charset=utf-8"),
-                (second_page, "text/html; charset=utf-8"),
-            ],
-        ):
-            forced_pages = list(
-                RaindropPageAdapter().enumerate_pages(
-                    "https://shfwzwz.raindrop.page/album",
-                    {"start_page": 1},
-                    known,
-                    False,
-                )
-            )
-
-        self.assertEqual([page.stop_reason for page in normal_pages], ["known_page"])
-        self.assertEqual([page.page_number for page in forced_pages], [1, 2])
-        self.assertEqual(forced_pages[-1].stop_reason, "collection_end")
+        with self.assertRaisesRegex(ValueError, "未知参数"):
+            page_definition.validate_parameters({"force_full_scan": True})
+        with self.assertRaisesRegex(ValueError, "结束页不能小于起始页"):
+            page_definition.validate_parameters({"start_page": 4, "end_page": 2})
 
     def test_curl_fallback_uses_system_routing_and_complete_retry_budget(self) -> None:
         completed = subprocess.CompletedProcess([], 0, stdout="text/html", stderr="")
@@ -199,9 +115,9 @@ class AcquisitionAdapterTests(unittest.TestCase):
             return_value=completed,
         ) as run:
             payload, content_type = curl_request_bytes(
-                "https://shfwzwz.raindrop.page/album",
+                "https://example.test/album",
                 "text/html",
-                "https://shfwzwz.raindrop.page/album",
+                "https://example.test/album",
                 timeout=45,
                 retries=3,
             )
@@ -229,12 +145,12 @@ class AcquisitionAdapterTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 RuntimeError,
-                "请求 shfwzwz.raindrop.page 超时：最多尝试 3 次，每次 45 秒",
+                "请求 example.test 超时：最多尝试 3 次，每次 45 秒",
             ) as raised:
                 curl_request_bytes(
-                    "https://shfwzwz.raindrop.page/private-path",
+                    "https://example.test/private-path",
                     "text/html",
-                    "https://shfwzwz.raindrop.page/private-path",
+                    "https://example.test/private-path",
                     timeout=45,
                     retries=3,
                 )
@@ -243,91 +159,53 @@ class AcquisitionAdapterTests(unittest.TestCase):
         self.assertIsNotNone(temporary_path)
         self.assertFalse(temporary_path.exists())
 
-    def test_raindrop_workers_uses_stable_record_key(self) -> None:
-        payload = json.dumps(
-            {"items": [{"_id": "remote-17", "type": "image", "link": "https://cdn.example.test/a.jpg"}]}
-        ).encode()
-        with patch(
-            "app.services.acquisition_adapters._request_bytes",
-            return_value=(payload, "application/json"),
-        ):
-            items = list(
-                RaindropWorkersAdapter().enumerate(
-                    "https://raindrop.ftxsri.workers.dev/collection-1",
-                    {"max_pages": 1},
-                    set(),
-                    True,
-                )
-            )
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0].external_key, "remote-17")
-        self.assertEqual(items[0].source_url, "https://cdn.example.test/a.jpg")
-
-    def test_script_parameters_are_validated(self) -> None:
-        definition = get_script("raindrop-ftxsri-workers-dev")
-        self.assertIsNotNone(definition)
-        assert definition is not None
-        self.assertEqual(definition.validate_parameters({}), {})
-        self.assertEqual(definition.validate_parameters({"max_pages": "2"}), {"max_pages": 2})
-        with self.assertRaisesRegex(ValueError, "不能小于"):
-            definition.validate_parameters({"max_pages": 0})
-        with self.assertRaisesRegex(ValueError, "未知参数"):
-            definition.validate_parameters({"category_name": "不能传给脚本"})
-
-        page_definition = get_script("shfwzwz-raindrop-page")
-        assert page_definition is not None
-        self.assertEqual(
-            page_definition.validate_parameters({"max_pages": "3"}),
-            {"start_page": 1, "end_page": 3},
-        )
-        self.assertEqual(
-            page_definition.validate_parameters({"start_page": "2", "end_page": "4"}),
-            {"start_page": 2, "end_page": 4},
-        )
-        with self.assertRaisesRegex(ValueError, "未知参数"):
-            page_definition.validate_parameters({"force_full_scan": True})
-        with self.assertRaisesRegex(ValueError, "结束页不能小于起始页"):
-            page_definition.validate_parameters({"start_page": 4, "end_page": 2})
-
 
 class AcquisitionModelTests(unittest.TestCase):
     def setUp(self) -> None:
+        install_plain_site_scripts()
         self.engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(self.engine)
         self.db = Session(self.engine)
-        self.service = AcquisitionService(SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+        self.service = AcquisitionService(
+            SimpleNamespace(),
+            SimpleNamespace(),
+            SimpleNamespace(acquisition_download_workers=8),
+        )
 
     def tearDown(self) -> None:
-        self.db.close()
-        self.engine.dispose()
+        try:
+            self.db.close()
+            self.engine.dispose()
+        finally:
+            remove_plain_site_scripts()
 
     def test_site_script_category_and_run_snapshots(self) -> None:
         source = self.service.create_source(
             self.db,
             None,
             "我的采集网站",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
             "站点备注",
         )
-        binding = self.service.bind_script(self.db, source, "raindrop-ftxsri-workers-dev", {"max_pages": 3})
+        binding = self.service.bind_script(self.db, source, "plain-site", {"max_pages": 3})
         category = self.service.create_category(
             self.db,
             source,
             "这个名字仅用于展示",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
             "分类备注",
         )
         run = self.service.start_run(
             self.db,
             None,
             category,
-            "raindrop-ftxsri-workers-dev",
+            "plain-site",
             "incremental",
             {"max_pages": 2},
         )
 
-        self.assertEqual(binding.script_key, "raindrop-ftxsri-workers-dev")
-        self.assertEqual(source.page_format_key, "raindrop-workers-json-v1")
+        self.assertEqual(binding.script_key, "plain-site")
+        self.assertEqual(source.page_format_key, "plain-site-v1")
         self.assertEqual(run.source_name_snapshot, "我的采集网站")
         self.assertEqual(run.category_name_snapshot, "这个名字仅用于展示")
         self.assertEqual(run.category_url_snapshot, category.crawl_url)
@@ -340,17 +218,17 @@ class AcquisitionModelTests(unittest.TestCase):
             self.db,
             None,
             "一次创建并绑定",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
             None,
-            "raindrop-ftxsri-workers-dev",
+            "plain-site",
         )
         keys = list(
             self.db.scalars(
                 select(AcquisitionSourceScript.script_key).where(AcquisitionSourceScript.source_id == source.id)
             )
         )
-        self.assertEqual(source.page_format_key, "raindrop-workers-json-v1")
-        self.assertEqual(keys, ["raindrop-ftxsri-workers-dev"])
+        self.assertEqual(source.page_format_key, "plain-site-v1")
+        self.assertEqual(keys, ["plain-site"])
 
     def test_create_telegram_source_uses_default_base_url(self) -> None:
         from app.models import AcquisitionSourceScript
@@ -414,14 +292,14 @@ class AcquisitionModelTests(unittest.TestCase):
             self.db,
             None,
             "旧参数兼容站点",
-            "https://shfwzwz.raindrop.page",
+            "https://example.test",
         )
-        self.service.bind_script(self.db, source, "shfwzwz-raindrop-page")
+        self.service.bind_script(self.db, source, "other-site")
         category = self.service.create_category(
             self.db,
             source,
             "旧参数兼容分类",
-            "https://shfwzwz.raindrop.page/collection",
+            "https://example.test/collection",
         )
 
         with patch("app.services.acquisition.ensure_perceptual_feature_dependencies"):
@@ -429,7 +307,7 @@ class AcquisitionModelTests(unittest.TestCase):
                 self.db,
                 None,
                 category,
-                "shfwzwz-raindrop-page",
+                "other-site",
                 "incremental",
                 {"start_page": 2, "end_page": 4, "force_full_scan": True},
             )
@@ -442,39 +320,39 @@ class AcquisitionModelTests(unittest.TestCase):
             self.db,
             None,
             "依赖预检站点",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
         )
-        self.service.bind_script(self.db, source, "raindrop-ftxsri-workers-dev")
+        self.service.bind_script(self.db, source, "plain-site")
         category = self.service.create_category(
             self.db,
             source,
             "依赖预检分类",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
         )
 
         with patch(
             "app.services.acquisition.ensure_perceptual_feature_dependencies",
             side_effect=RuntimeError("图片分析依赖不可用：ImageHash"),
         ), self.assertRaisesRegex(ValueError, "图片分析依赖不可用"):
-            self.service.start_run(self.db, None, category, "raindrop-ftxsri-workers-dev", "incremental", {})
+            self.service.start_run(self.db, None, category, "plain-site", "incremental", {})
 
         self.assertEqual(self.db.query(AcquisitionRun).count(), 0)
 
     def test_full_mode_skips_successes_and_immediately_retries_failures(self) -> None:
-        definition = get_script("raindrop-ftxsri-workers-dev")
+        definition = get_script("plain-site")
         assert definition is not None
         source = self.service.create_source(
             self.db,
             None,
             "全量发现测试站点",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
         )
         self.service.bind_script(self.db, source, definition.key)
         category = self.service.create_category(
             self.db,
             source,
             "全量发现测试分类",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
         )
         with patch("app.services.acquisition.ensure_perceptual_feature_dependencies"):
             run = self.service.start_run(self.db, None, category, definition.key, "full", {})
@@ -508,20 +386,20 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertIsNotNone(verified)
 
     def test_failed_sources_disable_incremental_known_page_early_stop(self) -> None:
-        definition = get_script("raindrop-ftxsri-workers-dev")
+        definition = get_script("plain-site")
         assert definition is not None
         source = self.service.create_source(
             self.db,
             None,
             "失败来源增量测试站点",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
         )
         self.service.bind_script(self.db, source, definition.key)
         category = self.service.create_category(
             self.db,
             source,
             "失败来源增量测试分类",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
         )
         with patch("app.services.acquisition.ensure_perceptual_feature_dependencies"):
             baseline = self.service.start_run(self.db, None, category, definition.key, "incremental", {})
@@ -548,7 +426,7 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertTrue(enumerate_pages.call_args.args[3])
 
     def test_only_completed_error_free_run_reaching_collection_end_establishes_incremental_baseline(self) -> None:
-        definition = get_script("raindrop-ftxsri-workers-dev")
+        definition = get_script("plain-site")
         assert definition is not None
         self.db.add(
             AcquisitionScript(
@@ -564,14 +442,14 @@ class AcquisitionModelTests(unittest.TestCase):
             self.db,
             None,
             "增量基线测试站点",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
         )
         self.service.bind_script(self.db, source, definition.key)
         category = self.service.create_category(
             self.db,
             source,
             "增量基线测试分类",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
         )
         run = self.service.start_run(
             self.db,
@@ -605,17 +483,17 @@ class AcquisitionModelTests(unittest.TestCase):
             self.db,
             None,
             "格式固定的网站",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
         )
-        self.service.bind_script(self.db, source, "raindrop-ftxsri-workers-dev")
+        self.service.bind_script(self.db, source, "plain-site")
 
         with self.assertRaisesRegex(ValueError, "网页格式"):
-            self.service.bind_script(self.db, source, "shfwzwz-raindrop-page")
+            self.service.bind_script(self.db, source, "other-site")
         with self.assertRaisesRegex(ValueError, "当前站点"):
             self.service.create_category(self.db, source, "错误分类", "https://example.com/collection")
 
     def test_process_run_rolls_back_before_recording_database_failure(self) -> None:
-        definition = get_script("raindrop-ftxsri-workers-dev")
+        definition = get_script("plain-site")
         assert definition is not None
         self.db.add(
             AcquisitionScript(
@@ -631,14 +509,14 @@ class AcquisitionModelTests(unittest.TestCase):
             self.db,
             None,
             "事务回滚测试站点",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
         )
         self.service.bind_script(self.db, source, definition.key)
         category = self.service.create_category(
             self.db,
             source,
             "事务回滚测试分类",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
         )
         run = self.service.start_run(self.db, None, category, definition.key, "incremental", {})
         source_item = AcquisitionSourceItem(
@@ -674,7 +552,7 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertIn("UNIQUE constraint failed", run.error_message or "")
 
     def test_process_run_downloads_eight_items_concurrently(self) -> None:
-        definition = get_script("raindrop-ftxsri-workers-dev")
+        definition = get_script("plain-site")
         assert definition is not None
         self.db.add(
             AcquisitionScript(
@@ -690,14 +568,14 @@ class AcquisitionModelTests(unittest.TestCase):
             self.db,
             None,
             "并发下载测试站点",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
         )
         self.service.bind_script(self.db, source, definition.key)
         category = self.service.create_category(
             self.db,
             source,
             "并发下载测试分类",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
         )
         run = self.service.start_run(self.db, None, category, definition.key, "incremental", {})
         barrier = threading.Barrier(8, timeout=2)
@@ -735,7 +613,7 @@ class AcquisitionModelTests(unittest.TestCase):
         self.assertEqual(run.status, "completed")
 
     def test_process_run_can_be_stopped_via_stop_run(self) -> None:
-        definition = get_script("raindrop-ftxsri-workers-dev")
+        definition = get_script("plain-site")
         assert definition is not None
         self.db.add(
             AcquisitionScript(
@@ -751,14 +629,14 @@ class AcquisitionModelTests(unittest.TestCase):
             self.db,
             None,
             "停止测试站点",
-            "https://raindrop.ftxsri.workers.dev",
+            "https://example.test",
         )
         self.service.bind_script(self.db, source, definition.key)
         category = self.service.create_category(
             self.db,
             source,
             "停止测试分类",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
         )
         run = self.service.start_run(self.db, None, category, definition.key, "incremental", {})
 
@@ -804,6 +682,12 @@ class AcquisitionQualityTests(unittest.TestCase):
 
 
 class AcquisitionSimilarityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        install_plain_site_scripts()
+
+    def tearDown(self) -> None:
+        remove_plain_site_scripts()
+
     def test_pending_similarity_group_keeps_two_visible_members_after_rejection(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine)
@@ -1242,6 +1126,10 @@ class AcquisitionSimilarityTests(unittest.TestCase):
             def put_bytes(self, key: str, payload: bytes, _content_type: str | None = None) -> None:
                 self.objects[key] = payload
 
+            def put_file(self, key: str, path: Path, _content_type: str | None = None) -> None:
+                with path.open("rb") as stream:
+                    self.objects[key] = stream.read()
+
             def get_bytes(self, key: str) -> bytes:
                 return self.objects[key]
 
@@ -1262,7 +1150,7 @@ class AcquisitionSimilarityTests(unittest.TestCase):
             video_cover_capture_seconds=1.0,
         )
         service = AcquisitionService(storage, SimpleNamespace(), settings)
-        definition = get_script("raindrop-ftxsri-workers-dev")
+        definition = get_script("plain-site")
         assert definition is not None
         db.add(AcquisitionScript(
             key=definition.key,
@@ -1274,9 +1162,9 @@ class AcquisitionSimilarityTests(unittest.TestCase):
         workspace = Workspace(name="dedup-ws")
         db.add(workspace)
         db.commit()
-        source = service.create_source(db, workspace.id, "去重站点", "https://raindrop.ftxsri.workers.dev")
+        source = service.create_source(db, workspace.id, "去重站点", "https://example.test")
         service.bind_script(db, source, definition.key)
-        category = service.create_category(db, source, "去重分类", "https://raindrop.ftxsri.workers.dev/collection-1")
+        category = service.create_category(db, source, "去重分类", "https://example.test/collection")
 
         image = Image.new("RGB", (32, 32), color="white")
         buffer = io.BytesIO()
@@ -1336,6 +1224,26 @@ class AcquisitionSimilarityTests(unittest.TestCase):
         db.refresh(telegram_run)
         self.assertEqual(telegram_run.gallery_duplicate_count, 1)
         self.assertEqual(db.query(AcquisitionAsset).filter_by(sha256=video_sha, status="pending_review").count(), 0)
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as handle:
+            handle.write(b"new-video-content")
+            new_video_path = Path(handle.name)
+        try:
+            with patch.object(Path, "read_bytes", side_effect=AssertionError("视频不应整体读入内存")):
+                service._persist_telegram_record(db, telegram_run, source, category, {
+                    "external_key": "1:3:0",
+                    "source_url": "https://t.me/c/1/3",
+                    "channel_id": "1",
+                    "message_id": 3,
+                    "media_type": "video",
+                    "path": new_video_path,
+                    "hashtags": [],
+                    "protected_content": False,
+                })
+        finally:
+            new_video_path.unlink(missing_ok=True)
+        db.refresh(telegram_run)
+        self.assertEqual(telegram_run.downloaded_count, 1)
+        self.assertEqual(db.query(AcquisitionAsset).filter_by(media_type="video", status="pending_review").count(), 1)
         db.close()
         engine.dispose()
 
@@ -1374,6 +1282,12 @@ class AcquisitionSimilarityTests(unittest.TestCase):
 
 
 class AcquisitionWorkflowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        install_plain_site_scripts()
+
+    def tearDown(self) -> None:
+        remove_plain_site_scripts()
+
     def test_resolution_variants_keep_only_the_highest_resolution_future_asset(self) -> None:
         class MemoryStorage:
             def __init__(self) -> None:
@@ -1400,7 +1314,7 @@ class AcquisitionWorkflowTests(unittest.TestCase):
             acquisition_quality_blur_threshold=0.0,
         )
         service = AcquisitionService(storage, SimpleNamespace(), settings)
-        definition = get_script("raindrop-ftxsri-workers-dev")
+        definition = get_script("plain-site")
         assert definition is not None
         db.add(AcquisitionScript(
             key=definition.key,
@@ -1410,13 +1324,13 @@ class AcquisitionWorkflowTests(unittest.TestCase):
             parameter_schema_json="[]",
         ))
         db.commit()
-        source = service.create_source(db, None, "清晰度去重站点", "https://raindrop.ftxsri.workers.dev")
+        source = service.create_source(db, None, "清晰度去重站点", "https://example.test")
         service.bind_script(db, source, definition.key)
         category = service.create_category(
             db,
             source,
             "清晰度去重分类",
-            "https://raindrop.ftxsri.workers.dev/collection-1",
+            "https://example.test/collection",
         )
         run = service.start_run(db, None, category, definition.key, "incremental", {})
 
@@ -1535,7 +1449,7 @@ class AcquisitionWorkflowTests(unittest.TestCase):
                 settings,
                 SimpleNamespace(encode=lambda images: np.ones((len(images), 2), dtype=np.float32)),
             )
-            definition = get_script("raindrop-ftxsri-workers-dev")
+            definition = get_script("plain-site")
             assert definition is not None
             db.add(
                 AcquisitionScript(
@@ -1548,14 +1462,14 @@ class AcquisitionWorkflowTests(unittest.TestCase):
             )
             db.commit()
             source = service.create_source(
-                db, None, "raindrop-ftxsri-workers-dev", "https://raindrop.ftxsri.workers.dev"
+                db, None, "plain-site", "https://example.test"
             )
             service.bind_script(db, source, definition.key)
             category = service.create_category(
                 db,
                 source,
                 "自定义分类名",
-                "https://raindrop.ftxsri.workers.dev/collection-1",
+                "https://example.test/collection",
             )
             run = service.start_run(db, None, category, definition.key, "incremental", {})
             image = Image.new("RGB", (32, 32), color="white")
