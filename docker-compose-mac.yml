@@ -1,0 +1,28 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: pictureshow-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: pictureshow
+      MINIO_ROOT_PASSWORD: pictureshow-secret
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    volumes:
+      - pictureshow-minio-data:/data
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.17.1
+    container_name: pictureshow-qdrant
+    ports:
+      - "16333:6333"
+      - "16334:6334"
+    volumes:
+      - pictureshow-qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  pictureshow-minio-data:
+  pictureshow-qdrant-data:

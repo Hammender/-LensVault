@@ -213,7 +213,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const [telegramCredentialEditing, setTelegramCredentialEditing] = useState(false);
   const [sourceScriptChoices, setSourceScriptChoices] = useState<Record<number, string>>({});
   const [categorySourceId, setCategorySourceId] = useState("");
-  const categorySourceTouchedRef = useRef(false);
   const [categoryName, setCategoryName] = useState("");
   const categoryNameTouchedRef = useRef(false);
   const [categoryUrl, setCategoryUrl] = useState("");
@@ -490,7 +489,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   useEffect(() => {
     const selectedSource = sourceById.get(Number(categorySourceId));
     const isTelegramCategory = selectedSource?.page_format_key === "telegram-channel-v1";
-    if (!categorySourceTouchedRef.current) return;
     if (!isTelegramCategory) {
       setTelegramDialogPeerId("");
       setTelegramTopics([]);
@@ -807,7 +805,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
 
   function resetCategoryForm() {
     setEditingCategoryId(null);
-    categorySourceTouchedRef.current = false;
     setCategoryName("");
     categoryNameTouchedRef.current = false;
     setCategoryUrl("");
@@ -1413,7 +1410,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         </form>
         <form onSubmit={(event) => void submitCategory(event)}>
           <div className="acquisition-section-title"><span>{editingCategoryId ? "编辑分类" : "新增分类"}</span><FolderPlus size={17} /></div>
-          <select value={categorySourceId} onChange={(event) => { categorySourceTouchedRef.current = true; setCategorySourceId(event.target.value); }} required disabled={editingCategoryId != null}><option value="">选择站点</option>{sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select>
+          <select value={categorySourceId} onChange={(event) => setCategorySourceId(event.target.value)} required disabled={editingCategoryId != null}><option value="">选择站点</option>{sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select>
           <input value={categoryName} onChange={(event) => { categoryNameTouchedRef.current = true; setCategoryName(event.target.value); }} placeholder="分类名称" required />
           {sourceById.get(Number(categorySourceId))?.page_format_key !== "telegram-channel-v1" && <input type="url" value={categoryUrl} onChange={(event) => setCategoryUrl(event.target.value)} placeholder="分类分页入口 URL" required />}
           {sourceById.get(Number(categorySourceId))?.page_format_key === "telegram-channel-v1" && <div className="telegram-target-panel">

@@ -16,6 +16,7 @@ cmd /c npm.cmd run build
 提交前端改动前必须运行 `npm.cmd run build`，该命令也会执行 TypeScript 项目构建。运行依赖 MinIO，`.env` 的字段应与 `.env.example` 对应。
 
 ## 运行环境
+
 当前项目默认运行环境是名为 "pictureshow"的Conda环境。
 
 ## 代码风格与命名规范

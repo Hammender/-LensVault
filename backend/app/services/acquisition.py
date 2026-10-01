@@ -1074,7 +1074,11 @@ class AcquisitionService:
             sha256 = digest.hexdigest()
         else:
             sha256 = hashlib.sha256(payload).hexdigest()
-        content_type = mimetypes.guess_type(path.name)[0] or ("image/jpeg" if media_type == "image" else "video/mp4")
+        content_type = (
+            record.get("content_type")
+            or mimetypes.guess_type(path.name)[0]
+            or ("image/jpeg" if media_type == "image" else "video/mp4")
+        )
         if self._mark_library_duplicate_if_exists(db, run, source_item, run_item, sha256, media_type):
             return
         asset = db.scalar(select(AcquisitionAsset).where(

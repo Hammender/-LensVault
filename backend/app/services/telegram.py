@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -48,6 +49,14 @@ HASHTAG_PATTERN = re.compile(r"(?<!\w)#([\w\u4e00-\u9fff-]+)", re.UNICODE)
 PHONE_DIGITS_PATTERN = re.compile(r"[^\d+]")
 LOGGER = logging.getLogger(__name__)
 _MICROSECOND = timedelta(microseconds=1)
+IMAGE_FILE_EXTENSIONS = {
+    ".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".jxl",
+    ".png", ".tif", ".tiff", ".webp",
+}
+VIDEO_FILE_EXTENSIONS = {
+    ".3gp", ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg",
+    ".ogv", ".ts", ".webm", ".wmv",
+}
 
 
 @dataclass(frozen=True)
@@ -194,11 +203,61 @@ def message_media_type(message: Any) -> str | None:
         return "image"
     if getattr(message, "video", None):
         return "video"
+    document = getattr(message, "document", None)
+    if document is None:
+        return None
+
+    media_file = getattr(message, "file", None)
+    mime_type = str(
+        getattr(media_file, "mime_type", None)
+        or getattr(document, "mime_type", None)
+        or ""
+    ).lower()
+    filename = getattr(media_file, "name", None) or _document_filename(document)
+    suffix = Path(str(filename or "")).suffix.lower()
+    has_video_attribute = any(
+        isinstance(attribute, DocumentAttributeVideo)
+        for attribute in getattr(document, "attributes", None) or []
+    )
+    if mime_type.startswith("image/") or suffix in IMAGE_FILE_EXTENSIONS:
+        return "image"
+    if mime_type.startswith("video/") or suffix in VIDEO_FILE_EXTENSIONS or has_video_attribute:
+        return "video"
     return None
 
 
+def _document_filename(document: Any) -> str | None:
+    for attribute in getattr(document, "attributes", None) or []:
+        filename = getattr(attribute, "file_name", None)
+        if filename:
+            return str(filename)
+    return None
+
+
+def message_media_suffix(message: Any, media_type: str) -> str:
+    document = getattr(message, "document", None)
+    media_file = getattr(message, "file", None)
+    filename = getattr(media_file, "name", None) or _document_filename(document)
+    suffix = Path(str(filename or "")).suffix.lower()
+    allowed_extensions = IMAGE_FILE_EXTENSIONS if media_type == "image" else VIDEO_FILE_EXTENSIONS
+    if suffix in allowed_extensions:
+        return suffix
+
+    mime_type = str(
+        getattr(media_file, "mime_type", None)
+        or getattr(document, "mime_type", None)
+        or ""
+    ).lower()
+    guessed_suffix = mimetypes.guess_extension(mime_type) if mime_type else None
+    if guessed_suffix:
+        guessed_suffix = guessed_suffix.lower()
+        if guessed_suffix in allowed_extensions:
+            return guessed_suffix
+    return ".jpg" if media_type == "image" else ".mp4"
+
+
 def video_metadata(message: Any) -> tuple[float | None, int | None, int | None]:
-    video = getattr(message, "video", None)
+    video = getattr(message, "video", None) or getattr(message, "document", None)
     for attribute in getattr(video, "attributes", None) or []:
         if isinstance(attribute, DocumentAttributeVideo):
             duration, width, height = attribute.duration, attribute.w, attribute.h
@@ -997,7 +1056,8 @@ class TelegramService:
             if protected:
                 records.append(self._record(message, channel, media_type, caption, tags, None, True))
                 continue
-            path = target_dir / f"{getattr(channel, 'id', 'channel')}-{message.id}"
+            suffix = message_media_suffix(message, media_type)
+            path = target_dir / f"{getattr(channel, 'id', 'channel')}-{message.id}{suffix}"
             media_path = await self._download_message_media(client, message, path)
             if media_path is None or not media_path.is_file():
                 continue
@@ -1165,6 +1225,12 @@ class TelegramService:
         username = getattr(channel, "username", None)
         channel_id = str(getattr(channel, "id", ""))
         duration, width, height = video_metadata(message) if media_type == "video" else (None, None, None)
+        document = getattr(message, "document", None)
+        media_file = getattr(message, "file", None)
+        content_type = (
+            getattr(media_file, "mime_type", None)
+            or getattr(document, "mime_type", None)
+        )
         return {
             "external_key": f"{channel_id}:{message.id}:{1 if getattr(message, 'is_comment', False) else 0}",
             "source_url": f"https://t.me/{username}/{message.id}" if username else f"tg://resolve?domain={channel_id}&post={message.id}",
@@ -1176,6 +1242,7 @@ class TelegramService:
             "message_id": message.id,
             "grouped_id": str(message.grouped_id) if message.grouped_id else None,
             "media_type": media_type,
+            "content_type": content_type,
             "duration_seconds": duration,
             "width": width,
             "height": height,

@@ -19,6 +19,8 @@ from app.services.telegram import (
     code_delivery_from_type,
     extract_hashtags,
     media_matches,
+    message_media_suffix,
+    message_media_type,
     normalize_phone_number,
     scan_iter_kwargs,
     select_matching_media_groups,
@@ -66,6 +68,36 @@ class TelegramAcquisitionTests(unittest.TestCase):
         message = SimpleNamespace(video=SimpleNamespace(attributes=[SimpleNamespace(duration=12, w=1920, h=1080)]))
         self.assertEqual(video_metadata(message), (12.0, 1920, 1080))
         self.assertEqual(video_metadata(SimpleNamespace(video=None)), (None, None, None))
+
+    def test_document_media_is_classified_by_mime_type_and_filename(self) -> None:
+        image = SimpleNamespace(
+            document=SimpleNamespace(mime_type="application/octet-stream", attributes=[]),
+            file=SimpleNamespace(name="portrait.JPG", mime_type="application/octet-stream"),
+            photo=None,
+            video=None,
+        )
+        video = SimpleNamespace(
+            document=SimpleNamespace(
+                mime_type="video/mp4",
+                attributes=[SimpleNamespace(duration=12, w=1920, h=1080)],
+            ),
+            file=SimpleNamespace(name="clip", mime_type="video/mp4"),
+            photo=None,
+            video=None,
+        )
+        pdf = SimpleNamespace(
+            document=SimpleNamespace(mime_type="application/pdf", attributes=[]),
+            file=SimpleNamespace(name="notes.pdf", mime_type="application/pdf"),
+            photo=None,
+            video=None,
+        )
+
+        self.assertEqual(message_media_type(image), "image")
+        self.assertEqual(message_media_suffix(image, "image"), ".jpg")
+        self.assertEqual(message_media_type(video), "video")
+        self.assertEqual(message_media_suffix(video, "video"), ".mp4")
+        self.assertEqual(video_metadata(video), (12.0, 1920, 1080))
+        self.assertIsNone(message_media_type(pdf))
 
     def test_extract_hashtags_deduplicates_normalized_values(self) -> None:
         tags = extract_hashtags("#旅行 今天的 #旅行 #Tokyo")
