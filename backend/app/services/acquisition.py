@@ -74,11 +74,31 @@ from app.services.similarity import (
     orb_feature_similarity,
 )
 from app.services.storage import MinioStorage
-from app.services.telegram import TelegramService
-from app.services.acquisition_plugins.manager import PluginAdapter, PluginManager
+from app.services.telegram import TelegramRunAborted, TelegramService
+from app.services.acquisition_plugins.manager import PluginAborted, PluginAdapter, PluginManager
 from app.services.video_processing import extract_video_cover_frame
 
 logger = logging.getLogger(__name__)
+
+_VIDEO_SUFFIXES = {
+    ".3gp", ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".ts", ".webm", ".wmv",
+}
+
+
+def _video_container_magic(path: Path) -> bool:
+    try:
+        header = path.read_bytes()[:16]
+    except OSError:
+        return False
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return True
+    if header.startswith(b"\x1a\x45\xdf\xa3"):
+        return True
+    if header.startswith(b"RIFF") and header[8:12] == b"AVI ":
+        return True
+    if header.startswith(b"\x00\x00\x01\xba") or header.startswith(b"\x00\x00\x01\xb3"):
+        return True
+    return False
 
 
 def _stable_key(value: str) -> str:
@@ -493,6 +513,7 @@ class AcquisitionService:
         db.add(run)
         db.commit()
         db.refresh(run)
+        self._register_run_abort(run.id)
         return run
 
     @staticmethod
@@ -649,11 +670,14 @@ class AcquisitionService:
             quality_score = features.quality_score
         else:
             suffix = Path(filename).suffix.lower()
-            if not content_type.startswith("video/") and suffix not in {".3gp", ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".ts", ".webm", ".wmv"}:
-                raise RuntimeError(f"{resolved_url}: 返回内容不是视频")
+            named_as_video = content_type.startswith("video/") or suffix in _VIDEO_SUFFIXES
             duration = width = height = None
             if file_path is not None:
-                duration, width, height = self._probe_video_file(file_path)
+                duration, width, height, has_video_stream = self._probe_video_details(file_path)
+                if not named_as_video and not has_video_stream and not _video_container_magic(file_path):
+                    raise RuntimeError(f"{resolved_url}: 返回内容不是视频")
+            elif not named_as_video:
+                raise RuntimeError(f"{resolved_url}: 返回内容不是视频")
             blur = None
             warnings = []
             perceptual_phash = None
@@ -748,13 +772,46 @@ class AcquisitionService:
         """请求停止正在运行的采集任务。返回该任务是否仍在运行并已发出停止信号。"""
         with self._run_abort_lock:
             event = self._run_abort_events.get(run_id)
+        registered = event is not None
+        logger.info("收到采集停止请求 run_id=%s registered=%s", run_id, registered)
         if event is None:
             return False
         event.set()
         return True
 
+    def _register_run_abort(self, run_id: str) -> threading.Event:
+        with self._run_abort_lock:
+            event = self._run_abort_events.get(run_id)
+            if event is None:
+                event = threading.Event()
+                self._run_abort_events[run_id] = event
+            return event
+
+    def _clear_run_abort(self, run_id: str) -> None:
+        with self._run_abort_lock:
+            self._run_abort_events.pop(run_id, None)
+
+    def _mark_run_interrupted(self, db: Session, run: AcquisitionRun) -> None:
+        current = db.get(AcquisitionRun, run.id)
+        if current is None or current.status not in {"pending", "running"}:
+            return
+        current.status = "interrupted"
+        current.stop_reason = "requested_end"
+        current.completed_at = shanghai_now()
+        db.commit()
+
     def process_run(self, db: Session, run_id: str) -> None:
+        abort_event = self._register_run_abort(run_id)
+        try:
+            self._process_run_body(db, run_id, abort_event)
+        finally:
+            self._clear_run_abort(run_id)
+
+    def _process_run_body(self, db: Session, run_id: str, abort_event: threading.Event) -> None:
         run = db.get(AcquisitionRun, run_id)
+        if run is not None and abort_event.is_set():
+            self._mark_run_interrupted(db, run)
+            return
         if run is None:
             return
         source = db.get(AcquisitionSource, run.source_id)
@@ -818,9 +875,8 @@ class AcquisitionService:
             if definition.max_download_workers is not None:
                 workers = min(workers, max(1, definition.max_download_workers))
             limiter = _DownloadStartLimiter(definition.download_start_interval_seconds)
-            abort_event = threading.Event()
-            with self._run_abort_lock:
-                self._run_abort_events[run_id] = abort_event
+            if isinstance(definition.adapter, PluginAdapter):
+                definition.adapter.abort_event = abort_event
             try:
                 def download(prepared: PendingRemote) -> DownloadedRemote:
                     limiter.wait(abort_event)
@@ -835,42 +891,52 @@ class AcquisitionService:
 
                 stopped = False
                 with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acquisition-download") as executor:
-                    for page in definition.adapter.enumerate_pages(referer, parameters, known_external_keys, run.mode == "incremental"):
-                        if abort_event.is_set():
-                            stopped = True
-                            break
-                        run.scan_end_page = page.page_number
-                        pending = [prepared for remote in page.items if (prepared := self._prepare_remote_item(db, run, source, category, remote)) is not None]
-                        futures = {executor.submit(download, prepared): prepared for prepared in pending}
-                        for future in as_completed(futures):
-                            prepared = futures[future]
-                            try:
-                                downloaded = future.result()
-                                try:
-                                    self._persist_downloaded_remote(db, run.id, prepared, downloaded)
-                                finally:
-                                    if downloaded.file_path is not None:
-                                        shutil.rmtree(downloaded.file_path.parent, ignore_errors=True)
-                            except CancelledError:
-                                abort_event.set()
+                    try:
+                        pages = definition.adapter.enumerate_pages(
+                            referer, parameters, known_external_keys, run.mode == "incremental",
+                        )
+                        for page in pages:
+                            if abort_event.is_set():
                                 stopped = True
                                 break
-                            except AccessBlockedError as exc:
-                                self._record_remote_failure(db, run.id, prepared, exc)
-                                abort_event.set()
-                                for pending_future in futures:
-                                    if pending_future is not future:
-                                        pending_future.cancel()
-                                raise
-                            except Exception as exc:
-                                self._record_remote_failure(db, run.id, prepared, exc)
-                        run = db.get(AcquisitionRun, run_id)
-                        if run is None:
-                            return
-                        if page.stop_reason is not None:
-                            run.stop_reason = page.stop_reason
-                            run.reached_collection_end = page.reached_collection_end
-                        db.commit()
+                            run.scan_end_page = page.page_number
+                            pending = [prepared for remote in page.items if (prepared := self._prepare_remote_item(db, run, source, category, remote)) is not None]
+                            futures = {executor.submit(download, prepared): prepared for prepared in pending}
+                            for future in as_completed(futures):
+                                prepared = futures[future]
+                                try:
+                                    downloaded = future.result()
+                                    try:
+                                        self._persist_downloaded_remote(db, run.id, prepared, downloaded)
+                                    finally:
+                                        if downloaded.file_path is not None:
+                                            shutil.rmtree(downloaded.file_path.parent, ignore_errors=True)
+                                except PluginAborted:
+                                    abort_event.set()
+                                    stopped = True
+                                    break
+                                except CancelledError:
+                                    abort_event.set()
+                                    stopped = True
+                                    break
+                                except AccessBlockedError as exc:
+                                    self._record_remote_failure(db, run.id, prepared, exc)
+                                    abort_event.set()
+                                    for pending_future in futures:
+                                        if pending_future is not future:
+                                            pending_future.cancel()
+                                    raise
+                                except Exception as exc:
+                                    self._record_remote_failure(db, run.id, prepared, exc)
+                            run = db.get(AcquisitionRun, run_id)
+                            if run is None:
+                                return
+                            if page.stop_reason is not None:
+                                run.stop_reason = page.stop_reason
+                                run.reached_collection_end = page.reached_collection_end
+                            db.commit()
+                    except PluginAborted:
+                        stopped = True
                 if stopped:
                     run = db.get(AcquisitionRun, run_id)
                     if run is None:
@@ -881,8 +947,16 @@ class AcquisitionService:
                     run.status = "completed"
                 run.completed_at = shanghai_now()
             finally:
-                with self._run_abort_lock:
-                    self._run_abort_events.pop(run_id, None)
+                if isinstance(definition.adapter, PluginAdapter):
+                    definition.adapter.abort_event = None
+                    definition.adapter.deadline = None
+        except PluginAborted:
+            run = db.get(AcquisitionRun, run_id)
+            if run is None:
+                return
+            run.status = "interrupted"
+            run.stop_reason = "requested_end"
+            run.completed_at = shanghai_now()
         except Exception as exc:
             db.rollback()
             run = db.get(AcquisitionRun, run_id)
@@ -904,6 +978,10 @@ class AcquisitionService:
     ) -> None:
         from app.models import TelegramAccount
 
+        abort_event = self._register_run_abort(run.id)
+        if abort_event.is_set():
+            self._mark_run_interrupted(db, run)
+            return
         account = db.scalar(select(TelegramAccount).where(TelegramAccount.workspace_id == run.workspace_id))
         if account is None or account.status != "active" or not account.session_encrypted:
             run.status = "failed"
@@ -944,6 +1022,7 @@ class AcquisitionService:
                 TelegramService(self.settings).read_channel_media(
                     account, category.crawl_url, parameters, temporary_root,
                     on_records=persist_batch,
+                    abort_event=abort_event,
                 )
             else:
                 credentials = {
@@ -958,24 +1037,37 @@ class AcquisitionService:
                 definition = self.plugins.get_definition(run.script_key or "", run.script_version_snapshot, credentials)
                 if definition is None or not isinstance(definition.adapter, PluginAdapter):
                     raise ValueError("Telegram 插件版本不可用")
-                temporary_root.mkdir(parents=True, exist_ok=True)
-                for page in definition.adapter.enumerate_pages(category.crawl_url, parameters, set(), False):
-                    for item in page.items:
-                        record = dict(item.plugin_data or {})
-                        for field in ("published_at", "edited_at"):
-                            if record.get(field):
-                                record[field] = datetime.fromisoformat(str(record[field]))
-                        if not record.get("protected_content"):
-                            record["path"] = definition.adapter.download(asdict(item), temporary_root)
-                        persist_batch([record])
-                if definition.adapter.last_state and isinstance(definition.adapter.last_state.get("session_encrypted"), str):
-                    account.session_encrypted = definition.adapter.last_state["session_encrypted"]
-                    db.commit()
+                plugin_adapter.abort_event = abort_event
+                try:
+                    temporary_root.mkdir(parents=True, exist_ok=True)
+                    for page in definition.adapter.enumerate_pages(category.crawl_url, parameters, set(), False):
+                        if abort_event.is_set():
+                            raise TelegramRunAborted()
+                        for item in page.items:
+                            if abort_event.is_set():
+                                raise TelegramRunAborted()
+                            record = dict(item.plugin_data or {})
+                            for field in ("published_at", "edited_at"):
+                                if record.get(field):
+                                    record[field] = datetime.fromisoformat(str(record[field]))
+                            if not record.get("protected_content"):
+                                record["path"] = definition.adapter.download(asdict(item), temporary_root)
+                            persist_batch([record])
+                    if definition.adapter.last_state and isinstance(definition.adapter.last_state.get("session_encrypted"), str):
+                        account.session_encrypted = definition.adapter.last_state["session_encrypted"]
+                        db.commit()
+                finally:
+                    plugin_adapter.abort_event = None
+            if abort_event.is_set():
+                raise TelegramRunAborted()
             run.status = "completed"
             run.reached_collection_end = True
             run.stop_reason = "collection_end"
             run.completed_at = shanghai_now()
             db.commit()
+        except TelegramRunAborted:
+            logger.info("Telegram 采集已按请求停止 run_id=%s", run.id)
+            self._mark_run_interrupted(db, run)
         except Exception as exc:
             db.rollback()
             run = db.get(AcquisitionRun, run.id)
@@ -1135,15 +1227,19 @@ class AcquisitionService:
         db.commit()
 
     def _probe_video_file(self, path: Path) -> tuple[float | None, int | None, int | None]:
+        duration, width, height, _has_video = self._probe_video_details(path)
+        return duration, width, height
+
+    def _probe_video_details(self, path: Path) -> tuple[float | None, int | None, int | None, bool]:
         command = [self.settings.ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-show_entries", "stream=codec_type,width,height", "-of", "json", str(path)]
         try:
             completed = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
             result = json.loads(completed.stdout)
             stream = next((item for item in result.get("streams", []) if item.get("codec_type") == "video"), {})
             duration = float(result.get("format", {}).get("duration")) if result.get("format", {}).get("duration") else None
-            return duration, stream.get("width"), stream.get("height")
+            return duration, stream.get("width"), stream.get("height"), bool(stream)
         except Exception:
-            return None, None, None
+            return None, None, None, False
 
     def _prepare_remote_item(
         self,

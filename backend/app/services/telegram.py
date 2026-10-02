@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 import re
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -49,6 +50,9 @@ HASHTAG_PATTERN = re.compile(r"(?<!\w)#([\w\u4e00-\u9fff-]+)", re.UNICODE)
 PHONE_DIGITS_PATTERN = re.compile(r"[^\d+]")
 LOGGER = logging.getLogger(__name__)
 _MICROSECOND = timedelta(microseconds=1)
+_ABORT_POLL_SECONDS = 0.25
+_COLLECTION_REQUEST_RETRIES = 2
+_FILE_STALL_BACKOFF_SECONDS = (15, 30)
 IMAGE_FILE_EXTENSIONS = {
     ".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".jxl",
     ".png", ".tif", ".tiff", ".webp",
@@ -447,6 +451,10 @@ def select_matching_media_groups(
             break
     groups.extend(scanner.finish())
     return groups
+
+
+class TelegramRunAborted(Exception):
+    """用户已请求停止本次 Telegram 采集。"""
 
 
 class TelegramService:
@@ -874,11 +882,16 @@ class TelegramService:
         parameters: dict[str, object],
         target_dir: Path,
         on_records: Callable[[list[dict[str, object]]], None] | None = None,
+        abort_event: threading.Event | None = None,
     ) -> list[dict[str, object]]:
         try:
             return self._run(
-                self._read_channel_media_async(account, channel_ref, parameters, target_dir, on_records)
+                self._read_channel_media_async(
+                    account, channel_ref, parameters, target_dir, on_records, abort_event,
+                )
             )
+        except TelegramRunAborted:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ValueError(translate_telegram_error(exc)) from exc
 
@@ -889,11 +902,13 @@ class TelegramService:
         parameters: dict[str, object],
         target_dir: Path,
         on_records: Callable[[list[dict[str, object]]], None] | None = None,
+        abort_event: threading.Event | None = None,
     ) -> list[dict[str, object]]:
         client = TelegramClient(
             StringSession(self.decrypt(account.session_encrypted or "")),
             account.api_id,
             self.decrypt(account.api_hash_encrypted),
+            request_retries=_COLLECTION_REQUEST_RETRIES,
         )
         await client.connect()
         try:
@@ -935,7 +950,8 @@ class TelegramService:
             seen = 0
 
             async def emit(group: list[Any]) -> None:
-                batch = await self._download_media_group(client, channel, group, target_dir)
+                self._raise_if_aborted(abort_event)
+                batch = await self._download_media_group(client, channel, group, target_dir, abort_event)
                 await emit_records(batch)
 
             async def emit_records(batch: list[dict[str, object]]) -> None:
@@ -950,18 +966,24 @@ class TelegramService:
             if topic_id:
                 iterator_kwargs["reply_to"] = int(topic_id)
             async for message in client.iter_messages(channel, **iterator_kwargs):
+                self._raise_if_aborted(abort_event)
                 seen += 1
                 completed_groups = scanner.push(message)
                 for group in completed_groups:
                     await emit(group)
                     if parameters.get("collect_comments") and not topic_id:
-                        await self._emit_comment_media(client, channel, group[0], target_dir, media_types, emit_records)
+                        await self._emit_comment_media(
+                            client, channel, group[0], target_dir, media_types, emit_records, abort_event,
+                        )
                 if scanner.done or seen >= safety_limit:
                     break
+            self._raise_if_aborted(abort_event)
             for group in scanner.finish():
                 await emit(group)
                 if parameters.get("collect_comments") and not topic_id:
-                    await self._emit_comment_media(client, channel, group[0], target_dir, media_types, emit_records)
+                    await self._emit_comment_media(
+                        client, channel, group[0], target_dir, media_types, emit_records, abort_event,
+                    )
             LOGGER.info("Telegram 采集结束 matched_messages=%s media=%s scanned_api=%s", scanner.matched, len(records), seen)
             return records
         except FloodWaitError as exc:
@@ -980,17 +1002,22 @@ class TelegramService:
         target_dir: Path,
         media_types: set[str],
         emit: Callable[[list[dict[str, object]]], Any],
+        abort_event: threading.Event | None = None,
     ) -> None:
+        self._raise_if_aborted(abort_event)
         try:
             comments = [message async for message in client.iter_messages(channel, reply_to=int(root_message.id), limit=500)]
+        except TelegramRunAborted:
+            raise
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Telegram 评论读取失败 channel=%s message_id=%s: %s", getattr(channel, "id", None), root_message.id, exc)
             return
         for comment in comments:
+            self._raise_if_aborted(abort_event)
             if message_media_type(comment) not in media_types:
                 continue
             comment.grouped_id = None
-            batch = await self._download_media_group(client, channel, [comment], target_dir)
+            batch = await self._download_media_group(client, channel, [comment], target_dir, abort_event)
             for record in batch:
                 record["is_comment"] = True
                 record["root_channel_message_id"] = int(root_message.id)
@@ -999,41 +1026,147 @@ class TelegramService:
             if batch:
                 await emit(batch)
 
-    async def _download_message_media(self, client: TelegramClient, message: Any, path: Path) -> Path | None:
+    @staticmethod
+    def _raise_if_aborted(abort_event: threading.Event | None) -> None:
+        if abort_event is not None and abort_event.is_set():
+            raise TelegramRunAborted()
+
+    async def _sleep_or_abort(self, seconds: float, abort_event: threading.Event | None) -> None:
+        self._raise_if_aborted(abort_event)
+        remaining = max(0.0, float(seconds))
+        if remaining == 0:
+            return
+        if abort_event is None:
+            await asyncio.sleep(remaining)
+            return
+        while remaining > 0:
+            self._raise_if_aborted(abort_event)
+            step = min(_ABORT_POLL_SECONDS, remaining)
+            await asyncio.sleep(step)
+            remaining -= step
+        self._raise_if_aborted(abort_event)
+
+    async def _watch_abort(self, abort_event: threading.Event) -> None:
+        while not abort_event.is_set():
+            await asyncio.sleep(_ABORT_POLL_SECONDS)
+
+    async def _download_once(
+        self,
+        client: TelegramClient,
+        message: Any,
+        path: Path,
+        timeout: float,
+        abort_event: threading.Event | None,
+    ) -> object:
+        download_task = asyncio.create_task(client.download_media(message, file=str(path)))
+        watcher = asyncio.create_task(self._watch_abort(abort_event)) if abort_event is not None else None
+        try:
+            waiting = {download_task}
+            if watcher is not None:
+                waiting.add(watcher)
+            done, _pending = await asyncio.wait(
+                waiting,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            self._raise_if_aborted(abort_event)
+            if download_task not in done:
+                raise TimeoutError()
+            return download_task.result()
+        finally:
+            if watcher is not None and not watcher.done():
+                watcher.cancel()
+            if not download_task.done():
+                download_task.cancel()
+            pending = [task for task in (download_task, watcher) if task is not None]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _reconnect_download_client(self, client: TelegramClient) -> None:
+        await client.disconnect()
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise ValueError("Telegram 登录会话已失效，请重新登录")
+
+    @staticmethod
+    def _is_file_download_stall(exc: BaseException) -> bool:
+        if isinstance(exc, TimeoutError):
+            return True
+        text = str(exc)
+        return "Request was unsuccessful" in text or "GetFileRequest" in text
+
+    @staticmethod
+    def _discard_partial_download(path: Path) -> None:
+        path.unlink(missing_ok=True)
+
+    async def _download_message_media(
+        self,
+        client: TelegramClient,
+        message: Any,
+        path: Path,
+        abort_event: threading.Event | None = None,
+    ) -> Path | None:
         timeout = max(1, int(self.settings.telegram_download_timeout_seconds))
         attempts = 3
+        message_id = getattr(message, "id", None)
         for attempt in range(1, attempts + 1):
+            self._raise_if_aborted(abort_event)
             try:
-                downloaded = await asyncio.wait_for(
-                    client.download_media(message, file=str(path)),
-                    timeout=timeout,
-                )
-                return Path(downloaded) if downloaded else None
+                downloaded = await self._download_once(client, message, path, timeout, abort_event)
+                if not downloaded:
+                    self._discard_partial_download(path)
+                    return None
+                return Path(downloaded)
+            except TelegramRunAborted:
+                self._discard_partial_download(path)
+                raise
             except FloodWaitError as exc:
+                self._discard_partial_download(path)
                 if exc.seconds > self.settings.telegram_flood_wait_max_seconds:
                     raise
                 LOGGER.warning(
                     "Telegram 限流 message_id=%s，等待 %s 秒后重试",
-                    getattr(message, "id", None),
+                    message_id,
                     exc.seconds,
                 )
-                await asyncio.sleep(exc.seconds)
-            except asyncio.TimeoutError:
-                LOGGER.warning(
-                    "Telegram 媒体下载超时 message_id=%s attempt=%s timeout=%ss",
-                    getattr(message, "id", None),
-                    attempt,
-                    timeout,
-                )
+                await self._sleep_or_abort(exc.seconds, abort_event)
+                continue
             except Exception as exc:  # noqa: BLE001 - keep the run going after a single media failure
-                LOGGER.warning(
-                    "Telegram 媒体下载失败 message_id=%s attempt=%s: %s",
-                    getattr(message, "id", None),
-                    attempt,
-                    exc,
-                )
-            if attempt < attempts:
-                await asyncio.sleep(min(2 ** attempt, 8))
+                stalled = self._is_file_download_stall(exc)
+                if stalled:
+                    LOGGER.warning(
+                        "Telegram 文件下载超时（不是限流） message_id=%s attempt=%s: %s",
+                        message_id,
+                        attempt,
+                        exc,
+                    )
+                else:
+                    LOGGER.warning(
+                        "Telegram 媒体下载失败 message_id=%s attempt=%s: %s",
+                        message_id,
+                        attempt,
+                        exc,
+                    )
+                self._discard_partial_download(path)
+                if attempt >= attempts:
+                    break
+                if stalled:
+                    try:
+                        await self._reconnect_download_client(client)
+                    except TelegramRunAborted:
+                        raise
+                    except ValueError:
+                        raise
+                    except Exception as reconnect_exc:  # noqa: BLE001
+                        LOGGER.warning(
+                            "Telegram 文件连接重连失败 message_id=%s: %s",
+                            message_id,
+                            reconnect_exc,
+                        )
+                    await self._sleep_or_abort(_FILE_STALL_BACKOFF_SECONDS[attempt - 1], abort_event)
+                else:
+                    await self._sleep_or_abort(min(2 ** attempt, 8), abort_event)
+        self._discard_partial_download(path)
         return None
 
     async def _download_media_group(
@@ -1042,6 +1175,7 @@ class TelegramService:
         channel: Any,
         messages: list[Any],
         target_dir: Path,
+        abort_event: threading.Event | None = None,
     ) -> list[dict[str, object]]:
         caption_source = min(messages, key=lambda item: int(item.id))
         caption = getattr(caption_source, "message", None) or ""
@@ -1049,6 +1183,7 @@ class TelegramService:
         protected_channel = bool(getattr(channel, "noforwards", False))
         records: list[dict[str, object]] = []
         for message in messages:
+            self._raise_if_aborted(abort_event)
             media_type = message_media_type(message)
             if media_type is None:
                 continue
@@ -1058,7 +1193,7 @@ class TelegramService:
                 continue
             suffix = message_media_suffix(message, media_type)
             path = target_dir / f"{getattr(channel, 'id', 'channel')}-{message.id}{suffix}"
-            media_path = await self._download_message_media(client, message, path)
+            media_path = await self._download_message_media(client, message, path, abort_event)
             if media_path is None or not media_path.is_file():
                 continue
             if media_path.stat().st_size > self.settings.telegram_max_media_bytes:

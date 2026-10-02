@@ -1087,7 +1087,8 @@ def stop_run(
         raise HTTPException(status_code=404, detail="运行记录不存在")
     if run.status not in {"pending", "running"}:
         raise HTTPException(status_code=409, detail="该运行已结束，无法停止")
-    _service(request).stop_run(run.id)
+    if not _service(request).stop_run(run.id):
+        raise HTTPException(status_code=409, detail="任务已不在运行，无法停止")
     db.refresh(run)
     return _run_read(run)
 

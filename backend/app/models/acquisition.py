@@ -68,6 +68,7 @@ class AcquisitionPluginVersion(Base):
     manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
     package_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="uploaded", nullable=False, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)
 
 

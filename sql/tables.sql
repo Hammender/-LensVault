@@ -67,6 +67,7 @@ CREATE UNIQUE INDEX ix_users_username ON users (username);
 --   manifest_json：插件清单快照
 --   package_sha256：原始上传包的 SHA256
 --   status：上传、就绪或失败状态
+--   last_error：最近一次环境准备失败原因
 --   created_at：记录创建时间（上海时区无时区值）
 CREATE TABLE acquisition_plugin_versions (
 	id INTEGER NOT NULL, 
@@ -75,6 +76,7 @@ CREATE TABLE acquisition_plugin_versions (
 	manifest_json TEXT NOT NULL, 
 	package_sha256 VARCHAR(64) NOT NULL, 
 	status VARCHAR(32) NOT NULL, 
+	last_error TEXT, 
 	created_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_acquisition_plugin_version UNIQUE (script_key, version), 

@@ -127,6 +127,7 @@ function telegramCategoryLabel(category: AcquisitionCategory): string {
 }
 
 function runStopLabel(run: AcquisitionRun): string | null {
+  if (run.status === "interrupted" && run.stop_reason === "requested_end") return "用户已停止";
   if (run.scan_start_page == null || run.scan_end_page == null) return null;
   const reason = ({
     collection_end: "已到网站末页",
@@ -225,6 +226,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const [telegramDialogs, setTelegramDialogs] = useState<TelegramDialog[]>([]);
   const [telegramTopics, setTelegramTopics] = useState<TelegramTopic[]>([]);
   const [telegramDialogLoading, setTelegramDialogLoading] = useState(false);
+  const [telegramDialogError, setTelegramDialogError] = useState<string | null>(null);
+  const [telegramDialogRetry, setTelegramDialogRetry] = useState(0);
+  const telegramDialogLoadKeyRef = useRef<string | null>(null);
+  const pluginsRefreshRef = useRef<(() => Promise<void>) | null>(null);
   const [telegramTopicLoading, setTelegramTopicLoading] = useState(false);
   const [telegramTopicError, setTelegramTopicError] = useState<string | null>(null);
   const [telegramTargetMode, setTelegramTargetMode] = useState<"dialog" | "manual">("dialog");
@@ -473,6 +478,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         await Promise.all(requests);
         return;
       }
+      if (tab === "plugins") {
+        await pluginsRefreshRef.current?.();
+        return;
+      }
       const requests: Promise<unknown>[] = [
         refreshReferenceData(),
         loadImportBatchPage(importBatchOffset)
@@ -490,15 +499,26 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     const selectedSource = sourceById.get(Number(categorySourceId));
     const isTelegramCategory = selectedSource?.page_format_key === "telegram-channel-v1";
     if (!isTelegramCategory) {
+      telegramDialogLoadKeyRef.current = null;
       setTelegramDialogPeerId("");
       setTelegramTopics([]);
       setTelegramTopicError(null);
+      setTelegramDialogError(null);
       return;
     }
-    if (telegramAccount?.status !== "active" || telegramDialogs.length > 0 || telegramDialogLoading) return;
+    if (telegramAccount?.status !== "active") return;
+    const loadKey = `${telegramAccount.telegram_user_id ?? telegramAccount.phone_masked ?? "active"}:${categorySourceId}`;
+    if (telegramDialogLoadKeyRef.current === loadKey) return;
+    telegramDialogLoadKeyRef.current = loadKey;
+    let cancelled = false;
     setTelegramDialogLoading(true);
-    void listTelegramDialogs().then(setTelegramDialogs).catch((error: Error) => setNotice(error.message)).finally(() => setTelegramDialogLoading(false));
-  }, [categorySourceId, sourceById, telegramAccount?.status, telegramDialogLoading, telegramDialogs.length]);
+    setTelegramDialogError(null);
+    void listTelegramDialogs()
+      .then((items) => { if (!cancelled) setTelegramDialogs(items); })
+      .catch((error: Error) => { if (!cancelled) setTelegramDialogError(error.message); })
+      .finally(() => { if (!cancelled) setTelegramDialogLoading(false); });
+    return () => { cancelled = true; };
+  }, [categorySourceId, sourceById, telegramAccount?.phone_masked, telegramAccount?.status, telegramAccount?.telegram_user_id, telegramDialogRetry]);
 
   useEffect(() => {
     if (telegramTargetMode !== "dialog") return;
@@ -1305,7 +1325,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       <span>已丢弃 <strong>{assetSummary.status_counts.rejected ?? 0}</strong></span>
     </section>
 
-    {tab === "plugins" && <AcquisitionPluginsPanel canAdmin={canAdmin} canManageAccounts={canManageAccounts} onChanged={() => void refreshReferenceData()} />}
+    {tab === "plugins" && <AcquisitionPluginsPanel canAdmin={canAdmin} canManageAccounts={canManageAccounts} onChanged={() => void refreshReferenceData()} refreshRef={pluginsRefreshRef} />}
 
     {tab === "sources" && <section className="acquisition-grid sources-layout">
       <div className="acquisition-section source-ledger-panel">
@@ -1418,10 +1438,18 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
               <button type="button" className={telegramTargetMode === "dialog" ? "active" : ""} onClick={() => switchTelegramTargetMode("dialog")}>选择已登录会话</button>
               <button type="button" className={telegramTargetMode === "manual" ? "active" : ""} onClick={() => switchTelegramTargetMode("manual")}>手工输入引用</button>
             </div>
-            {telegramTargetMode === "dialog" && <select value={telegramDialogPeerId} onChange={(event) => { setTelegramDialogPeerId(event.target.value); setTelegramTopicId(""); setTelegramTopicTitle(""); }} aria-label="选择 Telegram 会话">
-              <option value="">{telegramDialogLoading ? "正在读取会话…" : "选择频道、群组或机器人"}</option>
-              {telegramDialogs.map((dialog) => <option key={dialog.peer_id} value={dialog.peer_id}>{dialog.title} · {dialog.entity_type === "bot" ? "机器人" : dialog.entity_type === "group" ? "群组" : "频道"}{dialog.is_forum ? " · 论坛" : ""}</option>)}
-            </select>}
+            {telegramTargetMode === "dialog" && <>
+              <select value={telegramDialogPeerId} onChange={(event) => { setTelegramDialogPeerId(event.target.value); setTelegramTopicId(""); setTelegramTopicTitle(""); }} aria-label="选择 Telegram 会话">
+                <option value="">{telegramDialogLoading ? "正在读取会话…" : "选择频道、群组或机器人"}</option>
+                {telegramDialogs.map((dialog) => <option key={dialog.peer_id} value={dialog.peer_id}>{dialog.title} · {dialog.entity_type === "bot" ? "机器人" : dialog.entity_type === "group" ? "群组" : "频道"}{dialog.is_forum ? " · 论坛" : ""}</option>)}
+              </select>
+              {!telegramDialogLoading && telegramDialogError && <small className="telegram-topic-error">读取会话失败：{telegramDialogError}</small>}
+              {!telegramDialogLoading && !telegramDialogError && telegramDialogs.length === 0 && <small className="telegram-topic-empty">未读取到已登录会话。</small>}
+              <button type="button" className="secondary-command" disabled={busy || telegramDialogLoading || telegramAccount?.status !== "active"} onClick={() => {
+                telegramDialogLoadKeyRef.current = null;
+                setTelegramDialogRetry((current) => current + 1);
+              }}>重新读取会话</button>
+            </>}
             {telegramTargetMode === "manual" && <div className="telegram-manual-ref-row">
               <input type="text" value={categoryUrl} onChange={(event) => {
                 setCategoryUrl(event.target.value);

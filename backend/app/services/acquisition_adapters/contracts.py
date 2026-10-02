@@ -44,6 +44,134 @@ class ScriptParameter:
         }
 
 
+_PARAMETER_FIELDS = {
+    "key", "label", "type", "required", "default", "description", "minimum", "maximum", "options",
+}
+_PARAMETER_TYPES = {
+    "string", "integer", "number", "boolean", "select", "datetime", "string_list",
+}
+
+
+def script_parameter_from_manifest(item: object) -> ScriptParameter:
+    if not isinstance(item, dict):
+        raise ValueError("插件参数必须是对象")
+    unknown = sorted(str(key) for key in item if key not in _PARAMETER_FIELDS)
+    if unknown:
+        raise ValueError(f"插件参数包含未知字段：{', '.join(unknown)}")
+    key, label, kind = item.get("key"), item.get("label"), item.get("type")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("插件参数缺少标识")
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError("插件参数缺少名称")
+    if kind not in _PARAMETER_TYPES:
+        raise ValueError(f"插件参数“{label}”类型无效")
+    description = item.get("description")
+    if description is not None and not isinstance(description, str):
+        raise ValueError(f"插件参数“{label}”的说明必须是文本")
+    return ScriptParameter(
+        key=key,
+        label=label,
+        type=kind,
+        required=bool(item.get("required", False)),
+        default=item.get("default"),
+        description=description,
+        minimum=_optional_number(item.get("minimum"), f"插件参数“{label}”的最小值"),
+        maximum=_optional_number(item.get("maximum"), f"插件参数“{label}”的最大值"),
+        options=_normalize_parameter_options(item.get("options", ()), label),
+    )
+
+
+def parse_max_download_workers(raw: object) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ValueError("max_download_workers 必须是正整数")
+    return raw
+
+
+def remote_item_from_plugin(raw: object) -> RemoteItem:
+    if not isinstance(raw, dict):
+        raise ValueError("插件条目必须是对象")
+    external_key = raw.get("external_key")
+    source_url = raw.get("source_url")
+    if not isinstance(external_key, str) or not external_key.strip():
+        raise ValueError("插件条目缺少稳定来源键")
+    if not isinstance(source_url, str) or not source_url.strip():
+        raise ValueError("插件条目缺少原始地址")
+    media_type = raw.get("media_type", "image")
+    if media_type not in {"image", "video"}:
+        raise ValueError("插件条目媒体类型必须是 image 或 video")
+    plugin_data = raw.get("plugin_data")
+    if plugin_data is not None and not isinstance(plugin_data, dict):
+        raise ValueError("插件条目 plugin_data 必须是对象")
+    abort = raw.get("abort_on_access_block", False)
+    if not isinstance(abort, bool):
+        raise ValueError("插件条目 abort_on_access_block 必须是布尔值")
+    return RemoteItem(
+        external_key=external_key,
+        source_url=source_url,
+        preview_url=_optional_text(raw.get("preview_url"), "preview_url"),
+        title=_optional_text(raw.get("title"), "title"),
+        candidate_urls=_string_tuple(raw.get("candidate_urls"), "candidate_urls"),
+        ignored_reason=_optional_text(raw.get("ignored_reason"), "ignored_reason"),
+        referer_url=_optional_text(raw.get("referer_url"), "referer_url"),
+        abort_on_access_block=abort,
+        media_type=media_type,
+        plugin_data=plugin_data,
+        caption=_optional_text(raw.get("caption"), "caption"),
+        hashtags=_string_tuple(raw.get("hashtags"), "hashtags"),
+        published_at=_optional_text(raw.get("published_at"), "published_at"),
+        channel_title=_optional_text(raw.get("channel_title"), "channel_title"),
+    )
+
+
+def _optional_number(value: object, label: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label}必须是数字")
+    return float(value)
+
+
+def _optional_text(value: object, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"插件条目 {field} 必须是文本")
+    return value
+
+
+def _string_tuple(value: object, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or not all(isinstance(part, str) for part in value):
+        raise ValueError(f"插件条目 {field} 必须是文本列表")
+    return tuple(value)
+
+
+def _normalize_parameter_options(raw: object, label: str) -> tuple[tuple[str, str], ...]:
+    if raw in (None, (), []):
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError(f"插件参数“{label}”的选项无效")
+    options: list[tuple[str, str]] = []
+    for option in raw:
+        if isinstance(option, dict):
+            value, option_label = option.get("value"), option.get("label")
+            if not isinstance(value, str) or not isinstance(option_label, str):
+                raise ValueError(f"插件参数“{label}”的选项无效")
+            options.append((value, option_label))
+        elif (
+            isinstance(option, (list, tuple))
+            and len(option) == 2
+            and all(isinstance(part, str) for part in option)
+        ):
+            options.append((option[0], option[1]))
+        else:
+            raise ValueError(f"插件参数“{label}”的选项无效")
+    return tuple(options)
+
+
 @dataclass(frozen=True)
 class RemoteItem:
     external_key: str

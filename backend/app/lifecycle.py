@@ -142,6 +142,9 @@ def initialize_runtime(
     try:
         acquisition_service = getattr(services, "acquisition", None)
         if acquisition_service is not None:
+            stuck = acquisition_service.plugins.recover_stuck_prepares(db)
+            if stuck:
+                logger.warning("应用启动：已恢复卡在准备中的插件版本 count=%d", stuck)
             acquisition_service.refresh_plugins(db)
         for workspace in db.scalars(select(Workspace)).all():
             services.pictures.ensure_system_tags(db, workspace.id)

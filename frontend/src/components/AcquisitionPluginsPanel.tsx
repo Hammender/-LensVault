@@ -8,13 +8,18 @@ import {
 } from "../api/acquisitionPlugins";
 import { useConfirm } from "./ConfirmDialog";
 
-type Props = { canAdmin: boolean; canManageAccounts: boolean; onChanged: () => void };
+type Props = {
+  canAdmin: boolean;
+  canManageAccounts: boolean;
+  onChanged: () => void;
+  refreshRef?: { current: (() => Promise<void>) | null };
+};
 
 const stateLabel: Record<string, string> = {
   uploaded: "待准备", preparing: "准备中", ready: "可启用", active: "已启用", failed: "准备失败"
 };
 
-export default function AcquisitionPluginsPanel({ canAdmin, canManageAccounts, onChanged }: Props) {
+export default function AcquisitionPluginsPanel({ canAdmin, canManageAccounts, onChanged, refreshRef }: Props) {
   const confirm = useConfirm();
   const [versions, setVersions] = useState<AcquisitionPluginVersion[]>([]);
   const [selectedKey, setSelectedKey] = useState("");
@@ -32,6 +37,7 @@ export default function AcquisitionPluginsPanel({ canAdmin, canManageAccounts, o
     setVersions(result);
     setSelectedKey((current) => current || result.find((item) => item.status === "active")?.key || result[0]?.key || "");
   }
+  if (refreshRef) refreshRef.current = refresh;
 
   useEffect(() => { void refresh().catch((error) => setNotice(String(error))); }, []);
   useEffect(() => {
@@ -75,12 +81,13 @@ export default function AcquisitionPluginsPanel({ canAdmin, canManageAccounts, o
           </button>
           <span className={`plugin-state ${item.status}`}>{stateLabel[item.status]}</span>
           <p>{item.description}</p>
+          {item.last_error && item.status === "failed" && <small className="telegram-topic-error">{item.last_error}</small>}
           {item.requirements.length > 0 && <small>依赖：{item.requirements.join("、")}</small>}
           {canAdmin && <div className="plugin-actions">
-            {(item.status === "uploaded" || item.status === "failed") && <button type="button" disabled={busy} onClick={() => void perform(() => changePlugin(item.key, item.version, "prepare"), "环境准备已排队，请稍后刷新状态")}>准备环境</button>}
+            {(item.status === "uploaded" || item.status === "failed" || item.status === "preparing") && <button type="button" disabled={busy} onClick={() => void perform(() => changePlugin(item.key, item.version, "prepare"), "环境准备已排队，请稍后刷新状态")}>{item.status === "preparing" ? "重新准备" : "准备环境"}</button>}
             {item.status === "ready" && <button type="button" disabled={busy} onClick={() => void perform(() => changePlugin(item.key, item.version, "activate"), "插件已启用")}>启用版本</button>}
             {item.status === "active" && <button type="button" className="secondary-command" disabled={busy} onClick={() => void perform(() => changePlugin(item.key, item.version, "disable"), "插件已停用")}>停用</button>}
-            {item.status !== "active" && item.status !== "preparing" && <button type="button" className="secondary-command" disabled={busy} onClick={() => void (async () => {
+            {item.status !== "active" && <button type="button" className="secondary-command" disabled={busy} onClick={() => void (async () => {
               if (!await confirm({ title: `卸载 ${item.name} v${item.version}？`, message: "移除该版本的代码和独立环境；采集历史与审核结果保留。", confirmLabel: "确认卸载", tone: "danger" })) return;
               await perform(() => uninstallPlugin(item.key, item.version), "插件版本已卸载");
             })()}>卸载版本</button>}

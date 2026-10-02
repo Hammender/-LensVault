@@ -6,6 +6,7 @@ export type PluginCredentialField = { key: string; label: string; required?: boo
 export type AcquisitionPluginVersion = {
   key: string; name: string; version: string; description: string;
   status: "uploaded" | "preparing" | "ready" | "active" | "failed";
+  last_error: string | null;
   requirements: string[]; credentials: PluginCredentialField[]; created_at: string;
 };
 export type AcquisitionPluginCredential = { id: number; name: string; status: string; last_tested_at: string | null; reason?: string | null };

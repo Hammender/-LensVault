@@ -41,6 +41,7 @@ from app.models import (
     AcquisitionRunItem,
     AcquisitionRun,
     AcquisitionScript,
+    TelegramAccount,
     AcquisitionSimilarityCandidate,
     AcquisitionSourceItem,
     AcquisitionSource,
@@ -659,6 +660,94 @@ class AcquisitionModelTests(unittest.TestCase):
 
     def test_stop_run_returns_false_for_inactive_or_unknown_run(self) -> None:
         self.assertFalse(self.service.stop_run("no-such-run-id"))
+
+    def _telegram_run(self) -> AcquisitionRun:
+        definition = get_script("telegram-channel-mtproto")
+        assert definition is not None
+        self.db.add(
+            AcquisitionScript(
+                key=definition.key,
+                name=definition.name,
+                version=definition.version,
+                page_format_key=definition.page_format_key,
+                parameter_schema_json="[]",
+            )
+        )
+        self.db.commit()
+        workspace = Workspace(name="采集工作区", kind="private")
+        self.db.add(workspace)
+        self.db.commit()
+        source = self.service.create_source(self.db, workspace.id, "Telegram 主站", None, None, definition.key)
+        category = self.service.create_category(self.db, source, "示例频道", "https://t.me/demo")
+        self.db.add(
+            TelegramAccount(
+                workspace_id=workspace.id,
+                api_id=1,
+                api_hash_encrypted="encrypted",
+                session_encrypted="session",
+                status="active",
+            )
+        )
+        self.db.commit()
+        return self.service.start_run(self.db, workspace.id, category, definition.key, "full", {})
+
+    def test_telegram_stop_before_start_does_not_connect(self) -> None:
+        run = self._telegram_run()
+        self.assertTrue(self.service.stop_run(run.id))
+        with patch("app.services.acquisition.TelegramService.read_channel_media") as read:
+            self.service.process_run(self.db, run.id)
+        read.assert_not_called()
+        self.db.refresh(run)
+        self.assertEqual(run.status, "interrupted")
+        self.assertEqual(run.stop_reason, "requested_end")
+        self.assertIsNotNone(run.completed_at)
+
+    def test_telegram_stop_during_collection_keeps_saved_records(self) -> None:
+        run = self._telegram_run()
+        root = Path(tempfile.mkdtemp())
+        self.service.settings.data_dir = root
+
+        def read_channel_media(_account, _channel_ref, _parameters, _target_dir, on_records=None, abort_event=None):
+            self.assertIsNotNone(abort_event)
+            if on_records is not None:
+                on_records([{
+                    "external_key": "99:1:0",
+                    "source_url": "https://t.me/demo/1",
+                    "caption": "已下载",
+                    "channel_id": "99",
+                    "channel_title": "频道",
+                    "channel_username": "demo",
+                    "message_id": 1,
+                    "grouped_id": None,
+                    "media_type": "image",
+                    "peer_id": "99",
+                    "entity_type": "channel",
+                    "sender_id": None,
+                    "sender_username": None,
+                    "sender_is_bot": False,
+                    "reply_to_message_id": None,
+                    "topic_id": None,
+                    "topic_title": None,
+                    "is_comment": False,
+                    "root_channel_message_id": None,
+                    "published_at": datetime(2026, 10, 3, 0, 0),
+                    "edited_at": None,
+                    "hashtags": [],
+                    "protected_content": True,
+                }])
+            self.assertTrue(self.service.stop_run(run.id))
+            return []
+
+        with patch("app.services.acquisition.TelegramService.read_channel_media", side_effect=read_channel_media):
+            self.service.process_run(self.db, run.id)
+
+        self.db.refresh(run)
+        self.assertEqual(run.status, "interrupted")
+        self.assertEqual(run.stop_reason, "requested_end")
+        self.assertEqual(run.ignored_count, 1)
+        saved = self.db.scalars(select(AcquisitionSourceItem).where(AcquisitionSourceItem.category_id == run.category_id)).all()
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].status, "ignored_protected")
 
 
 

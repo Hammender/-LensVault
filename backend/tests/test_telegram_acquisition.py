@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from telethon.tl.types.auth import SentCodeTypeApp, SentCodeTypeSms
 from app.core.config import Settings
 from app.services.acquisition_adapters.registry import get_script
 from app.services.telegram import (
+    TelegramRunAborted,
     TelegramService,
     code_delivery_from_type,
     extract_hashtags,
@@ -483,6 +485,124 @@ class TelegramAcquisitionTests(unittest.TestCase):
             records = asyncio.run(service._download_media_group(FakeClient(), channel, messages, Path(raw_dir)))
         self.assertEqual([record["message_id"] for record in records], [1, 3])
         self.assertTrue(all(record["caption"] == "相册" for record in records))
+
+    def test_collection_client_limits_internal_request_retries(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key))
+        seen: dict[str, object] = {}
+
+        class FakeTelegramClient:
+            def __init__(self, session: object, api_id: int, api_hash: str, **kwargs: object) -> None:
+                seen["request_retries"] = kwargs.get("request_retries")
+
+            async def connect(self) -> None:
+                raise RuntimeError("停止于连接")
+
+        account = SimpleNamespace(
+            session_encrypted=service.encrypt(""),
+            api_id=1,
+            api_hash_encrypted=service.encrypt("hash"),
+        )
+        with patch("app.services.telegram.TelegramClient", FakeTelegramClient):
+            with self.assertRaisesRegex(ValueError, "停止于连接"):
+                service.read_channel_media(account, "demo", {}, Path("."))
+        self.assertEqual(seen["request_retries"], 2)
+
+    def test_download_group_stops_before_later_media(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key, telegram_download_timeout_seconds=2))
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        messages = [_photo(1, published, grouped_id=8), _photo(2, published, grouped_id=8), _photo(3, published, grouped_id=8)]
+        channel = SimpleNamespace(id=99, title="频道", username="demo", noforwards=False)
+        abort = threading.Event()
+        calls: list[int] = []
+
+        class FakeClient:
+            async def download_media(self, message, file):
+                calls.append(message.id)
+                if message.id == 2:
+                    abort.set()
+                    await asyncio.sleep(30)
+                Path(file).write_bytes(b"image-bytes")
+                return file
+
+        with tempfile.TemporaryDirectory() as raw_dir:
+            with self.assertRaises(TelegramRunAborted):
+                asyncio.run(service._download_media_group(FakeClient(), channel, messages, Path(raw_dir), abort))
+        self.assertEqual(calls, [1, 2])
+
+    def test_file_stall_reconnects_and_backs_off(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key, telegram_download_timeout_seconds=2))
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        message = _photo(7, published)
+        channel = SimpleNamespace(id=99, title="频道", username="demo", noforwards=False)
+
+        for stall_factory in (
+            lambda: ValueError("Request was unsuccessful 6 time(s)"),
+            TimeoutError,
+        ):
+            stall = stall_factory()
+            with self.subTest(stall=type(stall).__name__):
+                sleeps: list[float] = []
+
+                async def record_sleep(seconds: float) -> None:
+                    sleeps.append(seconds)
+
+                class FakeClient:
+                    def __init__(self) -> None:
+                        self.downloads = 0
+                        self.reconnects = 0
+
+                    async def download_media(self, downloaded_message, file):
+                        self.downloads += 1
+                        if self.downloads == 1:
+                            raise stall
+                        Path(file).write_bytes(b"image-bytes")
+                        return file
+
+                    async def disconnect(self) -> None:
+                        self.reconnects += 1
+
+                    async def connect(self) -> None:
+                        return None
+
+                    async def is_user_authorized(self) -> bool:
+                        return True
+
+                client = FakeClient()
+                with tempfile.TemporaryDirectory() as raw_dir, patch("app.services.telegram.asyncio.sleep", side_effect=record_sleep):
+                    records = asyncio.run(service._download_media_group(client, channel, [message], Path(raw_dir)))
+                self.assertEqual([item["message_id"] for item in records], [7])
+                self.assertEqual(client.reconnects, 1)
+                self.assertEqual(sleeps, [15])
+
+    def test_flood_wait_retries_without_reconnect(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(Settings(telegram_session_encryption_key=key, telegram_download_timeout_seconds=2))
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        message = _photo(8, published)
+        channel = SimpleNamespace(id=99, title="频道", username="demo", noforwards=False)
+        sleeps: list[float] = []
+
+        async def record_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.downloads = 0
+
+            async def download_media(self, downloaded_message, file):
+                self.downloads += 1
+                if self.downloads == 1:
+                    raise FloodWaitError(request=None, capture=4)
+                Path(file).write_bytes(b"image-bytes")
+                return file
+
+        with tempfile.TemporaryDirectory() as raw_dir, patch("app.services.telegram.asyncio.sleep", side_effect=record_sleep):
+            records = asyncio.run(service._download_media_group(FakeClient(), channel, [message], Path(raw_dir)))
+        self.assertEqual([item["message_id"] for item in records], [8])
+        self.assertEqual(sleeps, [4])
 
     def test_serialize_forum_topics_uses_fallback_title(self) -> None:
         topics = TelegramService._serialize_forum_topics(SimpleNamespace(topics=[

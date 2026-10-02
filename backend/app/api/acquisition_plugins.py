@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies.context import CurrentContext, require_context, require_permission, require_workspace_owner
 from app.models import AcquisitionCategory, AcquisitionPluginCredential, AcquisitionPluginVersion, AcquisitionRun, AcquisitionSource, AcquisitionSourceScript
-from app.services.acquisition_plugins.manager import MAX_PACKAGE_BYTES, PluginAdapter
+from app.services.acquisition_plugins.manager import MAX_PACKAGE_BYTES, PREVIEW_TIMEOUT_SECONDS, PluginAborted, PluginAdapter
 
 
 router = APIRouter(prefix="/api/acquisition/plugins", tags=["采集插件"])
@@ -52,6 +53,7 @@ def _version_read(row: AcquisitionPluginVersion) -> dict[str, object]:
     manifest = json.loads(row.manifest_json)
     return {"key": row.script_key, "name": manifest["name"], "version": row.version,
             "description": manifest["description"], "status": row.status,
+            "last_error": row.last_error,
             "requirements": manifest.get("requirements", []),
             "credentials": manifest.get("credentials", []), "created_at": row.created_at}
 
@@ -69,30 +71,42 @@ async def upload_plugin(request: Request, file: UploadFile = File(...),
     payload = await file.read(MAX_PACKAGE_BYTES + 1)
     try:
         return _version_read(_manager(request).upload(db, payload))
-    except (ValueError, json.JSONDecodeError) as exc:
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _prepare_task(session_factory, manager, row_id: int) -> None:
-    with session_factory() as db:
-        row = db.get(AcquisitionPluginVersion, row_id)
-        if row is not None:
+    try:
+        with session_factory() as db:
+            row = db.get(AcquisitionPluginVersion, row_id)
+            if row is None:
+                return
             try:
                 manager.prepare(db, row)
-            except ValueError:
-                pass  # 状态已记录；不把安装器输出暴露给浏览器。
+            except Exception:
+                row = db.get(AcquisitionPluginVersion, row_id)
+                if row is not None and row.status == "preparing":
+                    row.status = "failed"
+                    row.last_error = "插件依赖准备失败"
+                    db.commit()
+    finally:
+        manager.preparing_ids.discard(row_id)
 
 
 @router.post("/{key}/versions/{version}/prepare")
 def prepare_plugin(key: str, version: str, background: BackgroundTasks, request: Request,
                    db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)):
     _admin(current)
+    manager = _manager(request)
     row = _version(db, key, version)
-    if row.status not in {"uploaded", "failed"}:
+    if row.status == "preparing" and row.id in manager.preparing_ids:
+        raise HTTPException(status_code=409, detail="环境正在准备")
+    if row.status not in {"uploaded", "failed", "preparing"}:
         raise HTTPException(status_code=409, detail="该插件版本当前无法准备环境")
+    manager.preparing_ids.add(row.id)
     row.status = "preparing"
     db.commit()
-    background.add_task(_prepare_task, request.app.state.session_factory, _manager(request), row.id)
+    background.add_task(_prepare_task, request.app.state.session_factory, manager, row.id)
     return {"status": "queued"}
 
 
@@ -174,6 +188,7 @@ def preview_plugin(key: str, payload: PluginPreviewRequest, request: Request,
         parameters = definition.validate_parameters({**defaults, **payload.parameters})
         adapter = definition.adapter
         assert isinstance(adapter, PluginAdapter)
+        adapter.deadline = time.monotonic() + PREVIEW_TIMEOUT_SECONDS
         results = []
         pages = adapter.enumerate_pages(category.crawl_url, parameters, set(), False)
         try:
@@ -196,6 +211,8 @@ def preview_plugin(key: str, payload: PluginPreviewRequest, request: Request,
         finally:
             pages.close()
         return {"items": results}
+    except PluginAborted as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
