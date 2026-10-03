@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Maximize2, Minimize2, Pause, Play, Trash2, Volume1, Volume2, VolumeX } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronDown, ChevronUp, Maximize2, Minimize2, Pause, Play, Trash2, Volume1, Volume2, VolumeX } from "lucide-react";
 
 import { acquisitionDownloadUrl } from "../api/acquisition";
 import { getAcquisitionLightboxShortcut } from "../lib/acquisitionReview";
@@ -50,8 +50,17 @@ export default function AcquisitionReviewLightbox({
   onReject
 }: AcquisitionReviewLightboxProps) {
   const isVideo = asset.media_type === "video";
-  const hasCaption = Boolean(asset.source_caption || asset.source_hashtags.length || asset.source_message_url);
+  const hasSource = Boolean(
+    asset.source_caption
+    || asset.source_hashtags.length
+    || asset.source_message_url
+    || asset.source_channel_title
+    || asset.source_published_at
+  );
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const captionRef = useRef<HTMLParagraphElement | null>(null);
+  const [captionExpanded, setCaptionExpanded] = useState(false);
+  const [captionOverflows, setCaptionOverflows] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.15);
@@ -84,7 +93,24 @@ export default function AcquisitionReviewLightbox({
     setDuration(asset.duration_seconds ?? 0);
     setIsPlaying(true);
     setShowSpeedMenu(false);
+    setCaptionExpanded(false);
   }, [asset.id, asset.duration_seconds]);
+
+  useLayoutEffect(() => {
+    const node = captionRef.current;
+    if (!node) {
+      setCaptionOverflows(false);
+      return undefined;
+    }
+    const measure = () => {
+      if (node.classList.contains("is-expanded")) return;
+      setCaptionOverflows(node.scrollHeight > node.clientHeight + 1);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [asset.id, asset.source_caption]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -323,37 +349,14 @@ export default function AcquisitionReviewLightbox({
     <div className="tile-missing">临时文件已清除</div>
   );
 
-  const copy = hasCaption ? (
-    <aside className="rich-lightbox-copy acquisition-review-copy">
-      <h3>来源文案</h3>
-      <p>{asset.source_caption || "这条消息没有正文。"}</p>
-      {asset.source_hashtags.length > 0 && (
-        <div className="micro-row wrap">
-          {asset.source_hashtags.map((tag) => (
-            <small key={tag} className="acquisition-hashtag">#{tag}</small>
-          ))}
-        </div>
-      )}
-      <div className="micro-row wrap">
-        {asset.source_channel_title && <span>{asset.source_channel_title}</span>}
-        {asset.source_published_at && <span>{formatDate(asset.source_published_at)}</span>}
-        {asset.source_message_url && (
-          <a href={asset.source_message_url} target="_blank" rel="noreferrer">打开原消息</a>
-        )}
-      </div>
-    </aside>
-  ) : null;
-
   return (
     <PhotoLightbox
       backdropClassName="acquisition-review-lightbox-backdrop"
-      shellClassName={`acquisition-review-lightbox${hasCaption ? " rich-lightbox" : ""}`}
+      shellClassName="acquisition-review-lightbox"
       ariaLabel={isVideo ? "采集视频预览" : "采集图片预览"}
       busy={busy}
       canGoPrevious={canGoPrevious}
       canGoNext={canGoNext}
-      previousLabel="上一项"
-      nextLabel="下一项"
       onClose={onClose}
       onPrevious={onPrevious}
       onNext={onNext}
@@ -401,33 +404,32 @@ export default function AcquisitionReviewLightbox({
               <p className="acquisition-eyebrow">采集审核</p>
               <h2>{statusLabel}</h2>
             </div>
-            <strong>{indexLabel}</strong>
+            <div className="acquisition-lightbox-heading-tools">
+              <strong>{indexLabel}</strong>
+              <button type="button" className="acquisition-lightbox-close" onClick={onClose}>关闭</button>
+            </div>
           </div>
           {extraMeta}
           <dl className="acquisition-lightbox-facts">
-            <div><dt>文件名</dt><dd title={asset.filename}>{asset.filename}</dd></div>
+            <div className="span-all"><dt>文件名</dt><dd title={asset.filename}>{asset.filename}</dd></div>
             <div>
               <dt>{isVideo ? "画面" : "尺寸"}</dt>
               <dd>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "未知"}</dd>
             </div>
+            <div><dt>大小</dt><dd>{formatBytes(asset.size_bytes)}</dd></div>
             {isVideo && (
-              <div>
+              <div className="span-all">
                 <dt>时长</dt>
                 <dd>{asset.duration_seconds != null ? formatDurationSeconds(asset.duration_seconds) : "未知"}</dd>
               </div>
             )}
-            <div><dt>大小</dt><dd>{formatBytes(asset.size_bytes)}</dd></div>
           </dl>
           <section className={asset.quality_warnings.length ? "acquisition-quality-notes has-warning" : "acquisition-quality-notes"}>
             <strong>质量提示</strong>
-            <p>{asset.quality_warnings.length ? asset.quality_warnings.join(" / ") : "未发现自动质量提示"}</p>
+            <p title={asset.quality_warnings.length ? asset.quality_warnings.join(" / ") : undefined}>
+              {asset.quality_warnings.length ? asset.quality_warnings.join(" / ") : "未发现自动质量提示"}
+            </p>
           </section>
-          {isVideo && (
-            <section className="acquisition-review-shortcuts">
-              <strong>快捷键</strong>
-              <p>空格播放 · Enter 选中 · J / L 快退快进 · M 静音 · F 全屏</p>
-            </section>
-          )}
           <div className="acquisition-lightbox-actions">
             <button type="button" className={selected ? "selected" : ""} onClick={onToggleSelect} disabled={busy}>
               <Check size={17} /> {selected ? "取消选择" : "选中当前"}
@@ -438,15 +440,52 @@ export default function AcquisitionReviewLightbox({
               </button>
             )}
           </div>
+          {hasSource && (
+            <section className="acquisition-review-copy">
+              <h3>来源文案</h3>
+              <p
+                ref={captionRef}
+                className={`acquisition-review-copy-body${captionExpanded ? " is-expanded" : ""}`}
+              >
+                {asset.source_caption || "这条消息没有正文。"}
+              </p>
+              {(captionOverflows || captionExpanded) && (
+                <button
+                  type="button"
+                  className="acquisition-review-copy-toggle"
+                  aria-expanded={captionExpanded}
+                  onClick={() => setCaptionExpanded((current) => !current)}
+                >
+                  {captionExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  {captionExpanded ? "收起" : "展开全文"}
+                </button>
+              )}
+              {asset.source_hashtags.length > 0 && (
+                <div className="micro-row wrap">
+                  {asset.source_hashtags.map((tag) => (
+                    <small key={tag} className="acquisition-hashtag">#{tag}</small>
+                  ))}
+                </div>
+              )}
+              <div className="micro-row wrap">
+                {asset.source_channel_title && <span>{asset.source_channel_title}</span>}
+                {asset.source_published_at && <span>{formatDate(asset.source_published_at)}</span>}
+                {asset.source_message_url && (
+                  <a href={asset.source_message_url} target="_blank" rel="noreferrer">打开原消息</a>
+                )}
+              </div>
+            </section>
+          )}
+          {isVideo && (
+            <section className="acquisition-review-shortcuts">
+              <strong>快捷键</strong>
+              <p>空格播放 · Enter 选中 · J / L 快退快进 · M 静音 · F 全屏</p>
+            </section>
+          )}
         </>
       }
     >
-      {hasCaption ? (
-        <div className="rich-lightbox-layout">
-          <div className="rich-lightbox-image-wrap">{media}</div>
-          {copy}
-        </div>
-      ) : media}
+      {media}
     </PhotoLightbox>
   );
 }

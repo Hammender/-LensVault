@@ -268,25 +268,62 @@
 }
 
 .acquisition-review-copy {
-  background: #f7fbf8;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(53, 37, 29, .18);
 }
 
 .acquisition-review-copy h3 {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   color: #213a3d;
-  font-size: 1.05rem;
+  font-size: .82rem;
 }
 
-.acquisition-review-copy p {
+.acquisition-review-copy-body {
   margin: 0;
   color: #213a3d;
+  font-size: .86rem;
+  line-height: 1.5;
   white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 6em;
+  overflow: hidden;
+}
+
+.acquisition-review-copy-body.is-expanded {
+  max-height: none;
+  overflow: visible;
+}
+
+.acquisition-review-copy-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  border: 0;
+  background: transparent;
+  color: #237b75;
+  padding: 4px 0 0;
+  box-shadow: none;
+  font-size: .78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.acquisition-review-copy-toggle:hover:not(:disabled),
+.acquisition-review-copy-toggle:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
 }
 
 .acquisition-review-copy .micro-row {
   gap: 8px;
+  margin-top: 8px;
   color: var(--muted);
-  font-size: .78rem;
+  font-size: .72rem;
 }
 
 .acquisition-review-copy a {
@@ -301,19 +338,21 @@
 }
 
 .acquisition-review-shortcuts {
+  flex-shrink: 0;
   border-top: 1px dashed rgba(53, 37, 29, .18);
-  padding-top: 12px;
+  padding-top: 8px;
+  margin-top: 2px;
 }
 
 .acquisition-review-shortcuts strong {
   display: block;
   color: #213a3d;
-  font-size: .72rem;
+  font-size: .68rem;
 }
 
 .acquisition-review-shortcuts p {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   color: var(--muted);
-  font-size: .72rem;
-  line-height: 1.5;
+  font-size: .68rem;
+  line-height: 1.45;
 }
