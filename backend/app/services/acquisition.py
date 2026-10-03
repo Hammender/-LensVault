@@ -10,8 +10,9 @@ import tempfile
 import threading
 import time
 import subprocess
+from contextlib import nullcontext
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections.abc import Callable
@@ -76,6 +77,8 @@ from app.services.similarity import (
 from app.services.storage import MinioStorage
 from app.services.telegram import TelegramRunAborted, TelegramService
 from app.services.acquisition_plugins.manager import PluginAborted, PluginAdapter, PluginManager
+from app.services.acquisition_plugins.context import PluginExecutionContext
+from app.services.acquisition_plugins.runtime import check_abort, safe_error
 from app.services.video_processing import extract_video_cover_frame
 
 logger = logging.getLogger(__name__)
@@ -213,6 +216,11 @@ class DownloadedRemote:
     quality_score: float | None
     file_path: Path | None = None
     size_bytes: int = 0
+    temporary_dir: Path | None = None
+
+    def cleanup(self) -> None:
+        if self.temporary_dir is not None:
+            shutil.rmtree(self.temporary_dir, ignore_errors=True)
 
 
 class AcquisitionService:
@@ -257,15 +265,16 @@ class AcquisitionService:
     def scripts(self) -> list[dict[str, object]]:
         builtin = [get_script(key).metadata() for key in sorted(SCRIPT_REGISTRY)]
         installed = []
-        for key in sorted(self.plugins.active):
+        snapshot = self.plugins.active
+        for key in sorted(snapshot):
             if key in SCRIPT_REGISTRY:
                 continue
-            definition = self.plugins.get_definition(key)
+            definition = self.plugins.definition_from_manifest(snapshot[key])
             if definition is None:
                 continue
             installed.append({
                 **definition.metadata(),
-                "credentials": self.plugins.active[key].get("credentials", []),
+                "credentials": snapshot[key].get("credentials", []),
                 "is_plugin": True,
             })
         return builtin + installed
@@ -445,6 +454,19 @@ class AcquisitionService:
         parameters: dict[str, object] | None = None,
         credential_id: int | None = None,
     ) -> AcquisitionRun:
+        with self.plugins.catalog.lock:
+            return self._start_run(db, workspace_id, category, script_key, mode, parameters, credential_id)
+
+    def _start_run(
+        self,
+        db: Session,
+        workspace_id: int | None,
+        category: AcquisitionCategory,
+        script_key: str,
+        mode: str,
+        parameters: dict[str, object] | None = None,
+        credential_id: int | None = None,
+    ) -> AcquisitionRun:
         if mode not in {"incremental", "full", "verify"}:
             raise ValueError("采集模式必须为 incremental、full 或 verify")
         source = db.get(AcquisitionSource, category.source_id)
@@ -464,9 +486,9 @@ class AcquisitionService:
             raise ValueError("该脚本未绑定到分类所属站点")
         if source.page_format_key != definition.page_format_key:
             raise ValueError("脚本网页格式与站点不一致")
-        if script_key in self.plugins.active:
-            fields = self.plugins.active[script_key].get("credentials", [])
-            if fields and credential_id is None:
+        if isinstance(definition.adapter, PluginAdapter):
+            fields = definition.adapter.manifest.get("credentials", [])
+            if any(field.get("required") is True for field in fields) and credential_id is None:
                 raise ValueError("该插件需要先选择账号配置")
             if credential_id is not None:
                 account = db.get(AcquisitionPluginCredential, credential_id)
@@ -626,10 +648,12 @@ class AcquisitionService:
     def _download_and_analyze(self, remote: RemoteItem, referer: str,
                               plugin_adapter: PluginAdapter | None = None) -> DownloadedRemote:
         file_path: Path | None = None
+        temporary_dir: Path | None = None
         if plugin_adapter is not None:
             temporary_root = self.settings.data_dir / "acquisition" / "plugin-tmp"
             temporary_root.mkdir(parents=True, exist_ok=True)
-            temporary_dir = Path(tempfile.mkdtemp(prefix="download-", dir=temporary_root))
+            temporary_dir = (plugin_adapter.context.download_directory() if plugin_adapter.context is not None
+                             else Path(tempfile.mkdtemp(prefix="download-", dir=temporary_root)))
             try:
                 file_path = plugin_adapter.download(asdict(remote), temporary_dir)
                 limit = self.settings.telegram_max_media_bytes if remote.media_type == "video" else self.settings.acquisition_max_file_bytes
@@ -648,12 +672,25 @@ class AcquisitionService:
                 resolved_url = remote.source_url
             else:
                 payload, content_type, resolved_url = result
+        execution = plugin_adapter.context if plugin_adapter is not None else None
+        previous = getattr(self._download_policy, "plugin_context", None)
+        self._download_policy.plugin_context = execution
         try:
-            return self._analyze_downloaded_media(remote, payload, content_type, resolved_url, file_path)
+            if execution is not None:
+                check_abort(execution.abort_event, execution.deadline)
+            downloaded = self._analyze_downloaded_media(remote, payload, content_type, resolved_url, file_path)
+            if execution is not None:
+                check_abort(execution.abort_event, execution.deadline)
+            return replace(downloaded, temporary_dir=temporary_dir)
         except Exception:
-            if file_path is not None:
-                shutil.rmtree(file_path.parent, ignore_errors=True)
+            if temporary_dir is not None:
+                shutil.rmtree(temporary_dir, ignore_errors=True)
             raise
+        finally:
+            if previous is None:
+                del self._download_policy.plugin_context
+            else:
+                self._download_policy.plugin_context = previous
 
     def _analyze_downloaded_media(self, remote: RemoteItem, payload: bytes | None,
                                    content_type: str | None, resolved_url: str,
@@ -801,13 +838,32 @@ class AcquisitionService:
         db.commit()
 
     def process_run(self, db: Session, run_id: str) -> None:
+        run = db.get(AcquisitionRun, run_id)
+        if run is None or run.status not in {"pending", "running"}:
+            return
         abort_event = self._register_run_abort(run_id)
+        context = PluginExecutionContext(self.plugins.root.parent / "plugin-tmp", abort_event)
         try:
-            self._process_run_body(db, run_id, abort_event)
+            with context:
+                lease = (self.plugins.lease(run.script_key or "", run.script_version_snapshot)
+                         if run.script_key not in SCRIPT_REGISTRY else nullcontext())
+                with lease:
+                    self._process_run_body(db, run_id, abort_event, context)
+        except Exception as exc:
+            db.rollback()
+            current = db.get(AcquisitionRun, run_id)
+            if current is not None and current.status in {"pending", "running"}:
+                current.status = "interrupted" if isinstance(exc, PluginAborted) else "failed"
+                current.error_message = safe_error(str(exc), context.secrets)
+                current.completed_at = shanghai_now()
+                if isinstance(exc, PluginAborted):
+                    current.stop_reason = "requested_end"
+                db.commit()
         finally:
             self._clear_run_abort(run_id)
 
-    def _process_run_body(self, db: Session, run_id: str, abort_event: threading.Event) -> None:
+    def _process_run_body(self, db: Session, run_id: str, abort_event: threading.Event,
+                          context: PluginExecutionContext) -> None:
         run = db.get(AcquisitionRun, run_id)
         if run is not None and abort_event.is_set():
             self._mark_run_interrupted(db, run)
@@ -818,6 +874,7 @@ class AcquisitionService:
         category = db.get(AcquisitionCategory, run.category_id)
         if source is None or category is None:
             run.status = "failed"
+            run.completed_at = shanghai_now()
             run.error_message = "采集站点或分类已被删除"
             db.commit()
             return
@@ -826,20 +883,22 @@ class AcquisitionService:
             account = db.get(AcquisitionPluginCredential, run.credential_id)
             if account is None or account.workspace_id != run.workspace_id or account.script_key != run.script_key:
                 run.status = "failed"
+                run.completed_at = shanghai_now()
                 run.error_message = "账号配置不可用"
                 db.commit()
                 return
             credentials = self.plugins.credentials(account)
+        context.credentials = dict(credentials)
         definition = self.get_definition(run.script_key or "", run.script_version_snapshot, credentials)
         if definition is None:
             run.status = "failed"
+            run.completed_at = shanghai_now()
             run.error_message = "运行所使用的采集脚本不可用"
             db.commit()
             return
-        try:
-            parameters = json.loads(run.parameters_json or "{}")
-        except (TypeError, json.JSONDecodeError):
-            parameters = {}
+        parameters = json.loads(run.parameters_json or "{}")
+        if not isinstance(parameters, dict):
+            raise ValueError("运行参数必须是对象")
         if definition.key == "telegram-channel-mtproto":
             self._process_telegram_run(db, run, source, category, parameters,
                 definition.adapter if isinstance(definition.adapter, PluginAdapter) else None)
@@ -877,6 +936,8 @@ class AcquisitionService:
             limiter = _DownloadStartLimiter(definition.download_start_interval_seconds)
             if isinstance(definition.adapter, PluginAdapter):
                 definition.adapter.abort_event = abort_event
+                definition.adapter.context = context
+                context.manifest = definition.adapter.manifest
             try:
                 def download(prepared: PendingRemote) -> DownloadedRemote:
                     limiter.wait(abort_event)
@@ -891,6 +952,7 @@ class AcquisitionService:
 
                 stopped = False
                 with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="acquisition-download") as executor:
+                    pages = None
                     try:
                         pages = definition.adapter.enumerate_pages(
                             referer, parameters, known_external_keys, run.mode == "incremental",
@@ -909,25 +971,28 @@ class AcquisitionService:
                                     try:
                                         self._persist_downloaded_remote(db, run.id, prepared, downloaded)
                                     finally:
-                                        if downloaded.file_path is not None:
-                                            shutil.rmtree(downloaded.file_path.parent, ignore_errors=True)
+                                        downloaded.cleanup()
                                 except PluginAborted:
                                     abort_event.set()
                                     stopped = True
+                                    for pending_future in futures:
+                                        pending_future.cancel()
                                     break
                                 except CancelledError:
                                     abort_event.set()
                                     stopped = True
+                                    for pending_future in futures:
+                                        pending_future.cancel()
                                     break
                                 except AccessBlockedError as exc:
-                                    self._record_remote_failure(db, run.id, prepared, exc)
+                                    self._record_remote_failure(db, run.id, prepared, RuntimeError(safe_error(str(exc), context.secrets)))
                                     abort_event.set()
                                     for pending_future in futures:
                                         if pending_future is not future:
                                             pending_future.cancel()
                                     raise
                                 except Exception as exc:
-                                    self._record_remote_failure(db, run.id, prepared, exc)
+                                    self._record_remote_failure(db, run.id, prepared, RuntimeError(safe_error(str(exc), context.secrets)))
                             run = db.get(AcquisitionRun, run_id)
                             if run is None:
                                 return
@@ -935,8 +1000,14 @@ class AcquisitionService:
                                 run.stop_reason = page.stop_reason
                                 run.reached_collection_end = page.reached_collection_end
                             db.commit()
+                            if stopped:
+                                break
                     except PluginAborted:
                         stopped = True
+                    finally:
+                        close = getattr(pages, "close", None)
+                        if close is not None:
+                            close()
                 if stopped:
                     run = db.get(AcquisitionRun, run_id)
                     if run is None:
@@ -963,7 +1034,7 @@ class AcquisitionService:
             if run is None:
                 return
             run.status = "failed"
-            run.error_message = str(exc)
+            run.error_message = safe_error(str(exc), context.secrets)
             run.completed_at = shanghai_now()
         db.commit()
 
@@ -1233,7 +1304,12 @@ class AcquisitionService:
     def _probe_video_details(self, path: Path) -> tuple[float | None, int | None, int | None, bool]:
         command = [self.settings.ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-show_entries", "stream=codec_type,width,height", "-of", "json", str(path)]
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
+            timeout = 60
+            execution = getattr(self._download_policy, "plugin_context", None)
+            if execution is not None and execution.deadline is not None:
+                check_abort(execution.abort_event, execution.deadline)
+                timeout = min(timeout, execution.deadline - time.monotonic())
+            completed = subprocess.run(command, capture_output=True, text=True, check=True, timeout=timeout)
             result = json.loads(completed.stdout)
             stream = next((item for item in result.get("streams", []) if item.get("codec_type") == "video"), {})
             duration = float(result.get("format", {}).get("duration")) if result.get("format", {}).get("duration") else None

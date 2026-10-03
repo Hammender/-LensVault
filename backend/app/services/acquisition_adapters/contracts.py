@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+from datetime import datetime
+
+from app.core.timezones import as_shanghai_naive, shanghai_isoformat
 from dataclasses import dataclass, field
 from collections.abc import Iterable
 from typing import Literal
@@ -120,9 +124,22 @@ def remote_item_from_plugin(raw: object) -> RemoteItem:
         plugin_data=plugin_data,
         caption=_optional_text(raw.get("caption"), "caption"),
         hashtags=_string_tuple(raw.get("hashtags"), "hashtags"),
-        published_at=_optional_text(raw.get("published_at"), "published_at"),
+        published_at=normalize_plugin_published_at(raw.get("published_at"), external_key),
         channel_title=_optional_text(raw.get("channel_title"), "channel_title"),
     )
+
+
+def normalize_plugin_published_at(value: object, source_key: str | int) -> str | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
+        if parsed is not None:
+            return shanghai_isoformat(as_shanghai_naive(parsed))
+    except ValueError:
+        pass
+    logging.getLogger(__name__).warning("插件发布时间无效，已忽略 source_key=%s", source_key)
+    return None
 
 
 def _optional_number(value: object, label: str) -> float | None:

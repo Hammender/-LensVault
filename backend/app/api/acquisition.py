@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, aliased
 from app.core.timezones import as_shanghai_naive, shanghai_isoformat, shanghai_now
 from app.core.config import get_settings
 from app.db import get_db
+from app.services.acquisition_adapters.contracts import normalize_plugin_published_at
 from app.dependencies.context import CurrentContext, require_context, require_workspace_owner
 from app.http.media import stream_storage_object
 from app.models import (
@@ -282,7 +283,7 @@ def _asset_read(
         original_url=f"/api/acquisition/assets/{asset.id}/original?v={asset.sha256}" if asset.object_key else None,
         source_caption=telegram.caption if telegram else source_metadata.get("caption"),
         source_hashtags=hashtags if telegram else source_metadata.get("hashtags") or [],
-        source_published_at=telegram.published_at if telegram else source_metadata.get("published_at"),
+        source_published_at=telegram.published_at if telegram else normalize_plugin_published_at(source_metadata.get("published_at"), asset.id),
         source_message_url=telegram.message_url if telegram else (source_item.source_url if db is not None and source_item else None),
         source_channel_title=telegram.channel_title if telegram else source_metadata.get("channel_title"),
     )

@@ -61,6 +61,7 @@ import {
   getAcquisitionRunFormConfiguration,
   serializeAcquisitionRunParameters
 } from "../lib/acquisitionRunForm";
+import { canUsePluginCredential, requiresPluginCredential } from "../lib/acquisitionRunForm";
 import { useConfirm } from "../components/ConfirmDialog";
 import AcquisitionReviewLightbox from "../components/AcquisitionReviewLightbox";
 import AcquisitionPluginsPanel from "../components/AcquisitionPluginsPanel";
@@ -278,13 +279,18 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     ? selectedRunSource.script_keys.map((key) => scriptByKey.get(key)).filter((script): script is AcquisitionScript => Boolean(script))
     : [], [scriptByKey, selectedRunSource]);
   const selectedRunScript = scriptByKey.get(runScriptKey);
+  const runRequiresCredential = requiresPluginCredential(selectedRunScript?.credentials);
+  const runCredentialUsable = canUsePluginCredential(selectedRunScript?.credentials, runCredentialId, runCredentials);
   useEffect(() => {
     if (!runScriptKey || !selectedRunScript?.credentials?.length) { setRunCredentials([]); setRunCredentialId(""); return; }
+    let cancelled = false;
     void listPluginCredentials(runScriptKey).then((items) => {
+      if (cancelled) return;
       setRunCredentials(items);
-      setRunCredentialId((current) => items.some((item) => String(item.id) === current) ? current : items.length === 1 ? String(items[0].id) : "");
-    }).catch(() => { setRunCredentials([]); setRunCredentialId(""); });
-  }, [runScriptKey, selectedRunScript?.credentials?.length, tab]);
+      setRunCredentialId((current) => items.some((item) => String(item.id) === current) ? current : runRequiresCredential && items.length === 1 && items[0].status === "valid" ? String(items[0].id) : "");
+    }).catch(() => { if (!cancelled) { setRunCredentials([]); setRunCredentialId(""); } });
+    return () => { cancelled = true; };
+  }, [runScriptKey, selectedRunScript?.version, selectedRunScript?.credentials?.length, runRequiresCredential, tab]);
   const selectedSourceCategories = useMemo(
     () => selectedSourceId == null ? [] : categories.filter((category) => category.source_id === selectedSourceId),
     [categories, selectedSourceId]
@@ -1566,9 +1572,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         <div className="acquisition-section-title"><span>启动采集</span><Play size={17} /></div>
         <label><span>分类页面</span><select value={runCategoryId} onChange={(event) => selectRunCategory(event.target.value)} disabled={!canAdd || runSubmitting}><option value="">选择分类</option>{sources.map((source) => { const sourceCategories = categories.filter((category) => category.source_id === source.id); if (!sourceCategories.length) return null; return <optgroup key={source.id} label={source.name}>{sourceCategories.map((category) => <option key={category.id} value={category.id}>{telegramCategoryLabel(category)}</option>)}</optgroup>; })}</select></label>
         <label><span>爬取脚本</span><select value={runScriptKey} onChange={(event) => selectRunScript(event.target.value)} disabled={!canAdd || runSubmitting || !availableRunScripts.length}><option value="">{runCategoryId && !availableRunScripts.length ? selectedRunSource?.script_keys.length ? "绑定的插件未安装或未启用" : "该站点尚未绑定脚本" : "选择脚本"}</option>{availableRunScripts.map((script) => <option key={script.key} value={script.key}>{script.name} · v{script.version}</option>)}</select></label>
-        {!!selectedRunScript?.credentials?.length && <label><span>登录账号</span><select value={runCredentialId} onChange={(event) => setRunCredentialId(event.target.value)} disabled={runSubmitting} required>
-          <option value="">选择已验证账号</option>{runCredentials.map((account) => <option key={account.id} value={account.id} disabled={account.status !== "valid"}>{account.name} · {account.status === "valid" ? "已验证" : "请先测试连接"}</option>)}
-        </select>{!runCredentials.length && <small>请先在“采集插件”中保存账号并测试连接。</small>}</label>}
+        {!!selectedRunScript?.credentials?.length && <label><span>登录账号</span><select value={runCredentialId} onChange={(event) => setRunCredentialId(event.target.value)} disabled={runSubmitting} required={runRequiresCredential}>
+          <option value="">{runRequiresCredential ? "选择已验证账号" : "不使用账号（可选）"}</option>{runCredentials.map((account) => <option key={account.id} value={account.id} disabled={account.status !== "valid"}>{account.name} · {account.status === "valid" ? "已验证" : "请先测试连接"}</option>)}
+        </select>{runRequiresCredential && !runCredentials.length && <small>请先在“采集插件”中保存账号并测试连接。</small>}</label>}
         {selectedRunScript?.parameters.map((parameter) => <label key={parameter.key} title={parameter.description ?? undefined}>
           <span>{parameter.label}{parameter.required ? " *" : ""}</span>
           {parameter.key === "media_types"
@@ -1584,8 +1590,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
               : <input type={parameter.type === "datetime" ? "datetime-local" : parameter.type === "string" || parameter.type === "string_list" ? "text" : "number"} required={parameter.required} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} step={parameter.type === "integer" ? 1 : "any"} placeholder={parameter.type === "string_list" ? "多个值以逗号分隔" : undefined} value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))} />}
         </label>)}
         <div className="mode-switch run-mode-switch" aria-label="采集模式"><button type="button" className={runMode === "incremental" ? "active" : ""} onClick={() => setRunMode("incremental")}>增量</button><button type="button" className={runMode === "full" ? "active" : ""} onClick={() => setRunMode("full")}>全量发现</button><button type="button" className={runMode === "verify" ? "active" : ""} onClick={() => setRunMode("verify")}>核验更新</button></div>
-        <button type="button" disabled={!canAdd || !runCategoryId || !availableRunScripts.some((script) => script.key === runScriptKey) || runSubmitting || (!!selectedRunScript?.credentials?.length && !runCredentials.some((account) => String(account.id) === runCredentialId && account.status === "valid"))} onClick={() => void startRun()}><Play size={16} /> 开始采集</button>
-        {selectedRunScript?.is_plugin && runScriptKey !== "telegram-channel-mtproto" && <button type="button" className="secondary-command" disabled={!canAdd || !runCategoryId || previewBusy || (!!selectedRunScript.credentials?.length && !runCredentials.some((account) => String(account.id) === runCredentialId && account.status === "valid"))} onClick={() => void previewRun()}><ScanSearch size={16} /> {previewBusy ? "正在试采…" : "试采前 3 项"}</button>}
+        <button type="button" disabled={!canAdd || !runCategoryId || !availableRunScripts.some((script) => script.key === runScriptKey) || runSubmitting || !runCredentialUsable} onClick={() => void startRun()}><Play size={16} /> 开始采集</button>
+        {selectedRunScript?.is_plugin && runScriptKey !== "telegram-channel-mtproto" && <button type="button" className="secondary-command" disabled={!canAdd || !runCategoryId || previewBusy || !runCredentialUsable} onClick={() => void previewRun()}><ScanSearch size={16} /> {previewBusy ? "正在试采…" : "试采前 3 项"}</button>}
         {previewItems.length > 0 && <div className="plugin-preview-results">{previewItems.map((item, index) => <div key={`${item.source_url}-${index}`}><strong>{item.title || item.filename}</strong><small>{item.media_type === "video" ? "视频" : "图片"} · {formatBytes(item.size_bytes)}</small><small title={item.source_url}>{item.source_url}</small></div>)}</div>}
       </div>
       <div className="acquisition-section run-list">

@@ -101,3 +101,16 @@ export function getAcquisitionRunFormConfiguration(
     parameters: restoreAcquisitionRunParameters(script, run.parameters)
   };
 }
+
+export function requiresPluginCredential(fields: AcquisitionScript["credentials"]): boolean {
+  return fields?.some((field) => field.required === true) ?? false;
+}
+
+export function canUsePluginCredential(
+  fields: AcquisitionScript["credentials"],
+  selectedId: string,
+  accounts: Array<{ id: number; status: string }>
+): boolean {
+  if (!selectedId) return !requiresPluginCredential(fields);
+  return accounts.some((account) => String(account.id) === selectedId && account.status === "valid");
+}

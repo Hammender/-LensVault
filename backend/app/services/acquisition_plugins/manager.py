@@ -8,20 +8,21 @@ import io
 import json
 import logging
 import os
-import queue
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZipFile
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -37,6 +38,9 @@ from app.services.acquisition_adapters.contracts import (
     script_parameter_from_manifest,
 )
 from app.services.acquisition_adapters.registry import SCRIPT_REGISTRY
+from app.services.acquisition_plugins.catalog import PluginCatalog
+from app.services.acquisition_plugins.context import PluginExecutionContext
+from app.services.acquisition_plugins.runtime import PluginAborted, PluginRunner, check_abort
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +51,16 @@ ENUMERATE_IDLE_TIMEOUT_SECONDS = 300
 OTHER_TIMEOUT_SECONDS = 120
 
 
-class PluginAborted(RuntimeError):
-    """用户停止或试采超时，应结束任务而不是记下载失败。"""
+def _serialized(action):
+    @wraps(action)
+    def wrapped(self, db, *args, **kwargs):
+        with self.catalog.lock:
+            # 管理接口在取得锁前读取的版本行可能已经过期。
+            if args and isinstance(args[0], AcquisitionPluginVersion):
+                if db.get(AcquisitionPluginVersion, args[0].id, populate_existing=True) is None:
+                    raise ValueError("插件版本不存在")
+            return action(self, db, *args, **kwargs)
+    return wrapped
 
 
 KEY_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,63}$")
@@ -88,6 +100,9 @@ def validate_manifest(raw: object) -> dict[str, object]:
             raise ValueError("凭据字段标识无效")
         if not isinstance(item.get("label"), str) or not item["label"]:
             raise ValueError("凭据字段必须提供名称")
+        for flag in ("required", "secret"):
+            if flag in item and not isinstance(item[flag], bool):
+                raise ValueError(f"凭据字段 {flag} 必须是布尔值")
     for requirement in manifest.get("requirements", []):
         if not isinstance(requirement, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?(?:[<>=!~]{1,2}[A-Za-z0-9.*+-]+)?", requirement):
             raise ValueError("依赖声明只能包含包名和版本约束")
@@ -98,9 +113,34 @@ class PluginManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.root = Path(getattr(settings, "data_dir", tempfile.gettempdir())) / "acquisition" / "plugins"
-        self.active: dict[str, dict[str, object]] = {}
-        self.known_keys: set[str] = set()
-        self.preparing_ids: set[int] = set()
+        self.catalog = PluginCatalog()
+        self.runner = PluginRunner()
+        self.preparing_ids = self.catalog.preparing_ids
+
+    @property
+    def active(self):
+        return self.catalog.active
+
+    @active.setter
+    def active(self, value):
+        self.catalog.replace(value, self.catalog.known_keys)
+
+    @property
+    def known_keys(self):
+        return self.catalog.known_keys
+
+    @contextmanager
+    def lease(self, key: str, version: str | None = None):
+        with self.catalog.lock:
+            definition = self.get_definition(key, version)
+            if definition is None:
+                raise ValueError("插件未启用或版本不可用")
+            lease = self.catalog.lease(definition.adapter.manifest)
+            manifest = lease.__enter__()
+        try:
+            yield manifest
+        finally:
+            lease.__exit__(None, None, None)
 
     def _folder(self, key: str, version: str) -> Path:
         if not KEY_PATTERN.fullmatch(key) or not VERSION_PATTERN.fullmatch(version):
@@ -137,16 +177,16 @@ class PluginManager:
             logger.exception("回滚未完成的插件安装失败 key=%s", key)
         self._delete_plugin_folder(folder)
 
+    @_serialized
     def refresh(self, db: Session) -> None:
-        self.active = {}
         rows = db.scalars(select(AcquisitionPluginVersion)).all()
-        self.known_keys = {row.script_key for row in rows}
+        active = {}
         for row in rows:
-            if row.status != "active":
-                continue
-            if self._folder(row.script_key, row.version).is_dir():
-                self.active[row.script_key] = json.loads(row.manifest_json)
+            if row.status == "active" and self._folder(row.script_key, row.version).is_dir():
+                active[row.script_key] = json.loads(row.manifest_json)
+        self.catalog.replace(active, {row.script_key for row in rows})
 
+    @_serialized
     def upload(self, db: Session, payload: bytes) -> AcquisitionPluginVersion:
         if len(payload) > MAX_PACKAGE_BYTES:
             raise ValueError("插件包超过 20 MiB 上限")
@@ -276,6 +316,7 @@ class PluginManager:
     def _python(folder: Path) -> Path:
         return folder / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
+    @_serialized
     def activate(self, db: Session, row: AcquisitionPluginVersion) -> None:
         if row.status not in {"ready", "active"}:
             raise ValueError("请先准备插件环境")
@@ -295,6 +336,7 @@ class PluginManager:
         db.commit()
         self.refresh(db)
 
+    @_serialized
     def disable(self, db: Session, row: AcquisitionPluginVersion) -> None:
         if row.status != "active":
             raise ValueError("该版本未启用")
@@ -303,9 +345,12 @@ class PluginManager:
         db.commit()
         self.refresh(db)
 
+    @_serialized
     def uninstall(self, db: Session, row: AcquisitionPluginVersion) -> None:
         if row.status == "active":
             raise ValueError("请先停用插件并等待环境准备结束")
+        if self.catalog.in_use(row.script_key, row.version):
+            raise ValueError("仍有调用正在使用该插件版本")
         if row.id in self.preparing_ids:
             raise ValueError("环境正在准备，请等待结束或重启后再卸载")
         active_run = db.scalar(select(AcquisitionRun.id).where(
@@ -332,7 +377,11 @@ class PluginManager:
             manifest = validate_manifest(json.loads((folder / "plugin.json").read_text(encoding="utf-8")))
         if manifest is None:
             return None
-        return ScriptDefinition(key=key, name=str(manifest["name"]), version=str(manifest["version"]),
+        return self.definition_from_manifest(manifest, credentials)
+
+    def definition_from_manifest(self, manifest, credentials=None):
+        manifest = deepcopy(manifest)
+        return ScriptDefinition(key=str(manifest["key"]), name=str(manifest["name"]), version=str(manifest["version"]),
             page_format_key=str(manifest["page_format_key"]), description=str(manifest["description"]),
             adapter=PluginAdapter(self, manifest, credentials or {}),
             parameters=tuple(script_parameter_from_manifest(item) for item in manifest.get("parameters", [])),
@@ -345,9 +394,9 @@ class PluginManager:
         python = self._python(folder)
         if not python.is_file():
             raise ValueError("插件运行环境尚未准备")
-        _raise_if_aborted(abort_event, deadline)
+        check_abort(abort_event, deadline)
         payload = json.dumps({**request, "entrypoint": manifest["entrypoint"], "operation": operation}, ensure_ascii=False)
-        command = [str(python), str(folder / "_pictureshow_worker.py")]
+        command = [str(python.absolute()), str(WORKER.resolve()), str(folder.resolve())]
         secrets = [str(value) for value in (request.get("credentials") or {}).values() if isinstance(value, str) and value]
         if timeout is None:
             timeout = DOWNLOAD_TIMEOUT_SECONDS if operation == "download" else OTHER_TIMEOUT_SECONDS
@@ -361,92 +410,16 @@ class PluginManager:
                 raise PluginAborted("试采超时，请缩小范围后重试") from exc
             raise RuntimeError("插件执行超时") from exc
 
-    def _run_once(self, command: list[str], payload: str, folder: Path, secrets: list[str],
-                  abort_event: threading.Event | None, timeout: float):
-        process = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", cwd=folder, start_new_session=True,
-        )
-        assert process.stdin is not None
-        finished = threading.Event()
-        collected: dict[str, tuple[str, str]] = {}
+    def _run_once(self, command, payload, folder, secrets, abort_event, timeout):
+        return self.runner.run_once(command, payload, folder, secrets, abort_event, timeout)
 
-        def communicate() -> None:
-            collected["io"] = process.communicate(payload)
-            finished.set()
-
-        threading.Thread(target=communicate, daemon=True).start()
-        deadline = time.monotonic() + timeout
+    def _stream(self, command, payload, folder, secrets, abort_event, idle_timeout, deadline):
         try:
-            while not finished.wait(0.2):
-                _raise_if_aborted(abort_event, None)
-                if time.monotonic() >= deadline:
-                    _kill_process_group(process)
-                    finished.wait(6)
-                    raise subprocess.TimeoutExpired(command, timeout)
-            stdout, stderr = collected.get("io", ("", ""))
-            if process.returncode:
-                message = (stderr or "插件执行失败")[-1000:]
-                raise RuntimeError(_hide_secrets(message, secrets))
-            return json.loads(stdout)
-        except PluginAborted:
-            _kill_process_group(process)
-            finished.wait(6)
-            raise
-        except Exception:
-            if process.poll() is None:
-                _kill_process_group(process)
-            raise
-
-    def _stream(self, command: list[str], payload: str, folder: Path, secrets: list[str],
-                abort_event: threading.Event | None, idle_timeout: float, deadline: float | None):
-        with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as errors:
-            process = subprocess.Popen(
-                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
-                text=True, encoding="utf-8", cwd=folder, bufsize=1, start_new_session=True,
-            )
-            lines: queue.Queue[tuple[str, str | None]] = queue.Queue()
-            try:
-                assert process.stdin is not None and process.stdout is not None
-                process.stdin.write(payload)
-                process.stdin.close()
-
-                def read_stdout() -> None:
-                    try:
-                        for line in process.stdout:
-                            lines.put(("line", line))
-                    finally:
-                        lines.put(("eof", None))
-
-                threading.Thread(target=read_stdout, daemon=True).start()
-                last_output = time.monotonic()
-                while True:
-                    _raise_if_aborted(abort_event, deadline)
-                    now = time.monotonic()
-                    if now - last_output >= idle_timeout:
-                        _kill_process_group(process)
-                        raise RuntimeError("插件执行失败或长时间没有输出")
-                    try:
-                        kind, payload_line = lines.get(timeout=0.2)
-                    except queue.Empty:
-                        continue
-                    if kind == "eof":
-                        break
-                    assert payload_line is not None
-                    last_output = time.monotonic()
-                    if len(payload_line) > 2 * 1024 * 1024:
-                        raise ValueError("插件输出行过长")
-                    yield json.loads(payload_line)
-                if process.wait(timeout=10):
-                    errors.seek(0)
-                    message = (errors.read() or "插件执行失败或长时间没有输出")[-1000:]
-                    raise RuntimeError(_hide_secrets(message, secrets))
-            except PluginAborted:
-                _kill_process_group(process)
-                raise
-            finally:
-                if process.poll() is None:
-                    _kill_process_group(process)
+            yield from self.runner.stream(command, payload, folder, secrets, abort_event, idle_timeout, deadline)
+        except subprocess.TimeoutExpired as exc:
+            if deadline is not None:
+                raise PluginAborted("试采超时，请缩小范围后重试") from exc
+            raise RuntimeError("插件执行超时") from exc
 
     def cipher(self) -> Fernet:
         key = self.settings.auth_secret_key
@@ -478,7 +451,10 @@ class PluginManager:
         return account
 
     def credentials(self, account: AcquisitionPluginCredential) -> dict[str, object]:
-        return json.loads(self.cipher().decrypt(account.encrypted_json.encode("ascii")))
+        try:
+            return json.loads(self.cipher().decrypt(account.encrypted_json.encode("ascii")))
+        except (InvalidToken, UnicodeError, ValueError) as exc:
+            raise ValueError("账号凭据无法解密，请重新保存账号配置") from exc
 
 
 @dataclass
@@ -489,13 +465,20 @@ class PluginAdapter(SourceAdapter):
     last_state: dict[str, object] | None = None
     abort_event: threading.Event | None = None
     deadline: float | None = None
+    context: PluginExecutionContext | None = None
+
+    def _execution_options(self):
+        if self.context is not None:
+            return self.context.credentials, self.context.abort_event, self.context.deadline
+        return self.credentials, self.abort_event, self.deadline
 
     def enumerate_pages(self, crawl_url: str, parameters: dict[str, object], known_external_keys: set[str], incremental: bool):
+        credentials, abort_event, deadline = self._execution_options()
         request = {"crawl_url": crawl_url, "parameters": parameters, "known_external_keys": sorted(known_external_keys),
-            "incremental": incremental, "credentials": self.credentials}
+            "incremental": incremental, "credentials": credentials}
         stream = self.manager.run(
             self.manifest, "enumerate_pages", request, stream=True,
-            abort_event=self.abort_event, timeout=ENUMERATE_IDLE_TIMEOUT_SECONDS, deadline=self.deadline,
+            abort_event=abort_event, timeout=ENUMERATE_IDLE_TIMEOUT_SECONDS, deadline=deadline,
         )
         try:
             for raw in stream:
@@ -514,10 +497,11 @@ class PluginAdapter(SourceAdapter):
                 close()
 
     def download(self, item: dict[str, object], temporary_dir: Path) -> Path:
+        credentials, abort_event, deadline = self._execution_options()
         result = self.manager.run(
             self.manifest, "download",
-            {"item": item, "credentials": self.credentials, "temporary_dir": str(temporary_dir)},
-            abort_event=self.abort_event, timeout=DOWNLOAD_TIMEOUT_SECONDS, deadline=self.deadline,
+            {"item": item, "credentials": credentials, "temporary_dir": str(temporary_dir)},
+            abort_event=abort_event, timeout=DOWNLOAD_TIMEOUT_SECONDS, deadline=deadline,
         )
         if not isinstance(result, dict) or not isinstance(result.get("path"), str):
             raise ValueError("插件下载结果缺少文件路径")
@@ -536,12 +520,6 @@ def _prepare_stderr(exc: BaseException) -> str:
     return str(exc)
 
 
-def _hide_secrets(message: str, secrets: list[str]) -> str:
-    for secret in secrets:
-        message = message.replace(secret, "[已隐藏凭据]")
-    return message
-
-
 def _capped_timeout(timeout: float, deadline: float | None) -> float:
     if deadline is None:
         return timeout
@@ -549,36 +527,3 @@ def _capped_timeout(timeout: float, deadline: float | None) -> float:
     if remaining <= 0:
         raise PluginAborted("试采超时，请缩小范围后重试")
     return min(timeout, remaining)
-
-
-def _raise_if_aborted(abort_event: threading.Event | None, deadline: float | None) -> None:
-    if abort_event is not None and abort_event.is_set():
-        raise PluginAborted("采集已停止")
-    if deadline is not None and time.monotonic() >= deadline:
-        raise PluginAborted("试采超时，请缩小范围后重试")
-
-
-def _kill_process_group(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "nt" or process.pid is None:
-            process.terminate()
-        else:
-            os.killpg(process.pid, signal.SIGTERM)
-    except (ProcessLookupError, OSError, PermissionError):
-        process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            if os.name == "nt" or process.pid is None:
-                process.kill()
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, OSError, PermissionError):
-            process.kill()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
