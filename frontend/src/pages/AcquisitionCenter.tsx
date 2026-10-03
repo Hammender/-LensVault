@@ -45,12 +45,14 @@ import {
   acquisitionAssetPageSize,
   clampAcquisitionOffset,
   createAcquisitionStatusReset,
+  getAcquisitionPageFill,
   getAcquisitionPreviewUrl,
   getAcquisitionLightboxShortcut,
   getAcquisitionPagination,
   getNextAcquisitionSnapshotIndex,
   hasSelectedAllAcquisitionAssets,
   isAcquisitionImportBatchActive,
+  isAcquisitionPageFillValid,
   removeAcquisitionSelection,
   toggleAcquisitionSelection
 } from "../lib/acquisitionReview";
@@ -431,6 +433,56 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     }
   }, [mediaFilter]);
 
+  const reconcileAssetPageAfterRemoval = useCallback(async (
+    remainingAssets: AcquisitionAsset[],
+    remainingTotal: number
+  ): Promise<PaginatedAcquisitionAssets | null> => {
+    const localPage: PaginatedAcquisitionAssets = {
+      items: remainingAssets,
+      total: remainingTotal,
+      offset: assetOffset,
+      limit: acquisitionAssetPageSize
+    };
+    const fill = getAcquisitionPageFill(remainingAssets.length, assetOffset, remainingTotal);
+    if (!fill) {
+      if (remainingAssets.length === 0 && remainingTotal > 0) {
+        return loadAssetPage(assetStatus, assetOffset, false);
+      }
+      setAssets(remainingAssets);
+      setAssetsTotal(remainingTotal);
+      return localPage;
+    }
+
+    const requestId = assetRequestIdRef.current + 1;
+    assetRequestIdRef.current = requestId;
+    setAssets(remainingAssets);
+    setAssetsTotal(remainingTotal);
+    try {
+      const mediaType = mediaFilter === "all" ? undefined : mediaFilter;
+      const fillPage = await listAcquisitionAssets(assetStatus, fill.offset, fill.limit, mediaType);
+      if (requestId !== assetRequestIdRef.current) return null;
+      if (!isAcquisitionPageFillValid(
+        remainingAssets.map((asset) => asset.id),
+        remainingTotal,
+        fill,
+        fillPage
+      )) {
+        throw new Error("审核素材列表已发生变化");
+      }
+      const page = { ...localPage, items: [...remainingAssets, ...fillPage.items] };
+      setAssets(page.items);
+      setAssetsTotal(page.total);
+      return page;
+    } catch {
+      if (requestId !== assetRequestIdRef.current) return null;
+      try {
+        return await loadAssetPage(assetStatus, assetOffset, false);
+      } catch {
+        throw new Error("审核素材列表刷新失败");
+      }
+    }
+  }, [assetOffset, assetStatus, loadAssetPage, mediaFilter]);
+
   const loadSimilarityPage = useCallback(async (requestedOffset: number): Promise<AcquisitionSimilarityResult> => {
     setSimilarityLoading(true);
     try {
@@ -643,23 +695,30 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   async function performSelectedAssetAction(action: "import" | "reject", message: string) {
     const assetIds = [...selectedAssets];
     if (!assetIds.length) return;
+    const processed = new Set(assetIds);
+    const remainingAssets = assets.filter((asset) => !processed.has(asset.id));
+    const remainingTotal = Math.max(0, assetsTotal - assetIds.length);
     if (action === "import") {
       setAssetActionBusy(true);
       setNotice(null);
       try {
         await changeAcquisitionAssets("import", assetIds, importAsRichText);
-        const selected = new Set(assetIds);
         setSelectedAssets((current) => removeAcquisitionSelection(current, assetIds));
-        setAssets((current) => current.filter((asset) => !selected.has(asset.id)));
-        setAssetsTotal((current) => Math.max(0, current - assetIds.length));
         setAssetSummary((current) => {
           const statusCounts = { ...current.status_counts };
           statusCounts[assetStatus] = Math.max(0, (statusCounts[assetStatus] ?? 0) - assetIds.length);
           statusCounts.import_queued = (statusCounts.import_queued ?? 0) + assetIds.length;
           return { ...current, status_counts: statusCounts };
         });
-        setNotice(message);
-        await loadImportBatchPage(importBatchOffset);
+        try {
+          await Promise.all([
+            reconcileAssetPageAfterRemoval(remainingAssets, remainingTotal),
+            loadImportBatchPage(importBatchOffset)
+          ]);
+          setNotice(message);
+        } catch {
+          setNotice(`${message}，但列表补位失败`);
+        }
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "素材入库失败");
       } finally {
@@ -672,9 +731,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     try {
       await changeAcquisitionAssets(action, assetIds);
       setSelectedAssets((current) => removeAcquisitionSelection(current, assetIds));
-      const rejected = new Set(assetIds);
-      setAssets((current) => current.filter((asset) => !rejected.has(asset.id)));
-      setAssetsTotal((current) => Math.max(0, current - assetIds.length));
       setAssetSummary((current) => {
         const statusCounts = { ...current.status_counts };
         statusCounts[assetStatus] = Math.max(0, (statusCounts[assetStatus] ?? 0) - assetIds.length);
@@ -682,7 +738,12 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         return { ...current, status_counts: statusCounts };
       });
       if (lightboxAsset && assetIds.includes(lightboxAsset.id)) setLightboxSelection(null);
-      setNotice(message);
+      try {
+        await reconcileAssetPageAfterRemoval(remainingAssets, remainingTotal);
+        setNotice(message);
+      } catch {
+        setNotice(`${message}，但列表补位失败`);
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "素材丢弃失败");
     } finally {
@@ -1239,14 +1300,14 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
 
       const rejectedId = lightboxAsset.id;
       const rejectedSnapshotIndex = lightboxSnapshotIndex;
+      const remainingAssets = assets.filter((asset) => asset.id !== rejectedId);
+      const remainingTotal = Math.max(0, assetsTotal - 1);
       const closeGeneration = lightboxSnapshotRequestIdRef.current;
       lightboxRejectPendingRef.current = true;
       setAssetActionBusy(true);
       setNotice(null);
       await changeAcquisitionAssets("reject", [rejectedId]);
       setSelectedAssets((current) => removeAcquisitionSelection(current, [rejectedId]));
-      setAssets((current) => current.filter((asset) => asset.id !== rejectedId));
-      setAssetsTotal((current) => Math.max(0, current - 1));
       setAssetSummary((current) => {
         const statusCounts = { ...current.status_counts };
         statusCounts[assetStatus] = Math.max(0, (statusCounts[assetStatus] ?? 0) - 1);
@@ -1254,6 +1315,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         return { ...current, status_counts: statusCounts };
       });
       reviewReconcileNeededRef.current = true;
+      const fillPage = reconcileAssetPageAfterRemoval(remainingAssets, remainingTotal);
+      fillPage.catch(() => undefined);
       if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
       const nextSnapshotIds = lightboxSnapshotIds.filter((assetId) => assetId !== rejectedId);
       lightboxAssetCacheRef.current.delete(rejectedId);
@@ -1263,6 +1326,14 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       const opened = nextIndex >= 0 && (await selectLightboxSnapshotAsset(nextSnapshotIds, nextIndex, closeGeneration));
       if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
       if (!opened) setLightboxSelection(null);
+      try {
+        await fillPage;
+      } catch {
+        if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
+        setNotice("素材已丢弃，但列表补位失败");
+        return;
+      }
+      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
       setNotice("素材已丢弃，临时文件已清除");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "素材丢弃失败");

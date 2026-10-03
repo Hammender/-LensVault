@@ -71,6 +71,14 @@ describe("acquisition review pagination", () => {
     expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets?status=pending_review&offset=0&limit=60&media_type=video");
   });
 
+  it("requests fill rows with the active media filter", async () => {
+    const fetch = installWindow();
+
+    await listAcquisitionAssets("pending_review", 59, 1, "image");
+
+    expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets?status=pending_review&offset=59&limit=1&media_type=image");
+  });
+
   it("can request only the metadata row needed to refill a page", async () => {
     const fetch = installWindow();
 
@@ -235,6 +243,10 @@ describe("acquisition review selection and rejection", () => {
 
   it("does not request a fill beyond the remaining tail", () => {
     expect(getAcquisitionPageFill(5, 120, 125)).toBeNull();
+  });
+
+  it("fills a later page from the remaining tail so the next page start does not move", () => {
+    expect(getAcquisitionPageFill(55, 60, 175)).toEqual({ offset: 115, limit: 5 });
   });
 
   it("rejects inconsistent page fills so the caller can reload the full page", () => {
