@@ -124,6 +124,22 @@ def test_example_json_plugin_package_loads_without_credentials(tmp_path: Path):
         assert manager.run(manager.active["example-json-gallery"], "test_connection", {"credentials": {}}) == {"ok": True}
 
 
+def test_runtime_uses_current_worker_and_plugin_virtual_environment(tmp_path: Path):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    manager = PluginManager(SimpleNamespace(data_dir=tmp_path))
+    script = "import sys\ndef test_connection(credentials):\n    return {'ok': True, 'prefix': sys.prefix}\n"
+    with Session(engine) as db:
+        row = manager.upload(db, package({**MANIFEST, "credentials": []}, script))
+        manager.prepare(db, row)
+        manager.activate(db, row)
+        folder = manager._folder(row.script_key, row.version)
+        (folder / "_pictureshow_worker.py").write_text("raise RuntimeError('旧版协议')")
+        result = manager.run(manager.active[row.script_key], "test_connection", {"credentials": {}})
+        assert result["ok"] is True
+        assert Path(result["prefix"]).resolve() == (folder / ".venv").resolve()
+
+
 def engine_with_foreign_keys():
     engine = create_engine("sqlite+pysqlite:///:memory:")
 
@@ -215,7 +231,7 @@ def test_preview_checks_media_without_creating_assets(tmp_path: Path, monkeypatc
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     manager = PluginManager(SimpleNamespace(data_dir=tmp_path))
-    manager.active["test-gallery"] = {**MANIFEST, "credentials": []}
+    manager.active = {"test-gallery": {**MANIFEST, "credentials": []}}
 
     def fake_run(manifest, operation, request, *, stream=False, abort_event=None, timeout=None, deadline=None):
         if operation == "enumerate_pages":
@@ -371,7 +387,7 @@ def test_preview_sets_deadline_on_adapter(tmp_path: Path, monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     manager = PluginManager(SimpleNamespace(data_dir=tmp_path))
-    manager.active["test-gallery"] = {**MANIFEST, "credentials": []}
+    manager.active = {"test-gallery": {**MANIFEST, "credentials": []}}
     seen = {}
 
     def fake_run(manifest, operation, request, *, stream=False, abort_event=None, timeout=None, deadline=None):

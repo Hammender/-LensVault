@@ -23,7 +23,11 @@ import {
   hasSelectedAllAcquisitionAssets,
   isAcquisitionPageFillValid,
   isAcquisitionImportBatchActive,
+  isAcquisitionPageSelected,
   removeAcquisitionSelection,
+  selectAcquisitionAssetRange,
+  selectAcquisitionPage,
+  deselectAcquisitionPage,
   toggleAcquisitionSelection
 } from "../src/lib/acquisitionReview";
 
@@ -167,6 +171,22 @@ describe("acquisition review selection and rejection", () => {
     expect(hasSelectedAllAcquisitionAssets([], 0)).toBe(false);
     expect(hasSelectedAllAcquisitionAssets(["one"], 2)).toBe(false);
     expect(hasSelectedAllAcquisitionAssets(["one", "two"], 2)).toBe(true);
+  });
+
+  it("选中本页时合并并去重，取消本页时保留其他页", () => {
+    expect(selectAcquisitionPage(["a", "z"], ["a", "b", "c"])).toEqual(["a", "z", "b", "c"]);
+    expect(deselectAcquisitionPage(["a", "b", "z"], ["a", "b", "c"])).toEqual(["z"]);
+    expect(isAcquisitionPageSelected(["a", "b", "z"], ["a", "b"])).toBe(true);
+    expect(isAcquisitionPageSelected(["a", "z"], ["a", "b"])).toBe(false);
+    expect(isAcquisitionPageSelected([], [])).toBe(false);
+  });
+
+  it("Shift 范围连选：正向、反向与空起点处理", () => {
+    const pageIds = ["a", "b", "c", "d", "e", "f"];
+    expect(selectAcquisitionAssetRange([], pageIds, null, "c")).toEqual(["c"]);
+    expect(selectAcquisitionAssetRange(["a"], pageIds, "a", "d")).toEqual(["a", "b", "c", "d"]);
+    expect(selectAcquisitionAssetRange(["e", "z"], pageIds, "e", "b")).toEqual(["e", "z", "b", "c", "d"]);
+    expect(selectAcquisitionAssetRange(["z"], pageIds, "z", "c")).toEqual(["z", "c"]);
   });
 
   it("keeps selections from other pages and removes only processed assets", () => {

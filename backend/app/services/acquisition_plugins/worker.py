@@ -9,7 +9,8 @@ from pathlib import Path
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parent
+    root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent
+    sys.path.insert(0, str(root))
     request = json.load(sys.stdin)
     entry = (root / request["entrypoint"]).resolve()
     if not entry.is_relative_to(root) or not entry.is_file():

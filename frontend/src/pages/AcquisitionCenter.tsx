@@ -53,7 +53,11 @@ import {
   hasSelectedAllAcquisitionAssets,
   isAcquisitionImportBatchActive,
   isAcquisitionPageFillValid,
+  isAcquisitionPageSelected,
   removeAcquisitionSelection,
+  selectAcquisitionAssetRange,
+  selectAcquisitionPage,
+  deselectAcquisitionPage,
   toggleAcquisitionSelection
 } from "../lib/acquisitionReview";
 import {
@@ -61,6 +65,7 @@ import {
   getAcquisitionRunFormConfiguration,
   serializeAcquisitionRunParameters
 } from "../lib/acquisitionRunForm";
+import { canUsePluginCredential, requiresPluginCredential } from "../lib/acquisitionRunForm";
 import { useConfirm } from "../components/ConfirmDialog";
 import AcquisitionReviewLightbox from "../components/AcquisitionReviewLightbox";
 import AcquisitionPluginsPanel from "../components/AcquisitionPluginsPanel";
@@ -208,6 +213,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const [similarityLoading, setSimilarityLoading] = useState(false);
   const [similarityLightbox, setSimilarityLightbox] = useState<{ groupId: string; assetId: string } | null>(null);
   const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
+  const [lastSelectedReviewAssetId, setLastSelectedReviewAssetId] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceNotes, setSourceNotes] = useState("");
@@ -278,13 +284,18 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     ? selectedRunSource.script_keys.map((key) => scriptByKey.get(key)).filter((script): script is AcquisitionScript => Boolean(script))
     : [], [scriptByKey, selectedRunSource]);
   const selectedRunScript = scriptByKey.get(runScriptKey);
+  const runRequiresCredential = requiresPluginCredential(selectedRunScript?.credentials);
+  const runCredentialUsable = canUsePluginCredential(selectedRunScript?.credentials, runCredentialId, runCredentials);
   useEffect(() => {
     if (!runScriptKey || !selectedRunScript?.credentials?.length) { setRunCredentials([]); setRunCredentialId(""); return; }
+    let cancelled = false;
     void listPluginCredentials(runScriptKey).then((items) => {
+      if (cancelled) return;
       setRunCredentials(items);
-      setRunCredentialId((current) => items.some((item) => String(item.id) === current) ? current : items.length === 1 ? String(items[0].id) : "");
-    }).catch(() => { setRunCredentials([]); setRunCredentialId(""); });
-  }, [runScriptKey, selectedRunScript?.credentials?.length, tab]);
+      setRunCredentialId((current) => items.some((item) => String(item.id) === current) ? current : runRequiresCredential && items.length === 1 && items[0].status === "valid" ? String(items[0].id) : "");
+    }).catch(() => { if (!cancelled) { setRunCredentials([]); setRunCredentialId(""); } });
+    return () => { cancelled = true; };
+  }, [runScriptKey, selectedRunScript?.version, selectedRunScript?.credentials?.length, runRequiresCredential, tab]);
   const selectedSourceCategories = useMemo(
     () => selectedSourceId == null ? [] : categories.filter((category) => category.source_id === selectedSourceId),
     [categories, selectedSourceId]
@@ -296,6 +307,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const categoryPagePagination = getAcquisitionPagination(categoryPageTotal, categoryPageOffset, categoryPageItems.length, managementPageSize);
   const runPagePagination = getAcquisitionPagination(runPageTotal, runPageOffset, runPageItems.length, managementPageSize);
   const areAllReviewAssetsSelected = hasSelectedAllAcquisitionAssets(selectedAssets, assetsTotal);
+  const reviewPageAssetIds = assets.map((asset) => asset.id);
+  const areCurrentReviewPageSelected = isAcquisitionPageSelected(selectedAssets, reviewPageAssetIds);
   const lightboxAsset = lightboxSelection?.asset ?? null;
   const lightboxGlobalIndex = lightboxSnapshotIndex;
   const canGoToPreviousAsset = lightboxSnapshotIndex > 0;
@@ -796,6 +809,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
 
   function goToSimilarityOffset(nextOffset: number) {
     setSelectedAssets([]);
+    setLastSelectedReviewAssetId(null);
     setSimilarityLightbox(null);
     setSimilarityOffset(Math.max(0, nextOffset));
   }
@@ -1075,6 +1089,34 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
 
   function toggleAsset(id: string) {
     setSelectedAssets((items) => toggleAcquisitionSelection(items, id));
+    setLastSelectedReviewAssetId(id);
+  }
+
+  function handleReviewListSelect(id: string, shiftKey: boolean) {
+    if (shiftKey) {
+      setSelectedAssets((current) => selectAcquisitionAssetRange(current, reviewPageAssetIds, lastSelectedReviewAssetId, id));
+      setLastSelectedReviewAssetId(id);
+      return;
+    }
+    toggleAsset(id);
+  }
+
+  function handleReviewMediaClick(asset: AcquisitionAsset, event: { preventDefault(): void; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      handleReviewListSelect(asset.id, event.shiftKey);
+      return;
+    }
+    showLightboxAsset(asset);
+  }
+
+  function toggleCurrentReviewPageSelection() {
+    if (reviewPageAssetIds.length === 0) return;
+    const pageSelected = areCurrentReviewPageSelected;
+    setSelectedAssets((current) => pageSelected
+      ? deselectAcquisitionPage(current, reviewPageAssetIds)
+      : selectAcquisitionPage(current, reviewPageAssetIds));
+    if (!pageSelected) setLastSelectedReviewAssetId(reviewPageAssetIds[reviewPageAssetIds.length - 1]);
   }
 
   async function submitTelegramLogin(event?: FormEvent) {
@@ -1172,6 +1214,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   function changeReviewMode(nextMode: "list" | "similarity") {
     setReviewMode(nextMode);
     setSelectedAssets([]);
+    setLastSelectedReviewAssetId(null);
     setLightboxSelection(null);
     setSimilarityLightbox(null);
   }
@@ -1180,6 +1223,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     if (busy || assetsTotal === 0) return;
     if (areAllReviewAssetsSelected) {
       setSelectedAssets([]);
+      setLastSelectedReviewAssetId(null);
       setNotice("已取消选择全部素材");
       return;
     }
@@ -1202,6 +1246,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     setAssetsTotal(0);
     setAssetLoading(true);
     setSelectedAssets(reset.selectedIds);
+    setLastSelectedReviewAssetId(null);
     setLightboxSelection(null);
     setAssetOffset(reset.offset);
     setAssetJumpPage(reset.jumpPage);
@@ -1215,6 +1260,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     setAssetsTotal(0);
     setAssetLoading(true);
     setSelectedAssets([]);
+    setLastSelectedReviewAssetId(null);
     setLightboxSelection(null);
     setAssetOffset(0);
     setAssetJumpPage("");
@@ -1566,9 +1612,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         <div className="acquisition-section-title"><span>启动采集</span><Play size={17} /></div>
         <label><span>分类页面</span><select value={runCategoryId} onChange={(event) => selectRunCategory(event.target.value)} disabled={!canAdd || runSubmitting}><option value="">选择分类</option>{sources.map((source) => { const sourceCategories = categories.filter((category) => category.source_id === source.id); if (!sourceCategories.length) return null; return <optgroup key={source.id} label={source.name}>{sourceCategories.map((category) => <option key={category.id} value={category.id}>{telegramCategoryLabel(category)}</option>)}</optgroup>; })}</select></label>
         <label><span>爬取脚本</span><select value={runScriptKey} onChange={(event) => selectRunScript(event.target.value)} disabled={!canAdd || runSubmitting || !availableRunScripts.length}><option value="">{runCategoryId && !availableRunScripts.length ? selectedRunSource?.script_keys.length ? "绑定的插件未安装或未启用" : "该站点尚未绑定脚本" : "选择脚本"}</option>{availableRunScripts.map((script) => <option key={script.key} value={script.key}>{script.name} · v{script.version}</option>)}</select></label>
-        {!!selectedRunScript?.credentials?.length && <label><span>登录账号</span><select value={runCredentialId} onChange={(event) => setRunCredentialId(event.target.value)} disabled={runSubmitting} required>
-          <option value="">选择已验证账号</option>{runCredentials.map((account) => <option key={account.id} value={account.id} disabled={account.status !== "valid"}>{account.name} · {account.status === "valid" ? "已验证" : "请先测试连接"}</option>)}
-        </select>{!runCredentials.length && <small>请先在“采集插件”中保存账号并测试连接。</small>}</label>}
+        {!!selectedRunScript?.credentials?.length && <label><span>登录账号</span><select value={runCredentialId} onChange={(event) => setRunCredentialId(event.target.value)} disabled={runSubmitting} required={runRequiresCredential}>
+          <option value="">{runRequiresCredential ? "选择已验证账号" : "不使用账号（可选）"}</option>{runCredentials.map((account) => <option key={account.id} value={account.id} disabled={account.status !== "valid"}>{account.name} · {account.status === "valid" ? "已验证" : "请先测试连接"}</option>)}
+        </select>{runRequiresCredential && !runCredentials.length && <small>请先在“采集插件”中保存账号并测试连接。</small>}</label>}
         {selectedRunScript?.parameters.map((parameter) => <label key={parameter.key} title={parameter.description ?? undefined}>
           <span>{parameter.label}{parameter.required ? " *" : ""}</span>
           {parameter.key === "media_types"
@@ -1584,8 +1630,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
               : <input type={parameter.type === "datetime" ? "datetime-local" : parameter.type === "string" || parameter.type === "string_list" ? "text" : "number"} required={parameter.required} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} step={parameter.type === "integer" ? 1 : "any"} placeholder={parameter.type === "string_list" ? "多个值以逗号分隔" : undefined} value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))} />}
         </label>)}
         <div className="mode-switch run-mode-switch" aria-label="采集模式"><button type="button" className={runMode === "incremental" ? "active" : ""} onClick={() => setRunMode("incremental")}>增量</button><button type="button" className={runMode === "full" ? "active" : ""} onClick={() => setRunMode("full")}>全量发现</button><button type="button" className={runMode === "verify" ? "active" : ""} onClick={() => setRunMode("verify")}>核验更新</button></div>
-        <button type="button" disabled={!canAdd || !runCategoryId || !availableRunScripts.some((script) => script.key === runScriptKey) || runSubmitting || (!!selectedRunScript?.credentials?.length && !runCredentials.some((account) => String(account.id) === runCredentialId && account.status === "valid"))} onClick={() => void startRun()}><Play size={16} /> 开始采集</button>
-        {selectedRunScript?.is_plugin && runScriptKey !== "telegram-channel-mtproto" && <button type="button" className="secondary-command" disabled={!canAdd || !runCategoryId || previewBusy || (!!selectedRunScript.credentials?.length && !runCredentials.some((account) => String(account.id) === runCredentialId && account.status === "valid"))} onClick={() => void previewRun()}><ScanSearch size={16} /> {previewBusy ? "正在试采…" : "试采前 3 项"}</button>}
+        <button type="button" disabled={!canAdd || !runCategoryId || !availableRunScripts.some((script) => script.key === runScriptKey) || runSubmitting || !runCredentialUsable} onClick={() => void startRun()}><Play size={16} /> 开始采集</button>
+        {selectedRunScript?.is_plugin && runScriptKey !== "telegram-channel-mtproto" && <button type="button" className="secondary-command" disabled={!canAdd || !runCategoryId || previewBusy || !runCredentialUsable} onClick={() => void previewRun()}><ScanSearch size={16} /> {previewBusy ? "正在试采…" : "试采前 3 项"}</button>}
         {previewItems.length > 0 && <div className="plugin-preview-results">{previewItems.map((item, index) => <div key={`${item.source_url}-${index}`}><strong>{item.title || item.filename}</strong><small>{item.media_type === "video" ? "视频" : "图片"} · {formatBytes(item.size_bytes)}</small><small title={item.source_url}>{item.source_url}</small></div>)}</div>}
       </div>
       <div className="acquisition-section run-list">
@@ -1646,6 +1692,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         </div>
         <div className="review-actions">
           {canEdit && <button type="button" title={`扫描${similarityScope === "pending_only" ? "审核区内" : "审核区与图库"}的${similarityScanType === "mirror" ? "镜像" : "普通"}相似图片`} disabled={busy || similarity.task?.status === "pending" || similarity.task?.status === "running"} onClick={() => void startSimilarityScan()}><ScanSearch size={16} /> {similarity.generated_at ? "重新扫描" : "扫描相似"}</button>}
+          {reviewMode === "list" && <button type="button" title={areCurrentReviewPageSelected ? "取消选择当前页素材" : "选中当前页素材。按住 Shift 点击缩略图或复选框可连选；⌘ 或 Ctrl 点击缩略图可勾选"} disabled={busy || assetActionBusy || assets.length === 0} onClick={toggleCurrentReviewPageSelection}>{areCurrentReviewPageSelected ? "取消本页" : "选中本页"}</button>}
           {reviewMode === "list" && <button type="button" title={areAllReviewAssetsSelected ? "取消选择当前状态下所有素材" : "选中当前状态下所有页面的素材"} disabled={busy || assetActionBusy || assetsTotal === 0} onClick={() => void selectAllReviewAssets()}><CheckCheck size={16} /> {areAllReviewAssetsSelected ? "取消全选" : `全选 ${assetsTotal}`}</button>}
           {reviewMode === "list" && canAdd && (areAllReviewAssetsSelected ? mediaFilter !== "video" : assets.some((asset) => selectedAssets.includes(asset.id) && asset.media_type === "image")) && <div className="mode-switch import-type-switch" aria-label="导入图片类型">
             <button type="button" className={!importAsRichText ? "active" : ""} disabled={busy || assetActionBusy} onClick={() => setImportAsRichText(false)}>普通图片</button>
@@ -1656,9 +1703,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         </div>
       </div>
       {reviewMode === "list" && <><div className={assetLoading ? "review-grid loading" : "review-grid"} aria-busy={assetLoading}>
-          {assets.map((asset, index) => <article className={selectedAssets.includes(asset.id) ? "review-tile selected" : "review-tile"} key={asset.id}>
-          <label className="tile-select"><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={() => toggleAsset(asset.id)} /><span>选择</span></label>
-          {asset.media_type === "video" && asset.original_url ? <button className="review-image-button review-video-card" type="button" onClick={() => showLightboxAsset(asset)} aria-label={`查看视频 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <><span className="review-video-fallback" aria-hidden="true" />{asset.preview_url && <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" onError={(event) => { event.currentTarget.style.display = "none"; }} />}</>}<span className="review-video-play" aria-hidden="true"><Play size={18} fill="currentColor" /></span>{asset.duration_seconds != null && <span className="review-video-duration">{formatDurationSeconds(asset.duration_seconds)}</span>}</button> : asset.preview_url ? <button className="review-image-button" type="button" onClick={() => showLightboxAsset(asset)} aria-label={`查看大图 ${asset.filename}`}>{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
+          {assets.map((asset) => <article className={selectedAssets.includes(asset.id) ? "review-tile selected" : "review-tile"} key={asset.id}>
+          <label className="tile-select" title="按住 Shift 连选当前页"><input type="checkbox" checked={selectedAssets.includes(asset.id)} onChange={(event) => handleReviewListSelect(asset.id, Boolean((event.nativeEvent as globalThis.MouseEvent).shiftKey))} /><span>选择</span></label>
+          {asset.media_type === "video" && asset.original_url ? <button className="review-image-button review-video-card" type="button" onClick={(event) => handleReviewMediaClick(asset, event)} aria-label={`查看视频 ${asset.filename}`} title="单击查看；Shift 连选；⌘ 或 Ctrl 勾选">{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <><span className="review-video-fallback" aria-hidden="true" />{asset.preview_url && <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" onError={(event) => { event.currentTarget.style.display = "none"; }} />}</>}<span className="review-video-play" aria-hidden="true"><Play size={18} fill="currentColor" /></span>{asset.duration_seconds != null && <span className="review-video-duration">{formatDurationSeconds(asset.duration_seconds)}</span>}</button> : asset.preview_url ? <button className="review-image-button" type="button" onClick={(event) => handleReviewMediaClick(asset, event)} aria-label={`查看大图 ${asset.filename}`} title="单击查看；Shift 连选；⌘ 或 Ctrl 勾选">{lightboxAsset ? <span className="review-image-placeholder" aria-hidden="true" /> : <img src={getAcquisitionPreviewUrl(asset.preview_url, 480)} alt={asset.filename} loading="lazy" decoding="async" />}</button> : <div className="tile-missing">临时文件已清除</div>}
           <div className="tile-meta"><strong title={asset.filename}>{asset.media_type === "video" && <Video size={14} />} {asset.filename}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "尺寸未知"}{asset.duration_seconds != null ? ` · ${formatDurationSeconds(asset.duration_seconds)}` : ""} · {formatBytes(asset.size_bytes)}</small>{asset.source_hashtags.length > 0 && <p className="review-hashtags">{asset.source_hashtags.map((tag) => `#${tag}`).join(" ")}</p>}{asset.quality_warnings.length > 0 && <p>{asset.quality_warnings.join(" / ")}</p>}</div>
         </article>)}
       </div>

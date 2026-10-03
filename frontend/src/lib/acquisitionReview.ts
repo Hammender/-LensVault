@@ -136,6 +136,35 @@ export function toggleAcquisitionSelection(selectedIds: string[], assetId: strin
     : [...selectedIds, assetId];
 }
 
+export function selectAcquisitionPage(selectedIds: string[], pageIds: string[]): string[] {
+  return Array.from(new Set([...selectedIds, ...pageIds]));
+}
+
+export function deselectAcquisitionPage(selectedIds: string[], pageIds: string[]): string[] {
+  const pageIdSet = new Set(pageIds);
+  return selectedIds.filter((id) => !pageIdSet.has(id));
+}
+
+export function isAcquisitionPageSelected(selectedIds: string[], pageIds: string[]): boolean {
+  return pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id));
+}
+
+export function selectAcquisitionAssetRange(
+  selectedIds: string[],
+  pageIds: string[],
+  fromId: string | null,
+  targetId: string
+): string[] {
+  if (fromId === null || !pageIds.includes(fromId) || !pageIds.includes(targetId)) {
+    return Array.from(new Set([...selectedIds, targetId]));
+  }
+  const fromIndex = pageIds.indexOf(fromId);
+  const targetIndex = pageIds.indexOf(targetId);
+  const minIndex = Math.min(fromIndex, targetIndex);
+  const maxIndex = Math.max(fromIndex, targetIndex);
+  return Array.from(new Set([...selectedIds, ...pageIds.slice(minIndex, maxIndex + 1)]));
+}
+
 export function hasSelectedAllAcquisitionAssets(selectedIds: string[], total: number): boolean {
   return total > 0 && selectedIds.length === total;
 }
