@@ -1248,7 +1248,7 @@ def locate_asset_frame(asset_id: str, payload: AcquisitionFrameLocate, request: 
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail="视频帧准备失败，请检查原文件和存储服务后重试") from exc
-    return AcquisitionFrameRead(**frame, image_url=f"/api/acquisition/assets/{asset.id}/frames/{frame['frame_index']}?v={asset.sha256}")
+    return AcquisitionFrameRead(**frame, image_url=f"/api/acquisition/assets/{asset.id}/frames/{frame['frame_index']}?v={asset.sha256}&color={frame['color_conversion']['version']}")
 
 
 @router.get("/assets/{asset_id}/frames/{frame_index}")

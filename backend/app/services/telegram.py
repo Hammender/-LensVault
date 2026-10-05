@@ -316,6 +316,7 @@ def filter_media_group(
     allowed_media_types: set[str],
     required_hashtags: list[str],
     required_keywords: list[str],
+    include_comment_roots: bool = False,
 ) -> list[Any]:
     if not messages:
         return []
@@ -325,11 +326,16 @@ def filter_media_group(
     kept = [
         item
         for item in sorted(messages, key=lambda item: int(item.id))
-        if (media_type := message_media_type(item)) is not None and media_type in allowed_media_types
+        if include_comment_roots or (
+            (media_type := message_media_type(item)) is not None and media_type in allowed_media_types
+        )
     ]
     if not kept:
         return []
-    sample_type = message_media_type(kept[0]) or "image"
+    sample_type = (
+        next(iter(allowed_media_types), "image")
+        if include_comment_roots else message_media_type(kept[0]) or "image"
+    )
     if not media_matches(
         published_at=message_published_at(caption_source),
         media_type=sample_type,
@@ -356,6 +362,7 @@ class MediaGroupScanner:
         required_keywords: list[str],
         max_messages: int,
         newest_first: bool,
+        include_comment_roots: bool = False,
     ) -> None:
         self.date_from = date_from
         self.date_to = date_to
@@ -364,6 +371,7 @@ class MediaGroupScanner:
         self.required_keywords = required_keywords
         self.max_messages = max_messages
         self.newest_first = newest_first
+        self.include_comment_roots = include_comment_roots
         self.buffer: list[Any] = []
         self.matched = 0
         self.done = False
@@ -399,7 +407,7 @@ class MediaGroupScanner:
         if grouped_with(self.buffer, message):
             self.buffer.append(message)
             return completed
-        if message_media_type(message) is None:
+        if message_media_type(message) is None and not self.include_comment_roots:
             return completed
         self.buffer = [message]
         return completed
@@ -415,6 +423,7 @@ class MediaGroupScanner:
             allowed_media_types=self.allowed_media_types,
             required_hashtags=self.required_hashtags,
             required_keywords=self.required_keywords,
+            include_comment_roots=self.include_comment_roots,
         )
         self.buffer = []
         if not kept:
@@ -925,6 +934,13 @@ class TelegramService:
                 peer_id=parameters.get("peer_id"),
                 username=parameters.get("username"),
             )
+            comments_only = bool(parameters.get("comments_only"))
+            if comments_only and (
+                parameters.get("topic_id") or bool(getattr(channel, "megagroup", False))
+                or isinstance(channel, (types.User, types.Chat))
+            ):
+                raise ValueError("仅采集评论区媒体只支持频道，不支持机器人、群组或论坛话题")
+            collect_comments = bool(parameters.get("collect_comments")) or comments_only
             date_from = self._parse_datetime(parameters.get("date_from"))
             date_to = self._parse_datetime(parameters.get("date_to"))
             media_types = {str(item) for item in parameters.get("media_types", ["image", "video"])}
@@ -942,6 +958,7 @@ class TelegramService:
                 required_keywords=keywords,
                 max_messages=max_messages,
                 newest_first=newest_first,
+                include_comment_roots=comments_only,
             )
             LOGGER.info(
                 "Telegram 采集开始 channel=%s max_messages=%s order=%s date_from=%s date_to=%s",
@@ -956,8 +973,14 @@ class TelegramService:
 
             async def emit(group: list[Any]) -> None:
                 self._raise_if_aborted(abort_event)
-                batch = await self._download_media_group(client, channel, group, target_dir, abort_event)
-                await emit_records(batch)
+                if not comments_only:
+                    batch = await self._download_media_group(client, channel, group, target_dir, abort_event)
+                    await emit_records(batch)
+                if collect_comments and not parameters.get("topic_id"):
+                    await self._emit_comment_media(
+                        client, channel, group[0], target_dir, media_types, emit_records, abort_event,
+                        inherit_root_caption=comments_only,
+                    )
 
             async def emit_records(batch: list[dict[str, object]]) -> None:
                 if not batch:
@@ -976,19 +999,11 @@ class TelegramService:
                 completed_groups = scanner.push(message)
                 for group in completed_groups:
                     await emit(group)
-                    if parameters.get("collect_comments") and not topic_id:
-                        await self._emit_comment_media(
-                            client, channel, group[0], target_dir, media_types, emit_records, abort_event,
-                        )
                 if scanner.done or seen >= safety_limit:
                     break
             self._raise_if_aborted(abort_event)
             for group in scanner.finish():
                 await emit(group)
-                if parameters.get("collect_comments") and not topic_id:
-                    await self._emit_comment_media(
-                        client, channel, group[0], target_dir, media_types, emit_records, abort_event,
-                    )
             LOGGER.info("Telegram 采集结束 matched_messages=%s media=%s scanned_api=%s", scanner.matched, len(records), seen)
             return records
         except FloodWaitError as exc:
@@ -1008,6 +1023,8 @@ class TelegramService:
         media_types: set[str],
         emit: Callable[[list[dict[str, object]]], Any],
         abort_event: threading.Event | None = None,
+        *,
+        inherit_root_caption: bool = False,
     ) -> None:
         self._raise_if_aborted(abort_event)
         try:
@@ -1024,6 +1041,12 @@ class TelegramService:
             comment.grouped_id = None
             batch = await self._download_media_group(client, channel, [comment], target_dir, abort_event)
             for record in batch:
+                if inherit_root_caption:
+                    captions = dict.fromkeys(filter(None, [
+                        getattr(root_message, "message", None), record.get("caption"),
+                    ]))
+                    record["caption"] = "\n\n".join(captions) or None
+                    record["hashtags"] = extract_hashtags(record["caption"])
                 record["is_comment"] = True
                 record["root_channel_message_id"] = int(root_message.id)
                 record["reply_to_message_id"] = getattr(getattr(comment, "reply_to", None), "reply_to_msg_id", None)

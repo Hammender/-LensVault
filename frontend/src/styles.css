@@ -3056,6 +3056,32 @@ input:focus, select:focus, textarea:focus {
   min-height: 0;
 }
 
+.lightbox-image-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+
+.lightbox-image-stage.is-draggable { cursor: grab; }
+.lightbox-image-stage.is-draggable:active { cursor: grabbing; }
+.lightbox-image-stage img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  user-select: none;
+  transform-origin: center center;
+}
+.lightbox-image-message { padding: 16px; color: var(--text); text-align: center; }
+.rich-lightbox-image-wrap .lightbox-image-stage { align-self: stretch; }
+
 .rich-lightbox-layout {
   flex: 1;
   display: flex;
@@ -3175,6 +3201,55 @@ input:focus, select:focus, textarea:focus {
   color: var(--text);
   box-shadow: 0 4px 20px rgba(53, 37, 29, 0.1);
   backdrop-filter: blur(16px) saturate(1.08);
+}
+
+.lightbox-meta-rail.has-image-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  align-content: stretch;
+}
+.lightbox-meta-content {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: grid;
+  align-content: start;
+  gap: 22px;
+  overflow-y: auto;
+}
+.lightbox-image-controls {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(53, 37, 29, 0.18);
+  color: var(--text);
+}
+.lightbox-image-controls > span,
+.lightbox-image-controls small { font-size: .76rem; color: var(--muted); }
+.lightbox-image-mode-buttons,
+.lightbox-image-zoom-buttons { display: flex; align-items: center; gap: 6px; }
+.lightbox-image-controls button {
+  min-width: 34px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: var(--bg-strong);
+  color: var(--text);
+  cursor: pointer;
+}
+.lightbox-image-controls button[aria-pressed="true"] { background: var(--accent); color: var(--bg-strong); }
+.lightbox-image-controls button:disabled { opacity: .5; cursor: default; }
+.lightbox-image-zoom-buttons output { flex: 1; text-align: center; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1180px) {
+  .lightbox-shell + .lightbox-meta-rail.has-image-controls {
+    max-height: min(65vh, 480px);
+    padding: 14px;
+  }
+  .lightbox-meta-rail.has-image-controls .lightbox-meta-content { gap: 12px; }
 }
 
 .lightbox-meta-head,

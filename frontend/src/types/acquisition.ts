@@ -122,6 +122,12 @@ export type AcquisitionCaptureMetadata = {
   video_sha256: string;
   frame_index: number;
   time_seconds: number;
+  color_conversion?: {
+    version: string;
+    source: Record<string, string>;
+    assumed: string[];
+    output: string;
+  } | null;
   source_caption: string | null;
   source_hashtags: string[];
   source_published_at: string | null;

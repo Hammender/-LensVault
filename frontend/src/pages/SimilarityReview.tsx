@@ -773,6 +773,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       </section>
       {previewGroup && previewMember && (
         <PhotoLightbox
+          image={{ src: previewMember.photo.original_url, alt: previewMember.photo.filename }}
           shellClassName="similarity-review-lightbox"
           busy={deletingGroupIds.includes(previewGroup.id) || dismissingGroupIds.includes(previewGroup.id)}
           canGoPrevious={previewIndex > 0}
@@ -910,9 +911,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
               </div>
             </>
           )}
-        >
-          <img className="lightbox-image" src={previewMember.photo.original_url} alt={previewMember.photo.filename} />
-        </PhotoLightbox>
+        />
       )}
       {autoDeletePreview && (
         <div className="modal-backdrop similarity-preview-backdrop" onClick={() => setAutoDeletePreview(null)}>
@@ -1017,6 +1016,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
       )}
       {enlargedPreviewContext && enlargedPreviewMember && (
         <PhotoLightbox
+          image={{ src: enlargedPreviewMember.original_url, alt: enlargedPreviewMember.filename }}
           backdropClassName="similarity-preview-lightbox-backdrop"
           canGoPrevious={enlargedPreviewContext.index > 0}
           canGoNext={enlargedPreviewContext.index < enlargedPreviewContext.members.length - 1}
@@ -1045,9 +1045,7 @@ export default function SimilarityReview({ persons, canEdit, canDelete }: Simila
               <small className="similarity-preview-hint">←/→ 方向键在本簇内翻页对比</small>
             </div>
           )}
-        >
-          <img className="lightbox-image" src={enlargedPreviewMember.original_url} alt={enlargedPreviewMember.filename} />
-        </PhotoLightbox>
+        />
       )}
     </main>
   );

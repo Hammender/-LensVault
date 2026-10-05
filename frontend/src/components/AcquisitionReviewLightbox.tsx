@@ -464,14 +464,13 @@ export default function AcquisitionReviewLightbox({
         {frameError || (saving ? "正在保存原尺寸截图…" : capture?.outcome === "imported" ? "该画面已在图库中" : "截图已保存到待审核区")}
       </div>}
     </div>
-  ) : asset.original_url ? (
-    <img className="lightbox-image" src={asset.original_url} alt={asset.filename} />
-  ) : (
+  ) : !asset.original_url ? (
     <div className="tile-missing">临时文件已清除</div>
-  );
+  ) : null;
 
   return (
     <PhotoLightbox
+      image={!isVideo && asset.original_url ? { src: asset.original_url, alt: asset.filename } : undefined}
       backdropClassName="acquisition-review-lightbox-backdrop"
       shellClassName={`acquisition-review-lightbox${isVideo ? " is-video" : ""}`}
       ariaLabel={isVideo ? "采集视频预览" : "采集图片预览"}

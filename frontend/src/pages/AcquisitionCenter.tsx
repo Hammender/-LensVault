@@ -1011,6 +1011,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     setRunCategoryId(categoryId);
     setPreviewItems([]);
     const category = categoryById.get(Number(categoryId));
+    if (category?.telegram_entity_type === "bot" || category?.telegram_entity_type === "group" || category?.telegram_topic_id != null) {
+      setRunParameters((current) => ({ ...current, collect_comments: false, comments_only: false }));
+    }
     const source = category ? sourceById.get(category.source_id) : undefined;
     const nextScripts = source
       ? source.script_keys.map((key) => scriptByKey.get(key)).filter((script): script is AcquisitionScript => Boolean(script))
@@ -1670,10 +1673,15 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
           <span>{parameter.label}{parameter.required ? " *" : ""}</span>
           {parameter.key === "media_types"
             ? <div className="telegram-media-options"><span>选择媒体</span><label><input type="checkbox" checked={selectedTelegramMediaTypes(runParameters.media_types).includes("image")} onChange={(event) => setRunParameters((current) => { const values = selectedTelegramMediaTypes(current.media_types); const next = event.target.checked ? [...new Set([...values, "image"])] : values.filter((item) => item !== "image"); return { ...current, media_types: next.join(",") }; })} /> 图片</label><label><input type="checkbox" checked={selectedTelegramMediaTypes(runParameters.media_types).includes("video")} onChange={(event) => setRunParameters((current) => { const values = selectedTelegramMediaTypes(current.media_types); const next = event.target.checked ? [...new Set([...values, "video"])] : values.filter((item) => item !== "video"); return { ...current, media_types: next.join(",") }; })} /> 视频</label></div>
-            : parameter.key === "collect_comments" && selectedRunCategory?.telegram_entity_type !== "bot" && selectedRunCategory?.telegram_entity_type !== "group"
-              ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
-              : parameter.key === "collect_comments"
-                ? <span className="telegram-topic-empty">机器人或群组不支持频道评论区采集</span>
+            : (parameter.key === "collect_comments" || parameter.key === "comments_only") && selectedRunCategory?.telegram_entity_type !== "bot" && selectedRunCategory?.telegram_entity_type !== "group" && selectedRunCategory?.telegram_topic_id == null
+              ? <><input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({
+                ...current,
+                [parameter.key]: event.target.checked,
+                ...(parameter.key === "comments_only" && event.target.checked ? { collect_comments: true } : {}),
+                ...(parameter.key === "collect_comments" && !event.target.checked ? { comments_only: false } : {}),
+              }))} />{parameter.key === "comments_only" && <small>{parameter.description}</small>}</>
+              : parameter.key === "collect_comments" || parameter.key === "comments_only"
+                ? <span className="telegram-topic-empty">机器人、群组或论坛话题不支持频道评论区采集</span>
               : parameter.type === "boolean"
             ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
             : parameter.type === "select"
@@ -1969,6 +1977,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     />}
 
     {similarityLightboxAsset?.original_url && similarityLightboxGroup && <PhotoLightbox
+      image={{ src: similarityLightboxAsset.original_url, alt: similarityLightboxAsset.filename }}
       backdropClassName="acquisition-review-lightbox-backdrop"
       shellClassName="acquisition-review-lightbox similarity-lightbox"
       busy={busy || similarityLoading}
@@ -2016,8 +2025,6 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
           </button>}
         </div>
       </>}
-    >
-      <img className="lightbox-image" src={similarityLightboxAsset.original_url} alt={similarityLightboxAsset.filename} />
-    </PhotoLightbox>}
+    />}
   </>;
 }

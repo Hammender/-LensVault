@@ -293,6 +293,16 @@
       },
       "AcquisitionCaptureMetadata": {
         "properties": {
+          "color_conversion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AcquisitionColorConversion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "frame_index": {
             "title": "Frame Index",
             "type": "integer"
@@ -753,6 +763,40 @@
           }
         },
         "title": "AcquisitionCategoryUpdate",
+        "type": "object"
+      },
+      "AcquisitionColorConversion": {
+        "properties": {
+          "assumed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumed",
+            "type": "array"
+          },
+          "output": {
+            "title": "Output",
+            "type": "string"
+          },
+          "source": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Source",
+            "type": "object"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "source",
+          "assumed",
+          "output"
+        ],
+        "title": "AcquisitionColorConversion",
         "type": "object"
       },
       "AcquisitionExportCreate": {

@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from cryptography.fernet import Fernet
 from telethon.errors import FloodWaitError, PhoneNumberInvalidError
@@ -67,6 +67,125 @@ def _text(message_id: int, published_at: datetime, caption: str = "纯文本") -
 
 
 class TelegramAcquisitionTests(unittest.TestCase):
+    def _collect_with_comments(self, roots, comments, parameters):
+        service = TelegramService(Settings(telegram_session_encryption_key=Fernet.generate_key().decode("ascii")))
+        channel = SimpleNamespace(id=99, title="频道", username="demo", noforwards=False)
+        downloaded_ids = []
+        scanned_threads = []
+
+        class FakeClient:
+            async def connect(self):
+                pass
+
+            async def is_user_authorized(self):
+                return True
+
+            async def iter_messages(self, _channel, **kwargs):
+                if "reply_to" in kwargs:
+                    scanned_threads.append(kwargs["reply_to"])
+                    for message in comments.get(kwargs["reply_to"], []):
+                        yield message
+                else:
+                    for message in sorted(roots, key=lambda item: item.id, reverse=not kwargs["reverse"]):
+                        yield message
+
+            async def download_media(self, message, file):
+                downloaded_ids.append(message.id)
+                Path(file).write_bytes(b"media-bytes")
+                return file
+
+        account = SimpleNamespace(
+            session_encrypted=service.encrypt(""), api_id=1, api_hash_encrypted=service.encrypt("hash"),
+        )
+        delivered = []
+        with tempfile.TemporaryDirectory() as raw_dir, \
+                patch("app.services.telegram.TelegramClient", return_value=FakeClient()), \
+                patch.object(service, "_resolve_target", new=AsyncMock(return_value=channel)), \
+                patch.object(service, "_close_client", new=AsyncMock()):
+            records = service.read_channel_media(account, "demo", parameters, Path(raw_dir), on_records=delivered.extend)
+        self.assertEqual(delivered, records)
+        return records, downloaded_ids, scanned_threads
+
+    def test_comments_only_skips_root_album_and_inherits_caption_and_tags(self) -> None:
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        roots = [_photo(1, published, grouped_id=8, caption="原帖 #旅行 #Tokyo"), _photo(2, published, grouped_id=8)]
+        comment = _photo(101, published, caption="评论 #tokyo #人像")
+        records, downloads, threads = self._collect_with_comments(roots, {1: [comment]}, {"comments_only": True})
+        self.assertEqual(downloads, [101])
+        self.assertEqual(threads, [1])
+        self.assertEqual(records[0]["caption"], "原帖 #旅行 #Tokyo\n\n评论 #tokyo #人像")
+        self.assertEqual(records[0]["hashtags"], [("旅行", "旅行"), ("Tokyo", "tokyo"), ("人像", "人像")])
+        self.assertEqual(records[0]["root_channel_message_id"], 1)
+        self.assertTrue(records[0]["is_comment"])
+        self.assertEqual(records[0]["external_key"], "99:101:1")
+
+    def test_comments_only_finds_text_and_different_media_roots(self) -> None:
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        for root in [_text(1, published, "文字原帖 #旅行"), _photo(1, published, caption="图片原帖 #旅行")]:
+            with self.subTest(root=root.message):
+                comment = _photo(101, published)
+                comment.photo = None
+                comment.video = SimpleNamespace(attributes=[])
+                records, downloads, threads = self._collect_with_comments(
+                    [root], {1: [comment, _photo(102, published)]},
+                    {"comments_only": True, "media_types": ["video"], "hashtags": ["旅行"]},
+                )
+                self.assertEqual(downloads, [101])
+                self.assertEqual(threads, [1])
+                self.assertEqual(records[0]["media_type"], "video")
+                self.assertEqual(records[0]["caption"], root.message)
+                self.assertEqual(records[0]["hashtags"], [("旅行", "旅行")])
+
+    def test_comments_only_respects_root_filters_dates_and_limit(self) -> None:
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        roots = [
+            _text(5, published + timedelta(days=1), "范围外 #旅行"),
+            _text(4, published, "标签不匹配"),
+            _text(3, published, "符合 #旅行"),
+            _text(2, published, "符合 #旅行"),
+            _text(1, published - timedelta(days=1), "范围外 #旅行"),
+        ]
+        comments = {item.id: [_photo(100 + item.id, published)] for item in roots}
+        records, downloads, threads = self._collect_with_comments(roots, comments, {
+            "comments_only": True, "hashtags": ["旅行"], "caption_keywords": ["符合"],
+            "date_from": "2026-09-02T00:00:00+00:00", "date_to": "2026-09-02T23:59:59+00:00",
+            "max_messages": 1,
+        })
+        self.assertEqual(downloads, [103])
+        self.assertEqual(threads, [3])
+        self.assertEqual(len(records), 1)
+
+    def test_comments_only_without_media_does_not_fall_back_to_root_download(self) -> None:
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        records, downloads, threads = self._collect_with_comments(
+            [_photo(1, published, caption="原帖")], {1: [_text(101, published)]}, {"comments_only": True},
+        )
+        self.assertEqual(records, [])
+        self.assertEqual(downloads, [])
+        self.assertEqual(threads, [1])
+
+    def test_existing_root_and_comment_collection_behavior_is_preserved(self) -> None:
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        for collect_comments, expected_downloads in [(False, [1]), (True, [1, 101])]:
+            with self.subTest(collect_comments=collect_comments):
+                records, downloads, threads = self._collect_with_comments(
+                    [_photo(1, published, caption="原帖 #旅行")], {1: [_photo(101, published, caption="评论 #人像")]},
+                    {"collect_comments": collect_comments},
+                )
+                self.assertEqual(downloads, expected_downloads)
+                self.assertEqual(threads, [1] if collect_comments else [])
+                self.assertEqual(records[-1]["caption"], "评论 #人像" if collect_comments else "原帖 #旅行")
+
+    def test_comments_only_parameter_defaults_and_validation(self) -> None:
+        definition = get_script("telegram-channel-mtproto")
+        assert definition is not None
+        self.assertFalse(definition.validate_parameters({})["comments_only"])
+        parameters = definition.validate_parameters({"comments_only": True, "collect_comments": False})
+        self.assertTrue(parameters["comments_only"])
+        self.assertTrue(parameters["collect_comments"])
+        with self.assertRaisesRegex(ValueError, "必须是布尔值"):
+            definition.validate_parameters({"comments_only": "true"})
+
     def test_video_metadata_reads_document_attributes(self) -> None:
         message = SimpleNamespace(video=SimpleNamespace(attributes=[SimpleNamespace(duration=12, w=1920, h=1080)]))
         self.assertEqual(video_metadata(message), (12.0, 1920, 1080))

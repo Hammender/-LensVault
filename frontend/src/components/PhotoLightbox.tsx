@@ -1,9 +1,10 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { isTextEditingTarget } from "../lib/utils";
 
 type PhotoLightboxProps = {
-  children: ReactNode;
+  children?: ReactNode | ((image: ReactNode) => ReactNode);
+  image?: { src: string; alt: string };
   meta?: ReactNode;
   backdropClassName?: string;
   shellClassName?: string;
@@ -23,6 +24,7 @@ type PhotoLightboxProps = {
 
 export default function PhotoLightbox({
   children,
+  image,
   meta,
   backdropClassName = "",
   shellClassName = "",
@@ -40,6 +42,55 @@ export default function PhotoLightbox({
   onKeyDown: onCustomKeyDown
 }: PhotoLightboxProps) {
   const shellRef = useRef<HTMLDivElement>(null);
+  const imageStageRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const [mode, setMode] = useState<"fit" | "actual" | "manual">("fit");
+  const [manualScale, setManualScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [imageSize, setImageSize] = useState<{ src: string; width: number; height: number } | null>(null);
+  const [imageFailed, setImageFailed] = useState(false);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const [pixelRatio, setPixelRatio] = useState(window.devicePixelRatio || 1);
+  const loadedImage = imageSize?.src === image?.src ? imageSize : null;
+  const naturalWidth = loadedImage ? loadedImage.width / pixelRatio : 0;
+  const naturalHeight = loadedImage ? loadedImage.height / pixelRatio : 0;
+  const fitScale = naturalWidth && naturalHeight && stageSize.width && stageSize.height
+    ? Math.min(stageSize.width / naturalWidth, stageSize.height / naturalHeight) : 1;
+  const scale = mode === "fit" ? fitScale : mode === "actual" ? 1 : manualScale;
+
+  useEffect(() => {
+    setMode("fit");
+    setManualScale(1);
+    setPan({ x: 0, y: 0 });
+    setImageFailed(false);
+    dragRef.current = null;
+  }, [image?.src]);
+
+  useEffect(() => {
+    const stage = imageStageRef.current;
+    if (!stage) return undefined;
+    const measure = () => {
+      setStageSize({ width: stage.clientWidth, height: stage.clientHeight });
+      setPixelRatio(window.devicePixelRatio || 1);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(stage);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [image?.src]);
+
+  const switchMode = () => {
+    setMode((current) => current === "actual" ? "fit" : "actual");
+    setPan({ x: 0, y: 0 });
+  };
+  const zoom = (factor: number) => {
+    setManualScale(Math.max(0.1, Math.min(16, scale * factor)));
+    setMode("manual");
+  };
 
   useEffect(() => {
     const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -53,6 +104,14 @@ export default function PhotoLightbox({
     if (!keyboardEnabled) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      const lightboxes = document.querySelectorAll(".lightbox-backdrop");
+      if (shellRef.current?.closest(".lightbox-backdrop") !== lightboxes[lightboxes.length - 1]) return;
+      if (image && (event.key === "o" || event.key === "O") && !event.ctrlKey && !event.metaKey
+          && !event.altKey && !isTextEditingTarget(event.target)) {
+        event.preventDefault();
+        if (!event.repeat) switchMode();
+        return;
+      }
       if (ignoreInteractiveTargets && event.key === "Escape") {
         event.preventDefault();
         onClose();
@@ -72,7 +131,44 @@ export default function PhotoLightbox({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, canGoNext, canGoPrevious, keyboardEnabled, ignoreInteractiveTargets, onClose, onCustomKeyDown, onNext, onPrevious]);
+  }, [busy, canGoNext, canGoPrevious, image, keyboardEnabled, ignoreInteractiveTargets, onClose, onCustomKeyDown, onNext, onPrevious]);
+
+  const imageNode = image ? (
+    <div
+      ref={imageStageRef}
+      className={`lightbox-image-stage${scale > fitScale ? " is-draggable" : ""}`}
+      onPointerDown={(event) => {
+        if (scale <= fitScale || event.button !== 0) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragRef.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+      }}
+      onPointerMove={(event) => {
+        const drag = dragRef.current;
+        if (drag) setPan({ x: drag.panX + event.clientX - drag.x, y: drag.panY + event.clientY - drag.y });
+      }}
+      onPointerUp={() => { dragRef.current = null; }}
+      onPointerCancel={() => { dragRef.current = null; }}
+    >
+      {!loadedImage && !imageFailed && <span className="lightbox-image-message">正在加载原图…</span>}
+      {imageFailed && <span className="lightbox-image-message" role="alert">原图加载失败，请重试</span>}
+      <img
+        key={image.src}
+        src={image.src}
+        alt={image.alt}
+        draggable={false}
+        style={loadedImage ? {
+          width: naturalWidth,
+          height: naturalHeight,
+          transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px) scale(${scale})`
+        } : { visibility: "hidden" }}
+        onLoad={(event) => {
+          setImageSize({ src: image.src, width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight });
+          setImageFailed(false);
+        }}
+        onError={() => { setImageSize(null); setImageFailed(true); }}
+      />
+    </div>
+  ) : null;
 
   return (
     <div className={`lightbox-backdrop ${backdropClassName}`.trim()} onClick={onClose} role="presentation">
@@ -94,7 +190,7 @@ export default function PhotoLightbox({
         >
           ‹ {previousLabel && <span>{previousLabel}</span>}
         </button>
-        {children}
+        {image ? typeof children === "function" ? children(imageNode) : imageNode : typeof children === "function" ? null : children}
         <button
           className="lightbox-arrow right"
           disabled={!canGoNext || busy}
@@ -104,9 +200,22 @@ export default function PhotoLightbox({
           {nextLabel && <span>{nextLabel}</span>} ›
         </button>
       </div>
-      {meta && (
-        <aside className="lightbox-meta-rail" onClick={(event) => event.stopPropagation()}>
-          {meta}
+      {(meta || image) && (
+        <aside className={`lightbox-meta-rail${image ? " has-image-controls" : ""}`} onClick={(event) => event.stopPropagation()}>
+          {image ? <div className="lightbox-meta-content">{meta}</div> : meta}
+          {image && <div className="lightbox-image-controls" role="group" aria-label="图片查看方式">
+            <span>原图 {loadedImage ? `${loadedImage.width} × ${loadedImage.height}` : imageFailed ? "加载失败" : "加载中"}</span>
+            <div className="lightbox-image-mode-buttons">
+              <button type="button" aria-pressed={mode === "fit"} disabled={!loadedImage} onClick={() => { setMode("fit"); setPan({ x: 0, y: 0 }); }}>适应窗口</button>
+              <button type="button" aria-pressed={mode === "actual"} disabled={!loadedImage} onClick={() => { setMode("actual"); setPan({ x: 0, y: 0 }); }}>原尺寸</button>
+            </div>
+            <div className="lightbox-image-zoom-buttons">
+              <button type="button" aria-label="缩小图片" disabled={!loadedImage} onClick={() => zoom(0.8)}>−</button>
+              <output aria-label="图片缩放比例">{loadedImage ? `${Math.round(scale * 100)}%` : "—"}</output>
+              <button type="button" aria-label="放大图片" disabled={!loadedImage} onClick={() => zoom(1.25)}>＋</button>
+            </div>
+            <small>按 O 切换适应窗口与原尺寸</small>
+          </div>}
         </aside>
       )}
     </div>

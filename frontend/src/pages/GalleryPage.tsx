@@ -1268,6 +1268,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
       )}
       {lightboxPhoto && (
         <PhotoLightbox
+          image={{ src: lightboxPhoto.original_url, alt: lightboxPhoto.is_rich_text ? "图文大图预览" : "大图预览" }}
           shellClassName={`gallery-lightbox${lightboxPhoto.is_rich_text ? " rich-lightbox" : ""}`}
           meta={lightboxMeta}
           busy={busy}
@@ -1280,10 +1281,10 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
           onPrevious={goPrevLightbox}
           onNext={goNextLightbox}
         >
-            {lightboxPhoto.is_rich_text ? (
+          {(image) => lightboxPhoto.is_rich_text ? (
               <div className="rich-lightbox-layout">
                 <div className="rich-lightbox-image-wrap">
-                  <img className="lightbox-image" src={lightboxPhoto.original_url} alt="图文大图预览" />
+                  {image}
                 </div>
                 <aside className="rich-lightbox-copy">
                   <h3>图文内容</h3>
@@ -1337,9 +1338,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                   </div>
                 </aside>
               </div>
-            ) : (
-              <img className="lightbox-image" src={lightboxPhoto.original_url} alt="大图预览" />
-            )}
+            ) : image}
         </PhotoLightbox>
       )}
       {recognitionNotice && (

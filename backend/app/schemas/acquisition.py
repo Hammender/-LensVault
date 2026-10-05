@@ -182,12 +182,20 @@ class AcquisitionSourceScriptBind(BaseModel):
     default_parameters: dict[str, object] = Field(default_factory=dict)
 
 
+class AcquisitionColorConversion(BaseModel):
+    version: str
+    source: dict[str, str]
+    assumed: list[str]
+    output: str
+
+
 class AcquisitionCaptureMetadata(BaseModel):
     video_asset_id: str
     video_filename: str
     video_sha256: str
     frame_index: int
     time_seconds: float
+    color_conversion: AcquisitionColorConversion | None = None
     source_caption: str | None = None
     source_hashtags: list[str] = Field(default_factory=list)
     source_published_at: datetime | None = None

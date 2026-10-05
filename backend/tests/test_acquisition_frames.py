@@ -22,7 +22,7 @@ from app.dependencies.context import ROUTE_PERMISSION_MATRIX
 from app.models import AcquisitionAsset, AcquisitionImportBatch, AcquisitionImportBatchItem, GalleryPhoto
 from app.schemas.acquisition import AcquisitionFrameLocate
 from app.services.acquisition import AcquisitionService
-from app.services.acquisition_frames import AcquisitionFrameService
+from app.services.acquisition_frames import AcquisitionFrameService, _color_filter, _source_color
 
 
 class MemoryStorage:
@@ -88,13 +88,16 @@ def test_real_selected_frame_matches_full_decode(sample_video, settings):
             located, image = frames.extract(asset, index=index)
             expected = subprocess.run([
                 settings.ffmpeg_path, "-v", "error", "-i", str(path), "-map", "0:v:0",
-                "-vf", f"select=eq(n\\,{index})", "-fps_mode", "passthrough", "-frames:v", "1",
+                "-vf", f"select=eq(n\\,{index}),{_color_filter(located['color_conversion'])}",
+                "-fps_mode", "passthrough", "-frames:v", "1",
                 "-c:v", "png", "-f", "image2pipe", "-",
             ], capture_output=True, check=True, timeout=30).stdout
             with Image.open(io.BytesIO(image)) as actual, Image.open(io.BytesIO(expected)) as reference:
                 assert actual.size == ((64, 96) if kind == "rotated" else (96, 64))
                 assert actual.tobytes() == reference.tobytes()
                 assert actual.format == "PNG"
+                assert actual.info.get("icc_profile")
+            assert located["color_conversion"]["output"] == "sRGB"
             assert located["frame_index"] == index
             assert located["total_frames"] == 10
             assert frames.locate(asset, located["time_seconds"])["frame_index"] == index
@@ -111,6 +114,19 @@ def test_real_selected_frame_matches_full_decode(sample_video, settings):
         assert not cached.path.exists()
     finally:
         frames.close()
+
+
+def test_untagged_sdr_uses_bt709_and_hdr_is_rejected():
+    color = _source_color({})
+    assert color["source"] == {"matrix": "bt709", "transfer": "bt709", "primaries": "bt709", "range": "tv"}
+    assert color["assumed"] == ["matrix", "transfer", "primaries", "range"]
+    tagged = _source_color({"color_space": "smpte170m", "color_transfer": "smpte170m",
+                            "color_primaries": "smpte170m", "color_range": "pc"})
+    assert tagged["source"]["matrix"] == "smpte170m"
+    assert tagged["source"]["range"] == "pc"
+    assert tagged["assumed"] == []
+    with pytest.raises(ValueError, match="HDR"):
+        _source_color({"color_transfer": "smpte2084"})
 
 
 @pytest.fixture
@@ -132,7 +148,7 @@ def capture_context(db_session, settings):
 
 def test_capture_is_independent_deduplicated_and_restorable(db_session, capture_context):
     video, service, payload, metadata = capture_context
-    frame = {"frame_index": 12, "time_seconds": 1.2}
+    frame = {"frame_index": 12, "time_seconds": 1.2, "color_conversion": _source_color({})}
     asset, outcome = service.capture_frame(db_session, video, frame, payload, metadata)
     assert outcome == "created"
     assert (asset.width, asset.height, asset.status) == (1600, 900, "pending_review")
@@ -143,6 +159,8 @@ def test_capture_is_independent_deduplicated_and_restorable(db_session, capture_
     assert read.source_message_url == metadata["source_message_url"]
     assert read.capture_metadata.video_filename == "原视频.mp4"
     assert read.capture_metadata.time_seconds == 1.2
+    assert read.capture_metadata.color_conversion.version == "srgb-v1"
+    assert asset.filename == "原视频_截图_00-01-200_sRGB.png"
     second, outcome = service.capture_frame(db_session, video, frame, payload, metadata)
     assert second.id == asset.id and outcome == "existing"
     service.reject_assets(db_session, None, [asset.id])

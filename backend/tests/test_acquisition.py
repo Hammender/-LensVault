@@ -662,7 +662,7 @@ class AcquisitionModelTests(unittest.TestCase):
     def test_stop_run_returns_false_for_inactive_or_unknown_run(self) -> None:
         self.assertFalse(self.service.stop_run("no-such-run-id"))
 
-    def _telegram_run(self) -> AcquisitionRun:
+    def _telegram_run(self, parameters: dict[str, object] | None = None) -> AcquisitionRun:
         definition = get_script("telegram-channel-mtproto")
         assert definition is not None
         self.db.add(
@@ -690,7 +690,25 @@ class AcquisitionModelTests(unittest.TestCase):
             )
         )
         self.db.commit()
-        return self.service.start_run(self.db, workspace.id, category, definition.key, "full", {})
+        return self.service.start_run(self.db, workspace.id, category, definition.key, "full", parameters or {})
+
+    def test_telegram_comments_only_is_saved_and_rejects_unsupported_targets(self) -> None:
+        run = self._telegram_run({"comments_only": True})
+        parameters = json.loads(run.parameters_json)
+        self.assertTrue(parameters["comments_only"])
+        self.assertTrue(parameters["collect_comments"])
+        run.status = "completed"
+        category = self.db.get(AcquisitionCategory, run.category_id)
+        assert category is not None
+        for entity_type, topic_id in [("bot", None), ("group", None), ("channel", 10)]:
+            with self.subTest(entity_type=entity_type, topic_id=topic_id):
+                category.telegram_entity_type = entity_type
+                category.telegram_topic_id = topic_id
+                self.db.commit()
+                with self.assertRaisesRegex(ValueError, "仅采集评论区媒体只支持频道"):
+                    self.service.start_run(
+                        self.db, run.workspace_id, category, "telegram-channel-mtproto", "full", {"comments_only": True},
+                    )
 
     def test_telegram_stop_before_start_does_not_connect(self) -> None:
         run = self._telegram_run()

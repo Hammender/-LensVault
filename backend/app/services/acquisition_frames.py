@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import bisect
+from io import BytesIO
 import json
 import math
 import subprocess
@@ -11,6 +12,52 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
+
+from PIL import Image, ImageCms
+
+
+COLOR_CONVERSION_VERSION = "srgb-v1"
+_SRGB_PROFILE = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
+def _source_color(stream: dict) -> dict:
+    """优先使用原片颜色标记；未标记的 SDR 视频按浏览器惯例解释为 BT.709。"""
+    raw = {
+        "matrix": stream.get("color_space"),
+        "transfer": stream.get("color_transfer"),
+        "primaries": stream.get("color_primaries"),
+        "range": stream.get("color_range"),
+    }
+    if raw["transfer"] in {"smpte2084", "arib-std-b67"} or raw["primaries"] == "bt2020":
+        raise ValueError("暂不支持 HDR 视频截图的 sRGB 转换")
+    allowed = {
+        "matrix": {"bt709", "bt470bg", "smpte170m"},
+        "transfer": {"bt709", "smpte170m", "iec61966-2-1"},
+        "primaries": {"bt709", "bt470bg", "smpte170m"},
+        "range": {"tv", "pc"},
+    }
+    defaults = {"matrix": "bt709", "transfer": "bt709", "primaries": "bt709", "range": "tv"}
+    values = {}
+    assumed = []
+    for field, value in raw.items():
+        if value in {None, "unknown", "unspecified"}:
+            values[field] = defaults[field]
+            assumed.append(field)
+        elif value in allowed[field]:
+            values[field] = value
+        else:
+            raise ValueError(f"视频颜色标记不受支持（{field}: {value}）")
+    return {"version": COLOR_CONVERSION_VERSION, "source": values, "assumed": assumed, "output": "sRGB"}
+
+
+def _color_filter(color: dict) -> str:
+    source = color["source"]
+    return (
+        "colorspace="
+        f"ispace={source['matrix']}:itrc={source['transfer']}:iprimaries={source['primaries']}:"
+        f"irange={source['range']}:space=bt709:trc=srgb:primaries=bt709:range=pc:format=yuv444p12,"
+        "scale=in_color_matrix=bt709:in_range=pc:out_range=pc,format=rgb24"
+    )
 
 
 @dataclass(frozen=True)
@@ -28,6 +75,7 @@ class CachedVideo:
     times: list[float]
     start_seconds: float
     used_at: float
+    color_conversion: dict
 
 
 class AcquisitionFrameService:
@@ -77,12 +125,14 @@ class AcquisitionFrameService:
         except OSError as exc:
             raise ValueError("视频选帧工具不可用，请检查 FFmpeg 和 FFprobe 配置") from exc
         if result.returncode:
+            if b"No such filter: 'colorspace'" in result.stderr:
+                raise ValueError("视频颜色转换不可用，请检查 FFmpeg colorspace 滤镜")
             raise ValueError("视频帧解码失败，请检查原视频是否完整")
         return result
 
     def _video(self, asset) -> CachedVideo:
         self._prune()
-        key = (asset.workspace_id, asset.id, asset.sha256, asset.object_key)
+        key = (asset.workspace_id, asset.id, asset.sha256, asset.object_key, COLOR_CONVERSION_VERSION)
         cached = self._videos.get(key)
         if cached:
             cached.used_at = time.monotonic()
@@ -107,7 +157,7 @@ class AcquisitionFrameService:
             result = self._run([
                 self.settings.ffprobe_path, "-v", "error", "-select_streams", "v:0",
                 "-show_frames", "-show_format", "-show_streams", "-show_entries",
-                "frame=best_effort_timestamp,best_effort_timestamp_time,key_frame:format=start_time:stream=start_time",
+                "frame=best_effort_timestamp,best_effort_timestamp_time,key_frame:format=start_time:stream=start_time,color_space,color_transfer,color_primaries,color_range",
                 "-of", "json", str(path),
             ])
             info = json.loads(result.stdout)
@@ -119,8 +169,9 @@ class AcquisitionFrameService:
                 raise ValueError("视频帧时间戳异常，无法保证精确选帧")
             start = float(info.get("format", {}).get("start_time") or
                           info.get("streams", [{}])[0].get("start_time") or 0)
+            color_conversion = _source_color(info.get("streams", [{}])[0])
             cached = CachedVideo(directory, path, frames, [f.seconds - start for f in frames],
-                                 start, time.monotonic())
+                                 start, time.monotonic(), color_conversion)
             self._videos[key] = cached
             return cached
         except Exception:
@@ -140,29 +191,33 @@ class AcquisitionFrameService:
             video = self._video(asset)
             index = self._index(video, seconds, index, direction)
             return {"frame_index": index, "time_seconds": max(0, video.times[index]),
-                    "total_frames": len(video.frames), "source_sha256": asset.sha256}
+                    "total_frames": len(video.frames), "source_sha256": asset.sha256,
+                    "color_conversion": video.color_conversion}
 
     def extract(self, asset, seconds: float = 0, index: int | None = None) -> tuple[dict, bytes]:
         with self._lock:
             video = self._video(asset)
             index = self._index(video, seconds, index, 0)
             frame = video.frames[index]
-            output = Path(video.directory.name) / f"{index}.png"
+            output = Path(video.directory.name) / f"{index}-{COLOR_CONVERSION_VERSION}.png"
             if not output.exists():
                 key_index = index
                 while key_index > 0 and not video.frames[key_index].keyframe:
                     key_index -= 1
                 seek = max(0, video.frames[key_index].seconds - video.start_seconds)
-                temporary = output.with_name(f"partial-{index}.png")
+                temporary = output.with_name(f"partial-{index}-{COLOR_CONVERSION_VERSION}.png")
                 try:
-                    self._run([
+                    result = self._run([
                         self.settings.ffmpeg_path, "-v", "error", "-nostdin", "-y", "-copyts",
                         "-ss", f"{seek:.9f}", "-i", str(video.path), "-map", "0:v:0",
-                        "-vf", f"select=eq(pts\\,{frame.pts})", "-fps_mode", "passthrough",
-                        "-frames:v", "1", "-c:v", "png", str(temporary),
+                        "-vf", f"select=eq(pts\\,{frame.pts}),{_color_filter(video.color_conversion)}",
+                        "-fps_mode", "passthrough", "-frames:v", "1", "-c:v", "png",
+                        "-f", "image2pipe", "-",
                     ])
-                    if not temporary.is_file() or not temporary.stat().st_size:
+                    if not result.stdout:
                         raise ValueError("未能解码选中的帧，请重新定位后再截图")
+                    with Image.open(BytesIO(result.stdout)) as decoded:
+                        decoded.convert("RGB").save(temporary, format="PNG", icc_profile=_SRGB_PROFILE)
                     temporary.replace(output)
                 finally:
                     temporary.unlink(missing_ok=True)

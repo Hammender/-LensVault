@@ -298,6 +298,8 @@ class ScriptDefinition:
                 raise ValueError("结束页不能小于起始页")
         if self.key == "telegram-channel-mtproto" and not result.get("media_types"):
             raise ValueError("至少选择一种采集媒体：图片或视频")
+        if self.key == "telegram-channel-mtproto" and result.get("comments_only"):
+            result["collect_comments"] = True
         return result
 
 

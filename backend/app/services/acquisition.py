@@ -506,6 +506,10 @@ class AcquisitionService:
         legacy_requested_force = self._pop_legacy_force_full_scan(requested_parameters)
         defaults = definition.validate_parameters(default_parameters)
         validated_parameters = definition.validate_parameters({**defaults, **requested_parameters})
+        if definition.key == "telegram-channel-mtproto" and validated_parameters.get("comments_only") and (
+            category.telegram_entity_type in {"bot", "group"} or category.telegram_topic_id is not None
+        ):
+            raise ValueError("仅采集评论区媒体只支持频道，不支持机器人、群组或论坛话题")
         legacy_force = legacy_requested_force if legacy_requested_force is not None else legacy_default_force
         if legacy_force and mode == "incremental":
             mode = "full"
@@ -2035,11 +2039,15 @@ class AcquisitionService:
             width, height, blur, warnings, features = self._analyze_image_payload(payload)
             asset_id = existing.id if existing else uuid4().hex
             milliseconds = round(frame["time_seconds"] * 1000)
-            filename = f"{Path(video.filename).stem[:400]}_截图_{milliseconds // 60000:02d}-{milliseconds // 1000 % 60:02d}-{milliseconds % 1000:03d}.png"
+            color_conversion = frame.get("color_conversion")
+            suffix = "_sRGB" if color_conversion else ""
+            filename = f"{Path(video.filename).stem[:400]}_截图_{milliseconds // 60000:02d}-{milliseconds // 1000 % 60:02d}-{milliseconds % 1000:03d}{suffix}.png"
             key = self._asset_key(video.workspace_id, asset_id, filename)
             metadata = {**source_metadata, "video_asset_id": video.id, "video_filename": video.filename,
                         "video_sha256": video.sha256, "frame_index": frame["frame_index"],
                         "time_seconds": frame["time_seconds"]}
+            if color_conversion:
+                metadata["color_conversion"] = color_conversion
             asset = existing or AcquisitionAsset(id=asset_id, workspace_id=video.workspace_id, sha256=digest)
             try:
                 self.storage.put_bytes(key, payload, "image/png")
