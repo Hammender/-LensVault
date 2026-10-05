@@ -1,5 +1,14 @@
 export const acquisitionAssetPageSize = 60;
 
+export function getAcquisitionAssetPageOffset(
+  orderedIds: readonly string[],
+  assetId: string,
+  pageSize = acquisitionAssetPageSize
+): number | null {
+  const index = orderedIds.indexOf(assetId);
+  return index < 0 ? null : Math.floor(index / pageSize) * pageSize;
+}
+
 export function getAcquisitionPreviewUrl(
   previewUrl: string,
   maxEdge: number
@@ -83,6 +92,22 @@ export function getAcquisitionLightboxShortcut(
   if (key === " " && mediaType === "image") return "toggle_selection";
   if (key === "Delete") return "reject";
   return null;
+}
+
+export function handleAcquisitionLightboxShortcut(
+  event: Pick<KeyboardEvent, "key" | "repeat" | "defaultPrevented" | "ctrlKey" | "metaKey" | "altKey" | "preventDefault">,
+  mediaType: "image" | "video",
+  actions: { onToggleSelect: () => void; onReject?: () => void }
+): boolean {
+  if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return false;
+  const shortcut = getAcquisitionLightboxShortcut(event.key, mediaType);
+  if (!shortcut || (shortcut === "reject" && !actions.onReject)) return false;
+  event.preventDefault();
+  // 长按只执行一次，同时阻止重复空格触发浏览器默认行为。
+  if (event.repeat) return true;
+  if (shortcut === "toggle_selection") actions.onToggleSelect();
+  else actions.onReject?.();
+  return true;
 }
 
 export function isAcquisitionImportBatchActive(status: string): boolean {

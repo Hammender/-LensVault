@@ -45,9 +45,10 @@ import {
   acquisitionAssetPageSize,
   clampAcquisitionOffset,
   createAcquisitionStatusReset,
+  getAcquisitionAssetPageOffset,
   getAcquisitionPageFill,
   getAcquisitionPreviewUrl,
-  getAcquisitionLightboxShortcut,
+  handleAcquisitionLightboxShortcut,
   getAcquisitionPagination,
   getNextAcquisitionSnapshotIndex,
   hasSelectedAllAcquisitionAssets,
@@ -73,6 +74,7 @@ import { listPluginCredentials, previewPlugin, type AcquisitionPluginCredential,
 import PhotoLightbox from "../components/PhotoLightbox";
 import type {
   AcquisitionAsset,
+  AcquisitionCaptureResult,
   AcquisitionAssetSummary,
   AcquisitionCategory,
   AcquisitionExport,
@@ -424,13 +426,14 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const loadAssetPage = useCallback(async (
     status: string,
     requestedOffset: number,
-    showLoading = true
+    showLoading = true,
+    pageMediaFilter: "all" | "image" | "video" = mediaFilter
   ): Promise<PaginatedAcquisitionAssets | null> => {
     const requestId = assetRequestIdRef.current + 1;
     assetRequestIdRef.current = requestId;
     if (showLoading) setAssetLoading(true);
     try {
-      const mediaType = mediaFilter === "all" ? undefined : mediaFilter;
+      const mediaType = pageMediaFilter === "all" ? undefined : pageMediaFilter;
       let page = await listAcquisitionAssets(status, Math.max(0, requestedOffset), acquisitionAssetPageSize, mediaType);
       const validOffset = clampAcquisitionOffset(page.total, requestedOffset, acquisitionAssetPageSize);
       if (validOffset !== page.offset) {
@@ -442,7 +445,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       setAssetOffset(page.offset);
       return page;
     } finally {
-      if (showLoading && requestId === assetRequestIdRef.current) setAssetLoading(false);
+      if (requestId === assetRequestIdRef.current) setAssetLoading(false);
     }
   }, [mediaFilter]);
 
@@ -1185,7 +1188,24 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     }, "已返回修改 Telegram 凭证");
   }
 
-  function showLightboxAsset(asset: AcquisitionAsset) {
+  async function syncReviewPageToLightboxAsset(
+    assetId: string,
+    expectedGeneration: number,
+    filter?: { status: string; mediaType: "image" | "video" }
+  ) {
+    if (lightboxSnapshotRequestIdRef.current !== expectedGeneration) return;
+    if (!filter && assets.some((asset) => asset.id === assetId)) return;
+    const status = filter?.status ?? assetStatus;
+    const pageMediaFilter = filter?.mediaType ?? mediaFilter;
+    // 灯箱快照只含可预览项，列表页的位置必须按完整列表的当前顺序计算。
+    const ids = await listAcquisitionAssetIds(status, false, pageMediaFilter === "all" ? undefined : pageMediaFilter);
+    if (lightboxSnapshotRequestIdRef.current !== expectedGeneration) return;
+    const offset = getAcquisitionAssetPageOffset(ids, assetId);
+    if (offset === null) throw new Error("当前素材已不在审核列表中");
+    await loadAssetPage(status, offset, false, pageMediaFilter);
+  }
+
+  function showLightboxAsset(asset: AcquisitionAsset, filter?: { status: string; mediaType: "image" | "video" }) {
     const requestId = lightboxSnapshotRequestIdRef.current + 1;
     lightboxSnapshotRequestIdRef.current = requestId;
     lightboxAssetCacheRef.current.set(asset.id, asset);
@@ -1194,7 +1214,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     setLightboxSnapshotIds([asset.id]);
     setLightboxSnapshotIndex(0);
     setLightboxNavigationBusy(true);
-    void listAcquisitionAssetIds(assetStatus, true, mediaFilter === "all" ? undefined : mediaFilter).then((ids) => {
+    void listAcquisitionAssetIds(filter?.status ?? assetStatus, true, filter?.mediaType ?? (mediaFilter === "all" ? undefined : mediaFilter)).then(async (ids) => {
       if (requestId !== lightboxSnapshotRequestIdRef.current) return;
       const currentIndex = ids.indexOf(asset.id);
       if (currentIndex < 0) {
@@ -1204,6 +1224,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       }
       setLightboxSnapshotIds(ids);
       setLightboxSnapshotIndex(currentIndex);
+      await syncReviewPageToLightboxAsset(asset.id, requestId, filter);
     }).catch((error: Error) => {
       if (requestId === lightboxSnapshotRequestIdRef.current) setNotice(error.message);
     }).finally(() => {
@@ -1289,19 +1310,27 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   async function selectLightboxSnapshotAsset(
     snapshotIds: string[],
     index: number,
-    expectedGeneration?: number
+    expectedGeneration = lightboxSnapshotRequestIdRef.current
   ): Promise<boolean> {
     const assetId = snapshotIds[index];
     if (!assetId || unavailableLightboxAssetIdsRef.current.has(assetId)) return false;
     try {
       const asset = lightboxAssetCacheRef.current.get(assetId) ?? await getAcquisitionAsset(assetId);
       if (!asset.original_url) throw new Error("该素材已不可预览");
-      if (expectedGeneration !== undefined && lightboxSnapshotRequestIdRef.current !== expectedGeneration) return false;
+      if (lightboxSnapshotRequestIdRef.current !== expectedGeneration) return false;
       lightboxAssetCacheRef.current.set(asset.id, asset);
       setLightboxSelection({ asset, globalIndex: index });
       setLightboxSnapshotIndex(index);
+      try {
+        await syncReviewPageToLightboxAsset(asset.id, expectedGeneration);
+      } catch (error) {
+        if (lightboxSnapshotRequestIdRef.current === expectedGeneration) {
+          setNotice(error instanceof Error ? `列表页同步失败：${error.message}` : "列表页同步失败");
+        }
+      }
       return true;
     } catch (error) {
+      if (lightboxSnapshotRequestIdRef.current !== expectedGeneration) return false;
       unavailableLightboxAssetIdsRef.current.add(assetId);
       if (!(error instanceof Error) || !error.message.includes("不存在")) setNotice(error instanceof Error ? error.message : "素材加载失败");
       return false;
@@ -1310,6 +1339,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
 
   async function navigateLightbox(direction: -1 | 1) {
     if (lightboxNavigationBusy) return;
+    const generation = lightboxSnapshotRequestIdRef.current;
     setLightboxNavigationBusy(true);
     try {
       let index = getNextAcquisitionSnapshotIndex(
@@ -1318,8 +1348,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         direction,
         unavailableLightboxAssetIdsRef.current
       );
-      while (index >= 0) {
-        if (await selectLightboxSnapshotAsset(lightboxSnapshotIds, index)) return;
+      while (index >= 0 && lightboxSnapshotRequestIdRef.current === generation) {
+        if (await selectLightboxSnapshotAsset(lightboxSnapshotIds, index, generation)) return;
         index = getNextAcquisitionSnapshotIndex(
           lightboxSnapshotIds,
           index,
@@ -1328,7 +1358,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         );
       }
     } finally {
-      setLightboxNavigationBusy(false);
+      if (lightboxSnapshotRequestIdRef.current === generation) setLightboxNavigationBusy(false);
     }
   }
 
@@ -1387,6 +1417,27 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       setAssetActionBusy(false);
       lightboxRejectPendingRef.current = false;
     }
+  }
+
+  function handleFrameCaptured(result: AcquisitionCaptureResult) {
+    reviewReconcileNeededRef.current = true;
+    void getAcquisitionAssetSummary().then(setAssetSummary).catch(() => {
+      setNotice("截图已保存，统计刷新失败，关闭灯箱后可刷新列表");
+    });
+    if (assetStatus === "pending_review" && mediaFilter !== "video" && assetOffset === 0) {
+      void loadAssetPage(assetStatus, 0).catch(() => setNotice("截图已保存，列表刷新失败"));
+    }
+    if (result.outcome === "created" || result.outcome === "restored") {
+      setNotice("截图已添加到待审核·图片最新处");
+    }
+  }
+
+  function viewCapturedAsset(asset: AcquisitionAsset) {
+    setReviewMode("list");
+    setAssetStatus("pending_review");
+    setMediaFilter("image");
+    setAssetOffset(0);
+    showLightboxAsset(asset, { status: "pending_review", mediaType: "image" });
   }
 
   function closeReviewLightbox() {
@@ -1904,6 +1955,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       indexLabel={`${lightboxGlobalIndex + 1} / ${lightboxSnapshotIds.length}`}
       selected={selectedAssets.includes(lightboxAsset.id)}
       canDelete={canDelete}
+      canCapture={canAdd && assetStatus === "pending_review"}
+      onCaptured={handleFrameCaptured}
+      onViewCapture={viewCapturedAsset}
       busy={assetActionBusy || lightboxNavigationBusy}
       canGoPrevious={canGoToPreviousAsset}
       canGoNext={canGoToNextAsset}
@@ -1930,14 +1984,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         if (asset) setSimilarityLightbox({ groupId: similarityLightboxGroup.id, assetId: asset.id });
       }}
       onKeyDown={(event) => {
-        const shortcut = getAcquisitionLightboxShortcut(event.key);
-        if (shortcut === "toggle_selection") {
-          event.preventDefault();
-          toggleAsset(similarityLightboxAsset.id);
-        } else if (shortcut === "reject" && canDelete) {
-          event.preventDefault();
-          void rejectSimilarityAssets([similarityLightboxAsset.id]);
-        }
+        handleAcquisitionLightboxShortcut(event, "image", {
+          onToggleSelect: () => toggleAsset(similarityLightboxAsset.id),
+          onReject: canDelete ? () => void rejectSimilarityAssets([similarityLightboxAsset.id]) : undefined
+        });
       }}
       meta={<>
         <div className="acquisition-lightbox-heading">

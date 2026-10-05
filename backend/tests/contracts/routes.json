@@ -198,6 +198,24 @@
     ]
   },
   {
+    "path": "/api/acquisition/assets/{asset_id}/frames/locate",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets/{asset_id}/frames/{frame_index}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/acquisition/assets/{asset_id}/captures",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
     "path": "/api/acquisition/assets/{asset_id}/preview",
     "methods": [
       "GET"

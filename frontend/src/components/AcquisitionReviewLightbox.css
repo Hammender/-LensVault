@@ -22,6 +22,60 @@
   outline: none;
 }
 
+.acquisition-review-frame-view { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #0c1211; touch-action: none; cursor: default; }
+.acquisition-review-frame-view.is-zoomed { cursor: grab; }
+.acquisition-review-frame-view.is-zoomed:active { cursor: grabbing; }
+.acquisition-review-frame-view img { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; }
+.acquisition-review-player-status { position: absolute; inset: 0; z-index: 7; display: flex; gap: 12px; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: rgba(12, 18, 17, .65); color: #fffdf8; text-align: center; pointer-events: none; }
+.acquisition-review-player-status button { pointer-events: auto; }
+.acquisition-review-player-badges { position: absolute; left: 16px; top: 52px; display: flex; gap: 8px; pointer-events: none; }
+.acquisition-review-player-badges span, .acquisition-review-fullscreen-notice { padding: 6px 10px; background: rgba(12, 18, 17, .88); color: #d7f3ee; border: 1px solid rgba(159, 224, 216, .3); font-size: .75rem; }
+.acquisition-review-zoom-tools { position: absolute; right: 16px; top: 16px; z-index: 8; display: flex; align-items: center; gap: 8px; background: rgba(12, 18, 17, .9); padding: 4px; color: #d7f3ee; font-size: .75rem; }
+.acquisition-review-zoom-tools button { display: grid; place-items: center; min-width: 30px; height: 30px; padding: 4px 8px; border: 1px solid rgba(159, 224, 216, .3); background: transparent; color: inherit; }
+.acquisition-review-fullscreen-notice { position: absolute; left: 16px; bottom: 100px; z-index: 8; max-width: calc(100% - 32px); }
+.acquisition-review-player:fullscreen { width: 100vw; height: 100vh; }
+.acquisition-review-player:fullscreen video { width: 100%; height: 100%; }
+.acquisition-review-progress-wrap { position: relative; height: 18px; display: flex; align-items: center; background: rgba(255, 255, 255, .12); }
+.acquisition-review-progress-buffer { position: absolute; height: 100%; left: 0; background: rgba(255, 255, 255, .18); pointer-events: none; }
+.acquisition-review-progress-range { position: relative; appearance: none; -webkit-appearance: none; width: 100%; height: 6px; margin: 0; padding: 0; border: 0; border-radius: 0; cursor: pointer; touch-action: none; }
+.acquisition-review-progress-range::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fffdf8; }
+.acquisition-review-progress-range::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fffdf8; }
+.acquisition-review-capture-panel { flex-shrink: 0; display: grid; gap: 8px; padding: 12px; border: 1px solid rgba(35, 123, 117, .3); background: #e5f0ed; }
+.acquisition-review-capture-heading { display: flex; align-items: center; gap: 7px; color: #213a3d; font-size: .82rem; }
+.acquisition-review-capture-heading > span { margin-left: auto; color: #237b75; font-size: .65rem; }
+.acquisition-review-capture-panel p { margin: 0; color: #213a3d; font-size: .73rem; line-height: 1.5; }
+.acquisition-review-capture-panel .acquisition-review-capture-command { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; border: 1px solid #237b75; background: #237b75; color: #fffdf8; font-weight: 700; }
+.acquisition-review-time-form { display: flex; gap: 6px; }
+.acquisition-review-time-form input { width: 0; flex: 1; min-width: 0; padding: 7px 8px; font: .78rem var(--font-mono); }
+.acquisition-review-time-form button { padding: 4px 10px; font-size: .75rem; }
+.acquisition-review-capture-panel .acquisition-review-prepare-command { padding: 6px 8px; background: transparent; color: #237b75; border: 1px solid rgba(35, 123, 117, .3); font-size: .75rem; }
+.acquisition-review-capture-panel .acquisition-review-capture-error { color: #9f2634; }
+.acquisition-review-capture-result { display: flex; align-items: center; gap: 10px; }
+.acquisition-review-capture-result img { width: 68px; height: 48px; object-fit: contain; background: #0c1211; }
+.acquisition-review-capture-result strong { display: block; font-size: .72rem; color: #213a3d; }
+.acquisition-review-capture-result button { margin-top: 4px; border: 0; padding: 2px 0; background: transparent; color: #237b75; font-size: .72rem; text-decoration: underline; box-shadow: none; }
+.acquisition-review-capture-origin { padding: 10px; border-left: 3px solid #237b75; background: #e5f0ed; color: #213a3d; }
+.acquisition-review-capture-origin strong { font-size: .8rem; }
+.acquisition-review-capture-origin p { margin: 5px 0; font-size: .75rem; overflow-wrap: anywhere; }
+.acquisition-review-capture-origin small { font-size: .7rem; }
+.acquisition-review-lightbox.is-video:not(.similarity-lightbox) + .lightbox-meta-rail { overflow: auto; }
+.acquisition-review-lightbox.is-video + .lightbox-meta-rail .acquisition-review-copy { flex: 0 0 auto; overflow: visible; }
+.acquisition-review-controls:focus-within { opacity: 1; transform: none; }
+.acquisition-review-ctrl-btn:disabled { opacity: .35; cursor: default; }
+.acquisition-review-ctrl-btn:focus-visible, .acquisition-review-progress-range:focus-visible { outline: 2px solid #9fe0d8; outline-offset: 3px; }
+
+@media (max-width: 1150px) {
+  .acquisition-review-time { font-size: .7rem; }
+}
+@media (max-width: 720px) {
+  .acquisition-review-controls { padding: 30px 10px 10px; }
+  .acquisition-review-ctrl-left, .acquisition-review-ctrl-right { gap: 3px; }
+  .acquisition-review-zoom-tools { top: 10px; right: 10px; gap: 3px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .acquisition-review-controls, .acquisition-review-ctrl-btn, .acquisition-review-volume-slider { transition: none; }
+}
+
 .acquisition-review-type-chip {
   position: absolute;
   top: 16px;
@@ -130,9 +184,9 @@
 }
 
 .acquisition-review-ctrl-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   color: #fffdf8;
 }
@@ -143,6 +197,64 @@
   align-items: center;
   gap: 8px;
 }
+
+.acquisition-review-ctrl-left { justify-self: start; }
+.acquisition-review-ctrl-right { justify-self: end; }
+
+.acquisition-review-frame-step {
+  display: inline-flex;
+  align-items: center;
+  justify-self: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgba(255, 253, 248, .12);
+  border-radius: 999px;
+  background: rgba(255, 253, 248, .06);
+  white-space: nowrap;
+}
+
+.acquisition-review-frame-step.is-active,
+.acquisition-review-frame-step:focus-within {
+  border-color: rgba(159, 224, 216, .35);
+  background: rgba(159, 224, 216, .08);
+}
+
+.acquisition-review-frame-step-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: rgba(255, 253, 248, .72);
+  font-size: .72rem;
+  font-weight: 500;
+}
+
+.acquisition-review-frame-step-label svg,
+.acquisition-review-frame-step.is-active .acquisition-review-frame-step-label { color: #9fe0d8; }
+
+.acquisition-review-frame-step-btn {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #fffdf8;
+  cursor: pointer;
+  transition: background-color .14s ease, color .14s ease;
+}
+
+.acquisition-review-frame-step-btn:hover:not(:disabled),
+.acquisition-review-frame-step-btn:active:not(:disabled) {
+  background: rgba(159, 224, 216, .16);
+  color: #9fe0d8;
+  transform: none;
+  box-shadow: none;
+}
+.acquisition-review-frame-step-btn:disabled { opacity: .35; cursor: default; }
+.acquisition-review-frame-step-btn:focus-visible { outline: 2px solid #9fe0d8; outline-offset: 2px; }
 
 .acquisition-review-ctrl-btn {
   display: inline-grid;
@@ -355,4 +467,22 @@
   color: var(--muted);
   font-size: .68rem;
   line-height: 1.45;
+}
+
+@media (max-width: 1150px) {
+  .acquisition-review-ctrl-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .acquisition-review-frame-step { grid-column: 1 / -1; grid-row: 1; }
+  .acquisition-review-ctrl-left { grid-column: 1; grid-row: 2; }
+  .acquisition-review-ctrl-right { grid-column: 2; grid-row: 2; }
+}
+
+@media (max-width: 720px) {
+  .acquisition-review-ctrl-row { grid-template-columns: 1fr; gap: 6px; }
+  .acquisition-review-frame-step { grid-column: 1; }
+  .acquisition-review-ctrl-left { grid-column: 1; grid-row: 2; justify-self: center; }
+  .acquisition-review-ctrl-right { grid-column: 1; grid-row: 3; justify-self: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .acquisition-review-frame-step-btn { transition: none; }
 }

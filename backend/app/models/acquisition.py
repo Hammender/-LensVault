@@ -215,6 +215,9 @@ class AcquisitionAsset(Base):
         Boolean, default=False, server_default="0", nullable=False
     )
     quality_warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    capture_metadata_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="视频截图来源快照：原视频、帧时间及采集来源；普通素材为空"
+    )
     status: Mapped[str] = mapped_column(String(32), default="pending_review", nullable=False, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)

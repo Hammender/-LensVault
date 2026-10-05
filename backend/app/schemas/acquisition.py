@@ -182,6 +182,34 @@ class AcquisitionSourceScriptBind(BaseModel):
     default_parameters: dict[str, object] = Field(default_factory=dict)
 
 
+class AcquisitionCaptureMetadata(BaseModel):
+    video_asset_id: str
+    video_filename: str
+    video_sha256: str
+    frame_index: int
+    time_seconds: float
+    source_caption: str | None = None
+    source_hashtags: list[str] = Field(default_factory=list)
+    source_published_at: datetime | None = None
+    source_message_url: str | None = None
+    source_channel_title: str | None = None
+
+
+class AcquisitionFrameLocate(BaseModel):
+    time_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
+    frame_index: int | None = Field(default=None, ge=0)
+    direction: Literal[-1, 0, 1] = 0
+    source_sha256: str
+
+
+class AcquisitionFrameRead(BaseModel):
+    frame_index: int
+    time_seconds: float
+    total_frames: int
+    source_sha256: str
+    image_url: str
+
+
 class AcquisitionAssetRead(BaseModel):
     id: str
     filename: str
@@ -207,6 +235,12 @@ class AcquisitionAssetRead(BaseModel):
     source_published_at: datetime | None = None
     source_message_url: str | None = None
     source_channel_title: str | None = None
+    capture_metadata: AcquisitionCaptureMetadata | None = None
+
+
+class AcquisitionCaptureRead(BaseModel):
+    asset: AcquisitionAssetRead
+    outcome: Literal["created", "existing", "restored", "imported"]
 
 
 class PaginatedAcquisitionAssets(BaseModel):

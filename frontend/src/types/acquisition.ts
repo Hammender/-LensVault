@@ -116,6 +116,32 @@ export type PaginatedAcquisitionRuns = {
   limit: number;
 };
 
+export type AcquisitionCaptureMetadata = {
+  video_asset_id: string;
+  video_filename: string;
+  video_sha256: string;
+  frame_index: number;
+  time_seconds: number;
+  source_caption: string | null;
+  source_hashtags: string[];
+  source_published_at: string | null;
+  source_message_url: string | null;
+  source_channel_title: string | null;
+};
+
+export type AcquisitionFrame = {
+  frame_index: number;
+  time_seconds: number;
+  total_frames: number;
+  source_sha256: string;
+  image_url: string;
+};
+
+export type AcquisitionCaptureResult = {
+  asset: AcquisitionAsset;
+  outcome: "created" | "existing" | "restored" | "imported";
+};
+
 export type AcquisitionAsset = {
   id: string;
   filename: string;
@@ -141,6 +167,7 @@ export type AcquisitionAsset = {
   source_published_at: string | null;
   source_message_url: string | null;
   source_channel_title: string | null;
+  capture_metadata?: AcquisitionCaptureMetadata | null;
 };
 
 export type PaginatedAcquisitionAssets = {

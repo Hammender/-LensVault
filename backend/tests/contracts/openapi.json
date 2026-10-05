@@ -31,6 +31,16 @@
             ],
             "title": "Blur Score"
           },
+          "capture_metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AcquisitionCaptureMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "content_type": {
             "anyOf": [
               {
@@ -279,6 +289,114 @@
           "total"
         ],
         "title": "AcquisitionAssetSummary",
+        "type": "object"
+      },
+      "AcquisitionCaptureMetadata": {
+        "properties": {
+          "frame_index": {
+            "title": "Frame Index",
+            "type": "integer"
+          },
+          "source_caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Caption"
+          },
+          "source_channel_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Channel Title"
+          },
+          "source_hashtags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Hashtags",
+            "type": "array"
+          },
+          "source_message_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Message Url"
+          },
+          "source_published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Published At"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          },
+          "video_asset_id": {
+            "title": "Video Asset Id",
+            "type": "string"
+          },
+          "video_filename": {
+            "title": "Video Filename",
+            "type": "string"
+          },
+          "video_sha256": {
+            "title": "Video Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "video_asset_id",
+          "video_filename",
+          "video_sha256",
+          "frame_index",
+          "time_seconds"
+        ],
+        "title": "AcquisitionCaptureMetadata",
+        "type": "object"
+      },
+      "AcquisitionCaptureRead": {
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/AcquisitionAssetRead"
+          },
+          "outcome": {
+            "enum": [
+              "created",
+              "existing",
+              "restored",
+              "imported"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset",
+          "outcome"
+        ],
+        "title": "AcquisitionCaptureRead",
         "type": "object"
       },
       "AcquisitionCategoryCreate": {
@@ -793,6 +911,80 @@
           "expires_at"
         ],
         "title": "AcquisitionExportRead",
+        "type": "object"
+      },
+      "AcquisitionFrameLocate": {
+        "properties": {
+          "direction": {
+            "default": 0,
+            "enum": [
+              -1,
+              0,
+              1
+            ],
+            "title": "Direction",
+            "type": "integer"
+          },
+          "frame_index": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Index"
+          },
+          "source_sha256": {
+            "title": "Source Sha256",
+            "type": "string"
+          },
+          "time_seconds": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Time Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "source_sha256"
+        ],
+        "title": "AcquisitionFrameLocate",
+        "type": "object"
+      },
+      "AcquisitionFrameRead": {
+        "properties": {
+          "frame_index": {
+            "title": "Frame Index",
+            "type": "integer"
+          },
+          "image_url": {
+            "title": "Image Url",
+            "type": "string"
+          },
+          "source_sha256": {
+            "title": "Source Sha256",
+            "type": "string"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          },
+          "total_frames": {
+            "title": "Total Frames",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "frame_index",
+          "time_seconds",
+          "total_frames",
+          "source_sha256",
+          "image_url"
+        ],
+        "title": "AcquisitionFrameRead",
         "type": "object"
       },
       "AcquisitionImportAction": {
@@ -7724,6 +7916,357 @@
           }
         },
         "summary": "Get Asset",
+        "tags": [
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/assets/{asset_id}/captures": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcquisitionFrameLocate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquisitionCaptureRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture Asset Frame",
+        "tags": [
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/assets/{asset_id}/frames/locate": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcquisitionFrameLocate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquisitionFrameRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Locate Asset Frame",
+        "tags": [
+          "采集"
+        ]
+      }
+    },
+    "/api/acquisition/assets/{asset_id}/frames/{frame_index}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "frame_index",
+            "required": true,
+            "schema": {
+              "title": "Frame Index",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "v",
+            "required": true,
+            "schema": {
+              "title": "V",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-workspace-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pictureshow_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pictureshow Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Asset Frame",
         "tags": [
           "采集"
         ]

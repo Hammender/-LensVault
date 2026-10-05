@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { isTextEditingTarget } from "../lib/utils";
 
@@ -9,6 +9,7 @@ type PhotoLightboxProps = {
   shellClassName?: string;
   busy?: boolean;
   keyboardEnabled?: boolean;
+  ignoreInteractiveTargets?: boolean;
   canGoPrevious: boolean;
   canGoNext: boolean;
   previousLabel?: string;
@@ -27,6 +28,7 @@ export default function PhotoLightbox({
   shellClassName = "",
   busy = false,
   keyboardEnabled = true,
+  ignoreInteractiveTargets = false,
   canGoPrevious,
   canGoNext,
   previousLabel,
@@ -37,10 +39,27 @@ export default function PhotoLightbox({
   onNext,
   onKeyDown: onCustomKeyDown
 }: PhotoLightboxProps) {
+  const shellRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    shellRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    };
+  }, []);
+
   useEffect(() => {
     if (!keyboardEnabled) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (ignoreInteractiveTargets && event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
       if (busy || isTextEditingTarget(event.target)) return;
+      if (ignoreInteractiveTargets && event.target instanceof Element && event.target.closest("button, a, [role=button]")) return;
       if (event.key === "Escape") {
         onClose();
       } else if (event.key === "ArrowLeft" && canGoPrevious && !event.shiftKey) {
@@ -53,16 +72,18 @@ export default function PhotoLightbox({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, canGoNext, canGoPrevious, keyboardEnabled, onClose, onCustomKeyDown, onNext, onPrevious]);
+  }, [busy, canGoNext, canGoPrevious, keyboardEnabled, ignoreInteractiveTargets, onClose, onCustomKeyDown, onNext, onPrevious]);
 
   return (
     <div className={`lightbox-backdrop ${backdropClassName}`.trim()} onClick={onClose} role="presentation">
       <div
+        ref={shellRef}
         className={`lightbox-shell ${shellClassName}`.trim()}
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label={ariaLabel}
+        tabIndex={-1}
       >
         <button className="lightbox-close" onClick={onClose}>关闭</button>
         <button

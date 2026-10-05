@@ -3036,6 +3036,7 @@ input:focus, select:focus, textarea:focus {
 
 .lightbox-shell {
   position: relative;
+  outline: none;
   width: min(1600px, 98vw);
   height: min(94vh, 1080px);
   background: var(--bg-strong);

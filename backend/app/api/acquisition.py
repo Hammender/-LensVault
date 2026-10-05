@@ -41,6 +41,10 @@ from app.schemas import (
     AcquisitionAssetAction,
     AcquisitionAssetRead,
     AcquisitionAssetSummary,
+    AcquisitionCaptureMetadata,
+    AcquisitionCaptureRead,
+    AcquisitionFrameLocate,
+    AcquisitionFrameRead,
     AcquisitionCategoryCreate,
     AcquisitionCategoryRead,
     AcquisitionCategoryUpdate,
@@ -245,6 +249,12 @@ def _asset_read(
     if telegram_metadata is None and db is not None:
         telegram_metadata = _telegram_metadata_by_asset(db, [asset.id]).get(asset.id)
     telegram, hashtags = telegram_metadata if telegram_metadata else (None, [])
+    capture = None
+    if getattr(asset, "capture_metadata_json", None):
+        try:
+            capture = AcquisitionCaptureMetadata.model_validate_json(asset.capture_metadata_json)
+        except ValueError:
+            pass
     source_metadata: dict[str, object] = {}
     if telegram is None and db is not None:
         source_item = db.scalar(
@@ -281,11 +291,12 @@ def _asset_read(
         created_at=asset.created_at,
         preview_url=f"/api/acquisition/assets/{asset.id}/preview?v={asset.sha256}" if asset.object_key else None,
         original_url=f"/api/acquisition/assets/{asset.id}/original?v={asset.sha256}" if asset.object_key else None,
-        source_caption=telegram.caption if telegram else source_metadata.get("caption"),
-        source_hashtags=hashtags if telegram else source_metadata.get("hashtags") or [],
-        source_published_at=telegram.published_at if telegram else normalize_plugin_published_at(source_metadata.get("published_at"), asset.id),
-        source_message_url=telegram.message_url if telegram else (source_item.source_url if db is not None and source_item else None),
-        source_channel_title=telegram.channel_title if telegram else source_metadata.get("channel_title"),
+        source_caption=capture.source_caption if capture else telegram.caption if telegram else source_metadata.get("caption"),
+        source_hashtags=capture.source_hashtags if capture else hashtags if telegram else source_metadata.get("hashtags") or [],
+        source_published_at=capture.source_published_at if capture else telegram.published_at if telegram else normalize_plugin_published_at(source_metadata.get("published_at"), asset.id),
+        source_message_url=capture.source_message_url if capture else telegram.message_url if telegram else (source_item.source_url if db is not None and source_item else None),
+        source_channel_title=capture.source_channel_title if capture else telegram.channel_title if telegram else source_metadata.get("channel_title"),
+        capture_metadata=capture,
     )
 
 
@@ -1214,6 +1225,65 @@ def get_asset_original(
     if asset is None or asset.workspace_id != current.workspace_id or not asset.object_key:
         raise HTTPException(status_code=404, detail="采集临时图片不存在")
     return stream_storage_object(request.app.state.services.storage, request, asset.object_key, asset.filename, asset.content_type)
+
+
+def _frame_asset(db: Session, current: CurrentContext, asset_id: str, source_sha256: str) -> AcquisitionAsset:
+    asset = db.get(AcquisitionAsset, asset_id)
+    if asset is None or asset.workspace_id != current.workspace_id:
+        raise HTTPException(status_code=404, detail="采集视频不存在")
+    if asset.media_type != "video" or not asset.object_key or asset.status != "pending_review":
+        raise HTTPException(status_code=409, detail="视频已不在待审核区或原文件已清除")
+    if asset.sha256 != source_sha256:
+        raise HTTPException(status_code=409, detail="原视频已变化，请重新打开视频")
+    return asset
+
+
+@router.post("/assets/{asset_id}/frames/locate", response_model=AcquisitionFrameRead)
+def locate_asset_frame(asset_id: str, payload: AcquisitionFrameLocate, request: Request,
+                       db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)):
+    asset = _frame_asset(db, current, asset_id, payload.source_sha256)
+    try:
+        frame = _service(request).frames.locate(asset, payload.time_seconds, payload.frame_index, payload.direction)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="视频帧准备失败，请检查原文件和存储服务后重试") from exc
+    return AcquisitionFrameRead(**frame, image_url=f"/api/acquisition/assets/{asset.id}/frames/{frame['frame_index']}?v={asset.sha256}")
+
+
+@router.get("/assets/{asset_id}/frames/{frame_index}")
+def read_asset_frame(asset_id: str, frame_index: int, request: Request, v: str = Query(),
+                     db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)):
+    asset = _frame_asset(db, current, asset_id, v)
+    try:
+        _, image = _service(request).frames.extract(asset, index=frame_index)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="视频帧读取失败，请重试") from exc
+    return Response(content=image, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
+
+@router.post("/assets/{asset_id}/captures", response_model=AcquisitionCaptureRead)
+def capture_asset_frame(asset_id: str, payload: AcquisitionFrameLocate, request: Request,
+                        db: Session = Depends(get_db), current: CurrentContext = Depends(require_context)):
+    asset = _frame_asset(db, current, asset_id, payload.source_sha256)
+    source = _asset_read(db, asset).model_dump(mode="json")
+    metadata = {key: value for key, value in source.items() if key.startswith("source_")}
+    service = _service(request)
+    try:
+        frame, image = service.frames.extract(asset, payload.time_seconds, payload.frame_index)
+        # 解码期间可能被另一审核请求丢弃；保存前重新确认源素材状态。
+        db.refresh(asset)
+        _frame_asset(db, current, asset_id, payload.source_sha256)
+        captured, outcome = service.capture_frame(db, asset, frame, image, metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="截图保存失败，请检查存储服务后重试") from exc
+    return AcquisitionCaptureRead(asset=_asset_read(db, captured), outcome=outcome)
 
 
 @router.get("/assets/{asset_id}/preview", response_class=Response)

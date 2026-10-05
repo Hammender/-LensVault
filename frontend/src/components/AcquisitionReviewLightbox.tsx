@@ -1,20 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronUp, Maximize2, Minimize2, Pause, Play, Trash2, Volume1, Volume2, VolumeX } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type PointerEvent } from "react";
+import { Camera, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Film, Maximize2, Minimize2, Pause, Play, RotateCcw, Trash2, ZoomIn, ZoomOut, Volume1, Volume2, VolumeX } from "lucide-react";
 
 import { acquisitionDownloadUrl } from "../api/acquisition";
-import { getAcquisitionLightboxShortcut } from "../lib/acquisitionReview";
+import { formatVideoTime, parseVideoTime } from "../lib/acquisitionVideo";
+import { useAcquisitionFrames } from "../lib/useAcquisitionFrames";
+import { handleAcquisitionLightboxShortcut } from "../lib/acquisitionReview";
 import { releaseHtmlVideo } from "../lib/htmlVideo";
 import PhotoLightbox from "./PhotoLightbox";
-import type { AcquisitionAsset } from "../types";
+import type { AcquisitionAsset, AcquisitionCaptureResult } from "../types";
 import { formatBytes, formatDate, formatDurationSeconds } from "../lib/utils";
 import "./AcquisitionReviewLightbox.css";
-
-function formatClock(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "00:00";
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-}
 
 type AcquisitionReviewLightboxProps = {
   asset: AcquisitionAsset;
@@ -22,6 +17,9 @@ type AcquisitionReviewLightboxProps = {
   indexLabel: string;
   selected: boolean;
   canDelete: boolean;
+  canCapture?: boolean;
+  onCaptured?: (result: AcquisitionCaptureResult) => void;
+  onViewCapture?: (asset: AcquisitionAsset) => void;
   busy: boolean;
   canGoPrevious: boolean;
   canGoNext: boolean;
@@ -39,6 +37,9 @@ export default function AcquisitionReviewLightbox({
   indexLabel,
   selected,
   canDelete,
+  canCapture = false,
+  onCaptured,
+  onViewCapture,
   busy,
   canGoPrevious,
   canGoNext,
@@ -58,6 +59,20 @@ export default function AcquisitionReviewLightbox({
     || asset.source_published_at
   );
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playerRef = useRef<HTMLDivElement | null>(null);
+  const { decoded, locating, saving, error: frameError, capture, clearFrame, prepareFrame, saveFrame } = useAcquisitionFrames(asset, videoRef, onCaptured);
+  const [mediaReady, setMediaReady] = useState(false);
+  const [buffering, setBuffering] = useState(true);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [bufferedTime, setBufferedTime] = useState(0);
+  const [seeking, setSeeking] = useState(false);
+  const [timeInput, setTimeInput] = useState("");
+  const [timeError, setTimeError] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const [draggingProgress, setDraggingProgress] = useState(false);
+  const resumeAfterSeek = useRef(false);
   const captionRef = useRef<HTMLParagraphElement | null>(null);
   const [captionExpanded, setCaptionExpanded] = useState(false);
   const [captionOverflows, setCaptionOverflows] = useState(false);
@@ -89,6 +104,15 @@ export default function AcquisitionReviewLightbox({
   }, []);
 
   useEffect(() => {
+    setMediaReady(false);
+    setBuffering(true);
+    setMediaError(null);
+    setBufferedTime(0);
+    setSeeking(false);
+    setTimeInput("");
+    setTimeError(null);
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
     setCurrentTime(0);
     setDuration(asset.duration_seconds ?? 0);
     setIsPlaying(true);
@@ -130,6 +154,11 @@ export default function AcquisitionReviewLightbox({
       });
     };
     video.addEventListener("loadeddata", tryPlay);
+    // StrictMode 会先执行一次资源清理，再重跑 effect；恢复被清理的 src。
+    if (asset.original_url && !video.getAttribute("src")) {
+      video.src = acquisitionDownloadUrl(asset.original_url);
+      video.load();
+    }
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) tryPlay();
     return () => {
       cancelled = true;
@@ -163,8 +192,14 @@ export default function AcquisitionReviewLightbox({
   }, []);
 
   const togglePlay = useCallback(() => {
-    if (!videoRef.current) return;
+    if (!videoRef.current || !mediaReady || locating || saving) return;
     if (videoRef.current.paused) {
+      if (decoded) {
+        videoRef.current.currentTime = decoded.frame.time_seconds;
+        clearFrame();
+        setZoom(1);
+        setPan({ x: 0, y: 0 });
+      }
       videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
       showIndicator("播放");
     } else {
@@ -172,13 +207,14 @@ export default function AcquisitionReviewLightbox({
       setIsPlaying(false);
       showIndicator("暂停");
     }
-  }, [showIndicator]);
+  }, [showIndicator, mediaReady, locating, saving, decoded, clearFrame]);
 
   const handleReject = useCallback(() => {
+    if (saving) return;
     videoRef.current?.pause();
     setIsPlaying(false);
     onReject();
-  }, [onReject]);
+  }, [onReject, saving]);
 
   const toggleMute = useCallback(() => {
     if (!videoRef.current) return;
@@ -196,29 +232,46 @@ export default function AcquisitionReviewLightbox({
     }
   }, [isMuted, volume, showIndicator]);
 
+  const seekTo = useCallback((seconds: number) => {
+    const video = videoRef.current;
+    if (!video || !mediaReady || locating || saving || !Number.isFinite(duration) || duration <= 0) return;
+    clearFrame();
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    video.currentTime = Math.max(0, Math.min(duration, seconds));
+    setCurrentTime(video.currentTime);
+  }, [mediaReady, locating, saving, duration, clearFrame]);
+
   const handleSeek = useCallback((delta: number) => {
-    if (!videoRef.current) return;
-    const next = Math.max(0, Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + delta));
-    videoRef.current.currentTime = next;
-    setCurrentTime(next);
+    seekTo((decoded?.frame.time_seconds ?? videoRef.current?.currentTime ?? 0) + delta);
     showIndicator(`${delta > 0 ? "+" : ""}${delta}秒`);
-  }, [showIndicator]);
+  }, [seekTo, decoded, showIndicator]);
+
+  const stepFrame = useCallback((direction: -1 | 0 | 1) => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    void prepareFrame(direction);
+  }, [prepareFrame]);
 
   const toggleFullscreen = useCallback(() => {
-    const node = videoRef.current?.parentElement;
+    const node = playerRef.current;
     if (!node) return;
-    if (!document.fullscreenElement) {
-      node.requestFullscreen().catch(() => {});
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch(() => {});
-      setIsFullscreen(false);
-    }
-  }, []);
+    const operation = document.fullscreenElement ? document.exitFullscreen() : node.requestFullscreen();
+    void operation.catch(() => showIndicator("全屏不可用"));
+  }, [showIndicator]);
 
-  const progressRatio = duration > 0 ? Math.min(1, currentTime / duration) : 0;
+  const displayedTime = decoded?.frame.time_seconds ?? currentTime;
+  const captureDisabled = !canCapture || !mediaReady || seeking || locating || saving || busy || Boolean(mediaError);
+  const frameDisabled = !mediaReady || seeking || locating || saving || busy || Boolean(mediaError);
+  const seekFromPointer = (event: PointerEvent<HTMLInputElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    seekTo(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * duration);
+  };
+
+  const progressRatio = duration > 0 ? Math.min(1, displayedTime / duration) : 0;
   const media = isVideo && asset.original_url ? (
     <div
+      ref={playerRef}
       className={`acquisition-review-player${showControls || !isPlaying ? " show-controls" : ""}`}
       onClick={togglePlay}
       onMouseMove={revealControls}
@@ -231,12 +284,22 @@ export default function AcquisitionReviewLightbox({
         ref={videoRef}
         src={acquisitionDownloadUrl(asset.original_url)}
         poster={asset.preview_url ?? undefined}
+        onLoadedData={() => { setMediaReady(true); setBuffering(false); }}
+        onWaiting={() => setBuffering(true)}
+        onCanPlay={() => setBuffering(false)}
+        onError={() => { setMediaError("视频播放失败，请重试；若仍无法播放，请检查视频格式。"); setBuffering(false); setMediaReady(false); }}
+        onSeeking={() => setSeeking(true)}
+        onSeeked={() => setSeeking(false)}
+        onProgress={() => {
+          const video = videoRef.current;
+          if (video?.buffered.length) setBufferedTime(video.buffered.end(video.buffered.length - 1));
+        }}
         playsInline
         onTimeUpdate={() => {
           if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
         }}
         onLoadedMetadata={() => {
-          if (videoRef.current) setDuration(videoRef.current.duration);
+          if (videoRef.current) setDuration(Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : 0);
         }}
         onPlay={() => {
           setIsPlaying(true);
@@ -252,38 +315,74 @@ export default function AcquisitionReviewLightbox({
         }}
       />
       <span className="acquisition-review-type-chip">视频</span>
-      {!isPlaying && (
-        <div className="acquisition-review-pause-overlay">
-          <div className="acquisition-review-pause-icon"><Play size={30} fill="currentColor" /></div>
-        </div>
-      )}
-      {indicatorText && <div className="acquisition-review-indicator">{indicatorText}</div>}
+      {decoded && <div
+        className={`acquisition-review-frame-view${zoom > 1 ? " is-zoomed" : ""}`}
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => {
+          if (zoom <= 1) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          dragRef.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (drag) setPan({ x: drag.panX + event.clientX - drag.x, y: drag.panY + event.clientY - drag.y });
+        }}
+        onPointerUp={() => { dragRef.current = null; }}
+        onPointerCancel={() => { dragRef.current = null; }}
+      >
+        <img src={decoded.url} alt={`第 ${decoded.frame.frame_index + 1} 帧`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} draggable={false} />
+      </div>}
+      {(mediaError || (buffering && !decoded) || locating) && <div className="acquisition-review-player-status" onClick={(event) => event.stopPropagation()}>
+        <span>{mediaError || (locating ? "正在准备精确画面…" : "正在加载视频…")}</span>
+        {mediaError && <button type="button" onClick={() => {
+          setMediaError(null); setBuffering(true); videoRef.current?.load();
+          void videoRef.current?.play().catch(() => {});
+        }}>重试播放</button>}
+      </div>}
+      <div className="acquisition-review-player-badges">
+        {!isPlaying && mediaReady && <span>{decoded ? `精细选帧 · 第 ${decoded.frame.frame_index + 1} 帧` : "已暂停"}</span>}
+        {indicatorText && <span>{indicatorText}</span>}
+      </div>
       <div className="acquisition-review-controls" onClick={(event) => event.stopPropagation()}>
-        <div
-          className="acquisition-review-progress"
-          onClick={(event) => {
-            const rect = event.currentTarget.getBoundingClientRect();
-            const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-            if (videoRef.current && duration > 0) {
-              const nextTime = ratio * duration;
-              videoRef.current.currentTime = nextTime;
-              setCurrentTime(nextTime);
-            }
-          }}
-        >
-          <div className="acquisition-review-progress-fill" style={{ width: `${progressRatio * 100}%` }} />
+        <div className="acquisition-review-progress-wrap">
+          <div className="acquisition-review-progress-buffer" style={{ width: `${duration > 0 ? Math.min(100, bufferedTime / duration * 100) : 0}%` }} />
+          <input
+            className="acquisition-review-progress-range"
+            type="range" min={0} max={duration || 1} step={0.001} value={displayedTime}
+            aria-label="视频播放进度" aria-valuetext={formatVideoTime(displayedTime, true)}
+            title={formatVideoTime(displayedTime, true)}
+            disabled={!mediaReady || locating || saving || busy || Boolean(mediaError) || duration <= 0}
+            style={{ background: `linear-gradient(to right, #9fe0d8 ${progressRatio * 100}%, transparent ${progressRatio * 100}%)` }}
+            onPointerDown={(event) => {
+              if (frameDisabled) return;
+              resumeAfterSeek.current = Boolean(videoRef.current && !videoRef.current.paused);
+              videoRef.current?.pause();
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setDraggingProgress(true);
+              seekFromPointer(event);
+            }}
+            onPointerMove={(event) => { if (draggingProgress) seekFromPointer(event); }}
+            onPointerUp={() => {
+              setDraggingProgress(false);
+              if (resumeAfterSeek.current) void videoRef.current?.play().catch(() => {});
+              resumeAfterSeek.current = false;
+            }}
+            onPointerCancel={() => { setDraggingProgress(false); resumeAfterSeek.current = false; }}
+            onChange={(event) => seekTo(Number(event.target.value))}
+          />
         </div>
         <div className="acquisition-review-ctrl-row">
           <div className="acquisition-review-ctrl-left">
-            <button type="button" className="acquisition-review-ctrl-btn" onClick={togglePlay} title="播放/暂停">
+            <button type="button" className="acquisition-review-ctrl-btn" onClick={togglePlay} title="播放/暂停（空格）" aria-label={isPlaying ? "暂停" : "播放"} disabled={!mediaReady || locating || saving}>
               {isPlaying ? <Pause size={18} /> : <Play size={18} />}
             </button>
             <div className="acquisition-review-volume">
-              <button type="button" className="acquisition-review-ctrl-btn" onClick={toggleMute} title="静音">
+              <button type="button" className="acquisition-review-ctrl-btn" onClick={toggleMute} title="静音（M）" aria-label={isMuted ? "取消静音" : "静音"}>
                 {isMuted || volume === 0 ? <VolumeX size={18} /> : volume < 0.5 ? <Volume1 size={18} /> : <Volume2 size={18} />}
               </button>
               <div className="acquisition-review-volume-slider">
                 <input
+                  aria-label="视频音量"
                   type="range"
                   min={0}
                   max={1}
@@ -304,15 +403,24 @@ export default function AcquisitionReviewLightbox({
                 />
               </div>
             </div>
-            <span className="acquisition-review-time">{formatClock(currentTime)} / {formatClock(duration)}</span>
+            <span className="acquisition-review-time">{formatVideoTime(displayedTime, true)} / {formatVideoTime(duration)}</span>
+          </div>
+          <div className={`acquisition-review-frame-step${decoded ? " is-active" : ""}`} role="group" aria-label="逐帧选画面" aria-busy={locating}>
+            <button type="button" className="acquisition-review-frame-step-btn" disabled={frameDisabled || decoded?.frame.frame_index === 0} onClick={() => stepFrame(-1)} title="上一帧（逗号）" aria-label="上一帧"><ChevronLeft size={17} /></button>
+            <span className="acquisition-review-frame-step-label"><Film size={14} aria-hidden="true" />逐帧</span>
+            <button type="button" className="acquisition-review-frame-step-btn" disabled={frameDisabled || (decoded ? decoded.frame.frame_index === decoded.frame.total_frames - 1 : false)} onClick={() => stepFrame(1)} title="下一帧（句号）" aria-label="下一帧"><ChevronRight size={17} /></button>
           </div>
           <div className="acquisition-review-ctrl-right">
+            <button type="button" className="acquisition-review-ctrl-btn" disabled={frameDisabled} onClick={() => handleSeek(-5)} title="快退 5 秒（J）" aria-label="快退 5 秒"><RotateCcw size={17} /></button>
+            <button type="button" className="acquisition-review-ctrl-btn" disabled={frameDisabled} onClick={() => handleSeek(5)} title="快进 5 秒（L）" aria-label="快进 5 秒"><RotateCcw size={17} style={{ transform: "scaleX(-1)" }} /></button>
+            {canCapture && <button type="button" className="acquisition-review-ctrl-btn capture-btn" disabled={captureDisabled} onClick={() => void saveFrame()} title="截取当前帧（S）" aria-label="截取当前帧"><Camera size={18} /></button>}
+
             <div className="acquisition-review-speed">
               <button
                 type="button"
                 className={`acquisition-review-ctrl-btn speed-btn${showSpeedMenu ? " active" : ""}`}
                 onClick={() => setShowSpeedMenu((current) => !current)}
-                title="倍速"
+                title="倍速" aria-label="播放倍速" aria-expanded={showSpeedMenu}
               >
                 {playbackRate}x
               </button>
@@ -336,12 +444,25 @@ export default function AcquisitionReviewLightbox({
                 </div>
               )}
             </div>
-            <button type="button" className="acquisition-review-ctrl-btn" onClick={toggleFullscreen} title="全屏">
+            <button type="button" className="acquisition-review-ctrl-btn" onClick={toggleFullscreen} title="全屏（F）" aria-label={isFullscreen ? "退出全屏" : "进入全屏"}>
               {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
             </button>
           </div>
         </div>
       </div>
+      {decoded && <div className="acquisition-review-zoom-tools" onClick={(event) => event.stopPropagation()}>
+        <button type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} title="适应窗口">适应</button>
+        <button type="button" onClick={() => {
+          const image = playerRef.current?.querySelector<HTMLImageElement>(".acquisition-review-frame-view img");
+          if (image) { setZoom(image.naturalWidth / image.clientWidth); setPan({ x: 0, y: 0 }); }
+        }} title="按图片原始像素查看">原尺寸</button>
+        <button type="button" onClick={() => setZoom((value) => Math.max(1, value / 1.5))} aria-label="缩小画面"><ZoomOut size={16} /></button>
+        <span>{Math.round(zoom * 100)}%</span>
+        <button type="button" onClick={() => setZoom((value) => Math.min(12, value * 1.5))} aria-label="放大画面"><ZoomIn size={16} /></button>
+      </div>}
+      {isFullscreen && (frameError || saving || capture) && <div className="acquisition-review-fullscreen-notice" role="status">
+        {frameError || (saving ? "正在保存原尺寸截图…" : capture?.outcome === "imported" ? "该画面已在图库中" : "截图已保存到待审核区")}
+      </div>}
     </div>
   ) : asset.original_url ? (
     <img className="lightbox-image" src={asset.original_url} alt={asset.filename} />
@@ -352,19 +473,37 @@ export default function AcquisitionReviewLightbox({
   return (
     <PhotoLightbox
       backdropClassName="acquisition-review-lightbox-backdrop"
-      shellClassName="acquisition-review-lightbox"
+      shellClassName={`acquisition-review-lightbox${isVideo ? " is-video" : ""}`}
       ariaLabel={isVideo ? "采集视频预览" : "采集图片预览"}
       busy={busy}
+      ignoreInteractiveTargets
       canGoPrevious={canGoPrevious}
       canGoNext={canGoNext}
-      onClose={onClose}
+      onClose={() => {
+        if (isVideo && document.fullscreenElement) { void document.exitFullscreen().catch(() => {}); return; }
+        onClose();
+      }}
+      previousLabel="上一项"
+      nextLabel="下一项"
       onPrevious={onPrevious}
       onNext={onNext}
       onKeyDown={(event) => {
+        if (event.target instanceof Element && event.target.closest("button, input, select, textarea, a, [contenteditable]")) return;
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
         if (isVideo) {
+          if (event.key === "," || event.key === ".") {
+            event.preventDefault();
+            if (!frameDisabled && !event.repeat) stepFrame(event.key === "," ? -1 : 1);
+            return;
+          }
+          if (event.key.toLowerCase() === "s") {
+            event.preventDefault();
+            if (!captureDisabled && !event.repeat) void saveFrame();
+            return;
+          }
           if (event.key === " ") {
             event.preventDefault();
-            togglePlay();
+            if (!event.repeat) togglePlay();
             return;
           }
           if (event.key === "j" || event.key === "J" || (event.key === "ArrowLeft" && event.shiftKey)) {
@@ -388,14 +527,10 @@ export default function AcquisitionReviewLightbox({
             return;
           }
         }
-        const shortcut = getAcquisitionLightboxShortcut(event.key, asset.media_type);
-        if (shortcut === "toggle_selection") {
-          event.preventDefault();
-          onToggleSelect();
-        } else if (shortcut === "reject" && canDelete) {
-          event.preventDefault();
-          handleReject();
-        }
+        handleAcquisitionLightboxShortcut(event, asset.media_type, {
+          onToggleSelect,
+          onReject: canDelete ? handleReject : undefined
+        });
       }}
       meta={
         <>
@@ -409,6 +544,39 @@ export default function AcquisitionReviewLightbox({
               <button type="button" className="acquisition-lightbox-close" onClick={onClose}>关闭</button>
             </div>
           </div>
+          {isVideo && <section className="acquisition-review-capture-panel">
+            <div className="acquisition-review-capture-heading"><Camera size={19} /><strong>视频截图</strong><span>原尺寸 PNG</span></div>
+            <p>暂停后选好画面，截图将加入待审核区。首次处理该视频需读取原片，长视频可能稍久。</p>
+            {canCapture && <button className="acquisition-review-capture-command" type="button" disabled={captureDisabled} onClick={() => void saveFrame()}>
+              <Camera size={18} />{saving ? "正在保存截图…" : "截取当前帧"}
+            </button>}
+            <form className="acquisition-review-time-form" onSubmit={(event) => {
+              event.preventDefault();
+              const seconds = parseVideoTime(timeInput);
+              if (seconds === null || seconds > duration) { setTimeError("请输入视频时长范围内的时间，如 01:23.456"); return; }
+              setTimeError(null);
+              void prepareFrame(0, seconds);
+            }}>
+              <input aria-label="精确定位时间" placeholder={formatVideoTime(displayedTime, true)} value={timeInput} onChange={(event) => setTimeInput(event.target.value)} disabled={frameDisabled} />
+              <button type="submit" disabled={frameDisabled}>定位</button>
+            </form>
+            {!decoded && <button className="acquisition-review-prepare-command" type="button" disabled={frameDisabled} onClick={() => stepFrame(0)}>进入精细选帧</button>}
+            {(timeError || frameError) && <p className="acquisition-review-capture-error" role="alert">{timeError || frameError}</p>}
+            <div role="status" aria-live="polite">
+              {locating && <p>正在准备精确画面，首次读取可能稍久…</p>}
+              {capture && <div className="acquisition-review-capture-result">
+                {capture.asset.preview_url && <img src={acquisitionDownloadUrl(capture.asset.preview_url)} alt="刚保存的视频截图" />}
+                <div><strong>{capture.outcome === "imported" ? "该画面已在图库中" : capture.outcome === "existing" ? "该截图已在审核列表中" : "已添加到待审核·图片"}</strong>
+                  {capture.asset.status === "pending_review" && <button type="button" onClick={() => onViewCapture?.(capture.asset)}>查看截图</button>}
+                </div>
+              </div>}
+            </div>
+          </section>}
+          {asset.capture_metadata && <section className="acquisition-review-capture-origin">
+            <strong>视频截图来源</strong>
+            <p>{asset.capture_metadata.video_filename}</p>
+            <small>截帧时间 {formatVideoTime(asset.capture_metadata.time_seconds, true)} · 第 {asset.capture_metadata.frame_index + 1} 帧</small>
+          </section>}
           {extraMeta}
           <dl className="acquisition-lightbox-facts">
             <div className="span-all"><dt>文件名</dt><dd title={asset.filename}>{asset.filename}</dd></div>
@@ -435,7 +603,7 @@ export default function AcquisitionReviewLightbox({
               <Check size={17} /> {selected ? "取消选择" : "选中当前"}
             </button>
             {canDelete && (
-              <button type="button" className="danger-command" onClick={handleReject} disabled={busy}>
+              <button type="button" className="danger-command" onClick={handleReject} disabled={busy || saving}>
                 <Trash2 size={17} /> 丢弃当前
               </button>
             )}
@@ -479,7 +647,7 @@ export default function AcquisitionReviewLightbox({
           {isVideo && (
             <section className="acquisition-review-shortcuts">
               <strong>快捷键</strong>
-              <p>空格播放 · Enter 选中 · J / L 快退快进 · M 静音 · F 全屏</p>
+              <p>空格播放 · , / . 逐帧 · S 截图 · J / L 前后 5 秒 · Enter 选中 · M 静音 · F 全屏 · ← / → 切换素材</p>
             </section>
           )}
         </>

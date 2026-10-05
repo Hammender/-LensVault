@@ -1,6 +1,8 @@
 import type {
   AcquisitionAsset,
   AcquisitionAssetSummary,
+  AcquisitionFrame,
+  AcquisitionCaptureResult,
   AcquisitionCategory,
   AcquisitionExport,
   AcquisitionHistoryItem,
@@ -22,6 +24,25 @@ import { authFetch, jsonHeaders, parseResponse as parse, withWorkspaceContext } 
 import { toShanghaiDateTimeBoundary } from "../lib/utils";
 
 const fetch = authFetch;
+
+export type AcquisitionFrameRequest = {
+  source_sha256: string;
+  time_seconds?: number;
+  frame_index?: number;
+  direction?: -1 | 0 | 1;
+};
+
+export async function locateAcquisitionFrame(assetId: string, payload: AcquisitionFrameRequest, signal?: AbortSignal): Promise<AcquisitionFrame> {
+  return parse<AcquisitionFrame>(await fetch(`/api/acquisition/assets/${encodeURIComponent(assetId)}/frames/locate`, {
+    method: "POST", headers: jsonHeaders, body: JSON.stringify(payload), signal
+  }));
+}
+
+export async function captureAcquisitionFrame(assetId: string, payload: AcquisitionFrameRequest): Promise<AcquisitionCaptureResult> {
+  return parse<AcquisitionCaptureResult>(await fetch(`/api/acquisition/assets/${encodeURIComponent(assetId)}/captures`, {
+    method: "POST", headers: jsonHeaders, body: JSON.stringify(payload)
+  }));
+}
 
 export async function listAcquisitionScripts(): Promise<AcquisitionScript[]> {
   return parse<AcquisitionScript[]>(await fetch("/api/acquisition/scripts"));

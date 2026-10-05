@@ -25,6 +25,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import numpy as np
 from PIL import Image
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -80,6 +81,7 @@ from app.services.acquisition_plugins.manager import PluginAborted, PluginAdapte
 from app.services.acquisition_plugins.context import PluginExecutionContext
 from app.services.acquisition_plugins.runtime import check_abort, safe_error
 from app.services.video_processing import extract_video_cover_frame
+from app.services.acquisition_frames import AcquisitionFrameService
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +260,8 @@ class AcquisitionService:
         self.video_service = video_service
         self._run_abort_events: dict[str, threading.Event] = {}
         self._run_abort_lock = threading.Lock()
+        self._frames: AcquisitionFrameService | None = None
+        self._capture_lock = threading.Lock()
         self.similarity_extractor = similarity_extractor or (
             similarity_scanner.extractor if similarity_scanner is not None else DinoV2FeatureExtractor(self.settings)
         )
@@ -1993,6 +1997,68 @@ class AcquisitionService:
         item.status = "gallery_duplicate"
         item.video_id = video.id
         item.error_message = None
+
+    @property
+    def frames(self) -> AcquisitionFrameService:
+        with self._capture_lock:
+            if self._frames is None:
+                self._frames = AcquisitionFrameService(self.storage, self.settings)
+            return self._frames
+
+    def capture_frame(self, db: Session, video: AcquisitionAsset, frame: dict,
+                      payload: bytes, source_metadata: dict) -> tuple[AcquisitionAsset, str]:
+        """截图是独立素材；不构造爬取条目、不改变原视频状态和采集计数。"""
+        digest = hashlib.sha256(payload).hexdigest()
+        with self._capture_lock:
+            existing = db.scalar(select(AcquisitionAsset).where(
+                AcquisitionAsset.workspace_id == video.workspace_id, AcquisitionAsset.sha256 == digest
+            ))
+            if existing and existing.status != "rejected":
+                return existing, "imported" if existing.status in {"imported", "gallery_duplicate"} else "existing"
+            if self._gallery_photo_by_sha(db, video.workspace_id, digest) is not None:
+                # 若图库中已有同一画面，仍保留可追溯的素材记录，但不重复进入待审核。
+                imported = True
+            else:
+                imported = False
+            width, height, blur, warnings, features = self._analyze_image_payload(payload)
+            asset_id = existing.id if existing else uuid4().hex
+            milliseconds = round(frame["time_seconds"] * 1000)
+            filename = f"{Path(video.filename).stem[:400]}_截图_{milliseconds // 60000:02d}-{milliseconds // 1000 % 60:02d}-{milliseconds % 1000:03d}.png"
+            key = self._asset_key(video.workspace_id, asset_id, filename)
+            metadata = {**source_metadata, "video_asset_id": video.id, "video_filename": video.filename,
+                        "video_sha256": video.sha256, "frame_index": frame["frame_index"],
+                        "time_seconds": frame["time_seconds"]}
+            asset = existing or AcquisitionAsset(id=asset_id, workspace_id=video.workspace_id, sha256=digest)
+            try:
+                self.storage.put_bytes(key, payload, "image/png")
+                asset.filename = filename
+                asset.content_type = "image/png"
+                asset.media_type = "image"
+                asset.object_key = key
+                asset.size_bytes = len(payload)
+                asset.width, asset.height, asset.blur_score = width, height, blur
+                asset.perceptual_phash, asset.perceptual_dhash = features.phash, features.dhash
+                asset.quality_score = features.quality_score
+                asset.quality_warnings = json.dumps(warnings, ensure_ascii=False)
+                asset.capture_metadata_json = json.dumps(metadata, ensure_ascii=False)
+                asset.status = "gallery_duplicate" if imported else "pending_review"
+                asset.error_message = None
+                asset.created_at = shanghai_now()
+                db.add(asset)
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                self.storage.remove_object(key)
+                if isinstance(exc, IntegrityError):
+                    winner = db.scalar(select(AcquisitionAsset).where(
+                        AcquisitionAsset.workspace_id == video.workspace_id, AcquisitionAsset.sha256 == digest
+                    ))
+                    if winner:
+                        return winner, "imported" if winner.status in {"imported", "gallery_duplicate"} else "existing"
+                raise
+            if imported:
+                self._cleanup_asset_object(db, asset)
+            return asset, "imported" if imported else "restored" if existing else "created"
 
     def _preview_key(self, workspace_id: int | None, asset_id: str) -> str:
         prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""
