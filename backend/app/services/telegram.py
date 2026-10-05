@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import re
 import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from telethon import TelegramClient
 from telethon.errors import (
     ApiIdInvalidError,
     ChannelPrivateError,
+    ChatForwardsRestrictedError,
     FloodWaitError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
@@ -52,6 +54,7 @@ LOGGER = logging.getLogger(__name__)
 _MICROSECOND = timedelta(microseconds=1)
 _ABORT_POLL_SECONDS = 0.25
 _COLLECTION_REQUEST_RETRIES = 2
+_COLLECTION_REQUEST_TIMEOUT = 60
 _FILE_STALL_BACKOFF_SECONDS = (15, 30)
 IMAGE_FILE_EXTENSIONS = {
     ".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".jxl",
@@ -909,6 +912,8 @@ class TelegramService:
             account.api_id,
             self.decrypt(account.api_hash_encrypted),
             request_retries=_COLLECTION_REQUEST_RETRIES,
+            receive_updates=False,
+            timeout=_COLLECTION_REQUEST_TIMEOUT,
         )
         await client.connect()
         try:
@@ -1111,12 +1116,23 @@ class TelegramService:
         message_id = getattr(message, "id", None)
         for attempt in range(1, attempts + 1):
             self._raise_if_aborted(abort_event)
+            started = time.monotonic()
             try:
                 downloaded = await self._download_once(client, message, path, timeout, abort_event)
                 if not downloaded:
                     self._discard_partial_download(path)
                     return None
-                return Path(downloaded)
+                media_path = Path(downloaded)
+                elapsed = time.monotonic() - started
+                size = media_path.stat().st_size if media_path.is_file() else 0
+                LOGGER.info(
+                    "Telegram 媒体已下载 message_id=%s bytes=%s seconds=%.1f attempt=%s",
+                    message_id,
+                    size,
+                    elapsed,
+                    attempt,
+                )
+                return media_path
             except TelegramRunAborted:
                 self._discard_partial_download(path)
                 raise
@@ -1131,6 +1147,10 @@ class TelegramService:
                 )
                 await self._sleep_or_abort(exc.seconds, abort_event)
                 continue
+            except ChatForwardsRestrictedError:
+                self._discard_partial_download(path)
+                LOGGER.warning("Telegram 拒绝下载受保护媒体 message_id=%s", message_id)
+                return None
             except Exception as exc:  # noqa: BLE001 - keep the run going after a single media failure
                 stalled = self._is_file_download_stall(exc)
                 if stalled:
@@ -1188,19 +1208,18 @@ class TelegramService:
             if media_type is None:
                 continue
             protected = protected_channel or bool(getattr(message, "noforwards", False))
-            if protected:
-                records.append(self._record(message, channel, media_type, caption, tags, None, True))
-                continue
             suffix = message_media_suffix(message, media_type)
             path = target_dir / f"{getattr(channel, 'id', 'channel')}-{message.id}{suffix}"
             media_path = await self._download_message_media(client, message, path, abort_event)
             if media_path is None or not media_path.is_file():
+                if protected:
+                    records.append(self._record(message, channel, media_type, caption, tags, None, True))
                 continue
             if media_path.stat().st_size > self.settings.telegram_max_media_bytes:
                 LOGGER.warning("Telegram 媒体超过大小上限，已跳过 message_id=%s", getattr(message, "id", None))
                 media_path.unlink(missing_ok=True)
                 continue
-            records.append(self._record(message, channel, media_type, caption, tags, media_path, False))
+            records.append(self._record(message, channel, media_type, caption, tags, media_path, protected))
         return records
 
     @staticmethod

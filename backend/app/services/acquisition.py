@@ -1125,8 +1125,18 @@ class AcquisitionService:
                             for field in ("published_at", "edited_at"):
                                 if record.get(field):
                                     record[field] = datetime.fromisoformat(str(record[field]))
-                            if not record.get("protected_content"):
+                            try:
                                 record["path"] = definition.adapter.download(asdict(item), temporary_root)
+                            except (TelegramRunAborted, PluginAborted):
+                                raise
+                            except Exception as exc:
+                                if not record.get("protected_content"):
+                                    raise
+                                logger.warning(
+                                    "Telegram 插件下载受保护媒体失败 message_id=%s: %s",
+                                    record.get("message_id"),
+                                    exc,
+                                )
                             persist_batch([record])
                     if definition.adapter.last_state and isinstance(definition.adapter.last_state.get("session_encrypted"), str):
                         account.session_encrypted = definition.adapter.last_state["session_encrypted"]
@@ -1220,7 +1230,9 @@ class AcquisitionService:
         db.query(AcquisitionTelegramHashtag).filter(AcquisitionTelegramHashtag.telegram_message_id == metadata.id).delete()
         for raw, normalized in record.get("hashtags", []):
             db.add(AcquisitionTelegramHashtag(telegram_message_id=metadata.id, tag_raw=raw, tag_normalized=normalized))
-        if record.get("protected_content"):
+        path = record.get("path")
+        has_file = isinstance(path, Path) and path.is_file()
+        if record.get("protected_content") and not has_file:
             source_item.status = "ignored_protected"
             source_item.last_error = "频道限制保存内容"
             run_item.status = "ignored_protected"
@@ -1228,9 +1240,9 @@ class AcquisitionService:
             run.ignored_count += 1
             db.commit()
             return
-        path = record.get("path")
-        if not isinstance(path, Path) or not path.is_file():
+        if not has_file:
             raise RuntimeError("Telegram 媒体临时文件不存在")
+        assert isinstance(path, Path)
         media_type = str(record["media_type"])
         payload = path.read_bytes() if media_type == "image" else None
         if payload is None:

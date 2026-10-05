@@ -37,6 +37,7 @@ def _photo(
     *,
     grouped_id: int | None = None,
     caption: str = "",
+    noforwards: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=message_id,
@@ -46,7 +47,7 @@ def _photo(
         photo=object(),
         video=None,
         media=True,
-        noforwards=False,
+        noforwards=noforwards,
         edit_date=None,
     )
 
@@ -486,6 +487,60 @@ class TelegramAcquisitionTests(unittest.TestCase):
         self.assertEqual([record["message_id"] for record in records], [1, 3])
         self.assertTrue(all(record["caption"] == "相册" for record in records))
 
+    def test_download_group_fetches_noforwards_media(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(
+            Settings(telegram_session_encryption_key=key, telegram_download_timeout_seconds=2)
+        )
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        channel_messages = [_photo(1, published, caption="频道保护")]
+        message_protected = [_photo(2, published, noforwards=True, caption="单条保护")]
+        protected_channel = SimpleNamespace(id=99, title="频道", username="demo", noforwards=True)
+        open_channel = SimpleNamespace(id=100, title="公开", username="open", noforwards=False)
+        downloaded_ids: list[int] = []
+
+        class FakeClient:
+            async def download_media(self, message, file):
+                downloaded_ids.append(message.id)
+                Path(file).write_bytes(b"image-bytes")
+                return file
+
+        client = FakeClient()
+        with tempfile.TemporaryDirectory() as raw_dir:
+            target = Path(raw_dir)
+            channel_records = asyncio.run(service._download_media_group(client, protected_channel, channel_messages, target))
+            message_records = asyncio.run(service._download_media_group(client, open_channel, message_protected, target))
+            self.assertEqual(downloaded_ids, [1, 2])
+            self.assertEqual(len(channel_records), 1)
+            self.assertTrue(channel_records[0]["protected_content"])
+            self.assertTrue(channel_records[0]["path"].is_file())
+            self.assertEqual(len(message_records), 1)
+            self.assertTrue(message_records[0]["protected_content"])
+            self.assertTrue(message_records[0]["path"].is_file())
+
+    def test_download_group_marks_protected_when_noforwards_download_fails(self) -> None:
+        key = Fernet.generate_key().decode("ascii")
+        service = TelegramService(
+            Settings(telegram_session_encryption_key=key, telegram_download_timeout_seconds=2)
+        )
+        published = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+        messages = [_photo(1, published, caption="保护失败")]
+        channel = SimpleNamespace(id=99, title="频道", username="demo", noforwards=True)
+
+        class FakeClient:
+            async def download_media(self, message, file):
+                raise ConnectionError("connection closed")
+
+        async def no_sleep(_seconds):
+            return None
+
+        with tempfile.TemporaryDirectory() as raw_dir, patch("app.services.telegram.asyncio.sleep", side_effect=no_sleep):
+            records = asyncio.run(service._download_media_group(FakeClient(), channel, messages, Path(raw_dir)))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["message_id"], 1)
+        self.assertTrue(records[0]["protected_content"])
+        self.assertIsNone(records[0]["path"])
+
     def test_collection_client_limits_internal_request_retries(self) -> None:
         key = Fernet.generate_key().decode("ascii")
         service = TelegramService(Settings(telegram_session_encryption_key=key))
@@ -494,6 +549,8 @@ class TelegramAcquisitionTests(unittest.TestCase):
         class FakeTelegramClient:
             def __init__(self, session: object, api_id: int, api_hash: str, **kwargs: object) -> None:
                 seen["request_retries"] = kwargs.get("request_retries")
+                seen["receive_updates"] = kwargs.get("receive_updates")
+                seen["timeout"] = kwargs.get("timeout")
 
             async def connect(self) -> None:
                 raise RuntimeError("停止于连接")
@@ -507,6 +564,8 @@ class TelegramAcquisitionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "停止于连接"):
                 service.read_channel_media(account, "demo", {}, Path("."))
         self.assertEqual(seen["request_retries"], 2)
+        self.assertEqual(seen["receive_updates"], False)
+        self.assertEqual(seen["timeout"], 60)
 
     def test_download_group_stops_before_later_media(self) -> None:
         key = Fernet.generate_key().decode("ascii")

@@ -45,6 +45,7 @@ from app.models import (
     AcquisitionSimilarityCandidate,
     AcquisitionSourceItem,
     AcquisitionSource,
+    AcquisitionTelegramMessage,
     GalleryPhoto,
     VideoItem,
     Workspace,
@@ -748,6 +749,72 @@ class AcquisitionModelTests(unittest.TestCase):
         saved = self.db.scalars(select(AcquisitionSourceItem).where(AcquisitionSourceItem.category_id == run.category_id)).all()
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0].status, "ignored_protected")
+
+    def test_persist_telegram_protected_file_enters_review(self) -> None:
+        run = self._telegram_run()
+        stored: dict[str, bytes] = {}
+        self.service.storage = SimpleNamespace(
+            put_bytes=lambda key, payload, _content_type=None: stored.__setitem__(key, payload),
+            put_file=lambda key, path, _content_type=None: stored.__setitem__(key, path.read_bytes()),
+        )
+        self.service.settings = SimpleNamespace(
+            acquisition_quality_min_pixels=1,
+            acquisition_quality_max_aspect_ratio=10.0,
+            acquisition_quality_blur_threshold=0.0,
+        )
+        image = Image.new("RGB", (32, 32), color="white")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG")
+        payload = buffer.getvalue()
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as handle:
+            handle.write(payload)
+            path = Path(handle.name)
+        source = self.db.get(AcquisitionSource, run.source_id)
+        category = self.db.get(AcquisitionCategory, run.category_id)
+        assert source is not None and category is not None
+        try:
+            self.service._persist_telegram_record(self.db, run, source, category, {
+                "external_key": "99:8:0",
+                "source_url": "https://t.me/demo/8",
+                "caption": "受保护仍入库",
+                "channel_id": "99",
+                "channel_title": "频道",
+                "channel_username": "demo",
+                "message_id": 8,
+                "grouped_id": None,
+                "media_type": "image",
+                "peer_id": "99",
+                "entity_type": "channel",
+                "sender_id": None,
+                "sender_username": None,
+                "sender_is_bot": False,
+                "reply_to_message_id": None,
+                "topic_id": None,
+                "topic_title": None,
+                "is_comment": False,
+                "root_channel_message_id": None,
+                "published_at": datetime(2026, 10, 3, 0, 0),
+                "edited_at": None,
+                "hashtags": [],
+                "protected_content": True,
+                "path": path,
+            })
+        finally:
+            path.unlink(missing_ok=True)
+        self.db.refresh(run)
+        saved = self.db.scalars(
+            select(AcquisitionSourceItem).where(AcquisitionSourceItem.category_id == run.category_id)
+        ).all()
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].status, "pending_review")
+        self.assertEqual(run.ignored_count, 0)
+        self.assertEqual(run.candidate_count, 1)
+        metadata = self.db.scalar(
+            select(AcquisitionTelegramMessage).where(AcquisitionTelegramMessage.source_item_id == saved[0].id)
+        )
+        self.assertIsNotNone(metadata)
+        self.assertTrue(metadata.protected_content)
+        self.assertTrue(stored)
 
 
 
