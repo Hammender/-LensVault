@@ -17,6 +17,7 @@ import {
   getAcquisitionPageFill,
   getAcquisitionRejectContinuation,
   getAcquisitionPreviewUrl,
+  getAcquisitionCaptureNotice,
   getAcquisitionLightboxShortcut,
   getAcquisitionPagination,
   getNextAcquisitionSnapshotIndex,
@@ -343,6 +344,25 @@ describe("acquisition lightbox keyboard review", () => {
     expect(getConfirmDialogKeyboardDecision("Enter")).toBe(true);
     expect(getConfirmDialogKeyboardDecision("Escape")).toBe(false);
     expect(getConfirmDialogKeyboardDecision("Delete")).toBeNull();
+  });
+});
+
+describe("acquisition capture notice", () => {
+  it("matches duplicate policy to copy and view action", () => {
+    expect(getAcquisitionCaptureNotice({ outcome: "created", asset: { status: "pending_review" } }))
+      .toEqual({ title: "已添加到待审核·图片", canView: true });
+    expect(getAcquisitionCaptureNotice({ outcome: "restored", asset: { status: "pending_review" } }))
+      .toEqual({ title: "已添加到待审核·图片", canView: true });
+    expect(getAcquisitionCaptureNotice({ outcome: "existing", asset: { status: "pending_review" } }))
+      .toEqual({ title: "该截图已在审核列表中", canView: true });
+    expect(getAcquisitionCaptureNotice({ outcome: "existing", asset: { status: "importing" } }))
+      .toEqual({ title: "该画面正在入库", canView: false });
+    expect(getAcquisitionCaptureNotice({ outcome: "existing", asset: { status: "import_queued" } }))
+      .toEqual({ title: "该画面正在入库", canView: false });
+    expect(getAcquisitionCaptureNotice({ outcome: "imported", asset: { status: "imported" } }))
+      .toEqual({ title: "该画面已在图库中", canView: false });
+    expect(getAcquisitionCaptureNotice({ outcome: "imported", asset: { status: "gallery_duplicate" } }))
+      .toEqual({ title: "该画面已在图库中", canView: false });
   });
 });
 

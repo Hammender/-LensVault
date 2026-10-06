@@ -2029,7 +2029,7 @@ class AcquisitionService:
             existing = db.scalar(select(AcquisitionAsset).where(
                 AcquisitionAsset.workspace_id == video.workspace_id, AcquisitionAsset.sha256 == digest
             ))
-            if existing and existing.status != "rejected":
+            if existing and existing.status not in {"rejected", "import_failed"}:
                 return existing, "imported" if existing.status in {"imported", "gallery_duplicate"} else "existing"
             if self._gallery_photo_by_sha(db, video.workspace_id, digest) is not None:
                 # 若图库中已有同一画面，仍保留可追溯的素材记录，但不重复进入待审核。

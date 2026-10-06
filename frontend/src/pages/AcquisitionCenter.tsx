@@ -1669,25 +1669,33 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         {!!selectedRunScript?.credentials?.length && <label><span>登录账号</span><select value={runCredentialId} onChange={(event) => setRunCredentialId(event.target.value)} disabled={runSubmitting} required={runRequiresCredential}>
           <option value="">{runRequiresCredential ? "选择已验证账号" : "不使用账号（可选）"}</option>{runCredentials.map((account) => <option key={account.id} value={account.id} disabled={account.status !== "valid"}>{account.name} · {account.status === "valid" ? "已验证" : "请先测试连接"}</option>)}
         </select>{runRequiresCredential && !runCredentials.length && <small>请先在“采集插件”中保存账号并测试连接。</small>}</label>}
-        {selectedRunScript?.parameters.map((parameter) => <label key={parameter.key} title={parameter.description ?? undefined}>
-          <span>{parameter.label}{parameter.required ? " *" : ""}</span>
-          {parameter.key === "media_types"
-            ? <div className="telegram-media-options"><span>选择媒体</span><label><input type="checkbox" checked={selectedTelegramMediaTypes(runParameters.media_types).includes("image")} onChange={(event) => setRunParameters((current) => { const values = selectedTelegramMediaTypes(current.media_types); const next = event.target.checked ? [...new Set([...values, "image"])] : values.filter((item) => item !== "image"); return { ...current, media_types: next.join(",") }; })} /> 图片</label><label><input type="checkbox" checked={selectedTelegramMediaTypes(runParameters.media_types).includes("video")} onChange={(event) => setRunParameters((current) => { const values = selectedTelegramMediaTypes(current.media_types); const next = event.target.checked ? [...new Set([...values, "video"])] : values.filter((item) => item !== "video"); return { ...current, media_types: next.join(",") }; })} /> 视频</label></div>
-            : (parameter.key === "collect_comments" || parameter.key === "comments_only") && selectedRunCategory?.telegram_entity_type !== "bot" && selectedRunCategory?.telegram_entity_type !== "group" && selectedRunCategory?.telegram_topic_id == null
-              ? <><input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({
-                ...current,
-                [parameter.key]: event.target.checked,
-                ...(parameter.key === "comments_only" && event.target.checked ? { collect_comments: true } : {}),
-                ...(parameter.key === "collect_comments" && !event.target.checked ? { comments_only: false } : {}),
-              }))} />{parameter.key === "comments_only" && <small>{parameter.description}</small>}</>
-              : parameter.key === "collect_comments" || parameter.key === "comments_only"
-                ? <span className="telegram-topic-empty">机器人、群组或论坛话题不支持频道评论区采集</span>
-              : parameter.type === "boolean"
-            ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
-            : parameter.type === "select"
-              ? <select value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))}>{parameter.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-              : <input type={parameter.type === "datetime" ? "datetime-local" : parameter.type === "string" || parameter.type === "string_list" ? "text" : "number"} required={parameter.required} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} step={parameter.type === "integer" ? 1 : "any"} placeholder={parameter.type === "string_list" ? "多个值以逗号分隔" : undefined} value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))} />}
-        </label>)}
+        {selectedRunScript?.parameters.map((parameter) => {
+          const commentsUnsupported = selectedRunCategory?.telegram_entity_type === "bot"
+            || selectedRunCategory?.telegram_entity_type === "group"
+            || selectedRunCategory?.telegram_topic_id != null;
+          if (parameter.key === "comments_only" && commentsUnsupported) return null;
+          return (
+            <label key={parameter.key} title={parameter.description ?? undefined}>
+              <span>{parameter.label}{parameter.required ? " *" : ""}</span>
+              {parameter.key === "media_types"
+                ? <div className="telegram-media-options"><span>选择媒体</span><label><input type="checkbox" checked={selectedTelegramMediaTypes(runParameters.media_types).includes("image")} onChange={(event) => setRunParameters((current) => { const values = selectedTelegramMediaTypes(current.media_types); const next = event.target.checked ? [...new Set([...values, "image"])] : values.filter((item) => item !== "image"); return { ...current, media_types: next.join(",") }; })} /> 图片</label><label><input type="checkbox" checked={selectedTelegramMediaTypes(runParameters.media_types).includes("video")} onChange={(event) => setRunParameters((current) => { const values = selectedTelegramMediaTypes(current.media_types); const next = event.target.checked ? [...new Set([...values, "video"])] : values.filter((item) => item !== "video"); return { ...current, media_types: next.join(",") }; })} /> 视频</label></div>
+                : parameter.key === "collect_comments" && commentsUnsupported
+                  ? <span className="telegram-topic-empty">机器人、群组或论坛话题不支持频道评论区采集</span>
+                : parameter.key === "collect_comments" || parameter.key === "comments_only"
+                  ? <><input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({
+                    ...current,
+                    [parameter.key]: event.target.checked,
+                    ...(parameter.key === "comments_only" && event.target.checked ? { collect_comments: true } : {}),
+                    ...(parameter.key === "collect_comments" && !event.target.checked ? { comments_only: false } : {}),
+                  }))} />{parameter.key === "comments_only" && <small>{parameter.description}</small>}</>
+                : parameter.type === "boolean"
+                  ? <input type="checkbox" checked={Boolean(runParameters[parameter.key])} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.checked }))} />
+                  : parameter.type === "select"
+                    ? <select value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))}>{parameter.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+                    : <input type={parameter.type === "datetime" ? "datetime-local" : parameter.type === "string" || parameter.type === "string_list" ? "text" : "number"} required={parameter.required} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} step={parameter.type === "integer" ? 1 : "any"} placeholder={parameter.type === "string_list" ? "多个值以逗号分隔" : undefined} value={String(runParameters[parameter.key] ?? "")} onChange={(event) => setRunParameters((current) => ({ ...current, [parameter.key]: event.target.value }))} />}
+            </label>
+          );
+        })}
         <div className="mode-switch run-mode-switch" aria-label="采集模式"><button type="button" className={runMode === "incremental" ? "active" : ""} onClick={() => setRunMode("incremental")}>增量</button><button type="button" className={runMode === "full" ? "active" : ""} onClick={() => setRunMode("full")}>全量发现</button><button type="button" className={runMode === "verify" ? "active" : ""} onClick={() => setRunMode("verify")}>核验更新</button></div>
         <button type="button" disabled={!canAdd || !runCategoryId || !availableRunScripts.some((script) => script.key === runScriptKey) || runSubmitting || !runCredentialUsable} onClick={() => void startRun()}><Play size={16} /> 开始采集</button>
         {selectedRunScript?.is_plugin && runScriptKey !== "telegram-channel-mtproto" && <button type="button" className="secondary-command" disabled={!canAdd || !runCategoryId || previewBusy || !runCredentialUsable} onClick={() => void previewRun()}><ScanSearch size={16} /> {previewBusy ? "正在试采…" : "试采前 3 项"}</button>}

@@ -118,7 +118,10 @@ export default function PhotoLightbox({
         return;
       }
       if (busy || isTextEditingTarget(event.target)) return;
-      if (ignoreInteractiveTargets && event.target instanceof Element && event.target.closest("button, a, [role=button]")) return;
+      const onActivatingControl = ignoreInteractiveTargets
+        && event.target instanceof Element
+        && event.target.closest("button, a, [role=button]");
+      if (onActivatingControl && (event.key === "Enter" || event.key === " ")) return;
       if (event.key === "Escape") {
         onClose();
       } else if (event.key === "ArrowLeft" && canGoPrevious && !event.shiftKey) {

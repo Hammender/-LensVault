@@ -94,6 +94,23 @@ export function getAcquisitionLightboxShortcut(
   return null;
 }
 
+export function getAcquisitionCaptureNotice(result: {
+  outcome: "created" | "existing" | "restored" | "imported";
+  asset: { status: string };
+}): { title: string; canView: boolean } {
+  const status = result.asset.status;
+  if (result.outcome === "imported" || status === "imported" || status === "gallery_duplicate") {
+    return { title: "该画面已在图库中", canView: false };
+  }
+  if (status === "import_queued" || status === "importing") {
+    return { title: "该画面正在入库", canView: false };
+  }
+  if (status === "pending_review" && result.outcome === "existing") {
+    return { title: "该截图已在审核列表中", canView: true };
+  }
+  return { title: "已添加到待审核·图片", canView: status === "pending_review" };
+}
+
 export function handleAcquisitionLightboxShortcut(
   event: Pick<KeyboardEvent, "key" | "repeat" | "defaultPrevented" | "ctrlKey" | "metaKey" | "altKey" | "preventDefault">,
   mediaType: "image" | "video",

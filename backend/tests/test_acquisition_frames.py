@@ -5,6 +5,7 @@ import io
 import json
 import shutil
 import subprocess
+import threading
 import time
 from types import SimpleNamespace
 
@@ -22,7 +23,7 @@ from app.dependencies.context import ROUTE_PERMISSION_MATRIX
 from app.models import AcquisitionAsset, AcquisitionImportBatch, AcquisitionImportBatchItem, GalleryPhoto
 from app.schemas.acquisition import AcquisitionFrameLocate
 from app.services.acquisition import AcquisitionService
-from app.services.acquisition_frames import AcquisitionFrameService, _color_filter, _source_color
+from app.services.acquisition_frames import AcquisitionFrameService, _color_filter, _probe_frames, _source_color
 
 
 class MemoryStorage:
@@ -146,6 +147,62 @@ def capture_context(db_session, settings):
     return video, service, output.getvalue(), metadata
 
 
+def test_probe_skips_invalid_timestamps_and_rejects_empty():
+    frames = _probe_frames({"frames": [
+        {"best_effort_timestamp": "N/A", "best_effort_timestamp_time": "N/A"},
+        {"best_effort_timestamp": 1, "best_effort_timestamp_time": "0.1", "key_frame": 1},
+        {"best_effort_timestamp_time": "0.2"},
+        {"best_effort_timestamp": 3, "best_effort_timestamp_time": "0.2", "key_frame": 0},
+    ]})
+    assert [(frame.pts, frame.seconds) for frame in frames] == [(1, 0.1), (3, 0.2)]
+    with pytest.raises(ValueError, match="没有可定位"):
+        _probe_frames({"frames": [{"best_effort_timestamp": "N/A", "best_effort_timestamp_time": "N/A"}]})
+
+
+def test_preparing_one_video_does_not_block_another(settings, monkeypatch):
+    class SlowStorage(MemoryStorage):
+        def get_stream(self, key):
+            time.sleep(0.25)
+            return super().get_stream(key)
+
+    storage = SlowStorage()
+    storage.objects["a"] = b"aaaa"
+    storage.objects["b"] = b"bbbb"
+    probe = json.dumps({
+        "frames": [{"best_effort_timestamp": 0, "best_effort_timestamp_time": "0", "key_frame": 1}],
+        "format": {"start_time": "0"},
+        "streams": [{}],
+    }).encode()
+    monkeypatch.setattr(
+        AcquisitionFrameService,
+        "_run",
+        staticmethod(lambda command: SimpleNamespace(returncode=0, stdout=probe, stderr=b"")),
+    )
+    frames = AcquisitionFrameService(storage, settings)
+    assets = [
+        SimpleNamespace(workspace_id=None, id="va", sha256="a" * 64, object_key="a", filename="a.mp4", size_bytes=4),
+        SimpleNamespace(workspace_id=None, id="vb", sha256="b" * 64, object_key="b", filename="b.mp4", size_bytes=4),
+    ]
+    errors: list[BaseException] = []
+
+    def locate(asset):
+        try:
+            frames.locate(asset)
+        except BaseException as exc:
+            errors.append(exc)
+
+    started = time.monotonic()
+    workers = [threading.Thread(target=locate, args=(asset,)) for asset in assets]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    elapsed = time.monotonic() - started
+    frames.close()
+    assert errors == []
+    assert elapsed < 0.4
+
+
 def test_capture_is_independent_deduplicated_and_restorable(db_session, capture_context):
     video, service, payload, metadata = capture_context
     frame = {"frame_index": 12, "time_seconds": 1.2, "color_conversion": _source_color({})}
@@ -171,6 +228,26 @@ def test_capture_is_independent_deduplicated_and_restorable(db_session, capture_
     assert video.object_key is None
     assert service.storage.get_bytes(restored.object_key) == payload
     assert _asset_read(db_session, restored).source_caption == "原始文案"
+
+
+def test_capture_blocks_in_flight_import_and_restores_failed(db_session, capture_context):
+    video, service, payload, metadata = capture_context
+    frame = {"frame_index": 1, "time_seconds": 0.1, "color_conversion": _source_color({})}
+    asset, _ = service.capture_frame(db_session, video, frame, payload, metadata)
+    asset.status = "importing"
+    db_session.commit()
+    same, outcome = service.capture_frame(db_session, video, frame, payload, metadata)
+    assert same.id == asset.id and outcome == "existing" and same.status == "importing"
+    asset.status = "import_queued"
+    db_session.commit()
+    queued, outcome = service.capture_frame(db_session, video, frame, payload, metadata)
+    assert queued.id == asset.id and outcome == "existing" and queued.status == "import_queued"
+    asset.status = "import_failed"
+    asset.error_message = "入库失败"
+    db_session.commit()
+    restored, outcome = service.capture_frame(db_session, video, frame, payload, metadata)
+    assert restored.id == asset.id and outcome == "restored"
+    assert restored.status == "pending_review" and restored.error_message is None
 
 
 def test_capture_write_failure_cleans_object(db_session, capture_context, monkeypatch):

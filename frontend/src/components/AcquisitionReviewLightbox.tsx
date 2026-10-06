@@ -4,12 +4,14 @@ import { Camera, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Film,
 import { acquisitionDownloadUrl } from "../api/acquisition";
 import { formatVideoTime, parseVideoTime } from "../lib/acquisitionVideo";
 import { useAcquisitionFrames } from "../lib/useAcquisitionFrames";
-import { handleAcquisitionLightboxShortcut } from "../lib/acquisitionReview";
+import { getAcquisitionCaptureNotice, handleAcquisitionLightboxShortcut } from "../lib/acquisitionReview";
 import { releaseHtmlVideo } from "../lib/htmlVideo";
 import PhotoLightbox from "./PhotoLightbox";
 import type { AcquisitionAsset, AcquisitionCaptureResult } from "../types";
-import { formatBytes, formatDate, formatDurationSeconds } from "../lib/utils";
+import { formatBytes, formatDate, formatDurationSeconds, isTextEditingTarget } from "../lib/utils";
 import "./AcquisitionReviewLightbox.css";
+
+const SEEK_STEP_SECONDS = 2;
 
 type AcquisitionReviewLightboxProps = {
   asset: AcquisitionAsset;
@@ -411,8 +413,8 @@ export default function AcquisitionReviewLightbox({
             <button type="button" className="acquisition-review-frame-step-btn" disabled={frameDisabled || (decoded ? decoded.frame.frame_index === decoded.frame.total_frames - 1 : false)} onClick={() => stepFrame(1)} title="下一帧（句号）" aria-label="下一帧"><ChevronRight size={17} /></button>
           </div>
           <div className="acquisition-review-ctrl-right">
-            <button type="button" className="acquisition-review-ctrl-btn" disabled={frameDisabled} onClick={() => handleSeek(-5)} title="快退 5 秒（J）" aria-label="快退 5 秒"><RotateCcw size={17} /></button>
-            <button type="button" className="acquisition-review-ctrl-btn" disabled={frameDisabled} onClick={() => handleSeek(5)} title="快进 5 秒（L）" aria-label="快进 5 秒"><RotateCcw size={17} style={{ transform: "scaleX(-1)" }} /></button>
+            <button type="button" className="acquisition-review-ctrl-btn" disabled={frameDisabled} onClick={() => handleSeek(-SEEK_STEP_SECONDS)} title="快退 2 秒（J）" aria-label="快退 2 秒"><RotateCcw size={17} /></button>
+            <button type="button" className="acquisition-review-ctrl-btn" disabled={frameDisabled} onClick={() => handleSeek(SEEK_STEP_SECONDS)} title="快进 2 秒（L）" aria-label="快进 2 秒"><RotateCcw size={17} style={{ transform: "scaleX(-1)" }} /></button>
             {canCapture && <button type="button" className="acquisition-review-ctrl-btn capture-btn" disabled={captureDisabled} onClick={() => void saveFrame()} title="截取当前帧（S）" aria-label="截取当前帧"><Camera size={18} /></button>}
 
             <div className="acquisition-review-speed">
@@ -461,7 +463,7 @@ export default function AcquisitionReviewLightbox({
         <button type="button" onClick={() => setZoom((value) => Math.min(12, value * 1.5))} aria-label="放大画面"><ZoomIn size={16} /></button>
       </div>}
       {isFullscreen && (frameError || saving || capture) && <div className="acquisition-review-fullscreen-notice" role="status">
-        {frameError || (saving ? "正在保存原尺寸截图…" : capture?.outcome === "imported" ? "该画面已在图库中" : "截图已保存到待审核区")}
+        {frameError || (saving ? "正在保存原尺寸截图…" : capture ? getAcquisitionCaptureNotice(capture).title : null)}
       </div>}
     </div>
   ) : !asset.original_url ? (
@@ -487,7 +489,7 @@ export default function AcquisitionReviewLightbox({
       onPrevious={onPrevious}
       onNext={onNext}
       onKeyDown={(event) => {
-        if (event.target instanceof Element && event.target.closest("button, input, select, textarea, a, [contenteditable]")) return;
+        if (isTextEditingTarget(event.target)) return;
         if (event.ctrlKey || event.metaKey || event.altKey) return;
         if (isVideo) {
           if (event.key === "," || event.key === ".") {
@@ -507,12 +509,12 @@ export default function AcquisitionReviewLightbox({
           }
           if (event.key === "j" || event.key === "J" || (event.key === "ArrowLeft" && event.shiftKey)) {
             event.preventDefault();
-            handleSeek(-5);
+            handleSeek(-SEEK_STEP_SECONDS);
             return;
           }
           if (event.key === "l" || event.key === "L" || (event.key === "ArrowRight" && event.shiftKey)) {
             event.preventDefault();
-            handleSeek(5);
+            handleSeek(SEEK_STEP_SECONDS);
             return;
           }
           if (event.key === "m" || event.key === "M") {
@@ -565,8 +567,8 @@ export default function AcquisitionReviewLightbox({
               {locating && <p>正在准备精确画面，首次读取可能稍久…</p>}
               {capture && <div className="acquisition-review-capture-result">
                 {capture.asset.preview_url && <img src={acquisitionDownloadUrl(capture.asset.preview_url)} alt="刚保存的视频截图" />}
-                <div><strong>{capture.outcome === "imported" ? "该画面已在图库中" : capture.outcome === "existing" ? "该截图已在审核列表中" : "已添加到待审核·图片"}</strong>
-                  {capture.asset.status === "pending_review" && <button type="button" onClick={() => onViewCapture?.(capture.asset)}>查看截图</button>}
+                <div><strong>{getAcquisitionCaptureNotice(capture).title}</strong>
+                  {getAcquisitionCaptureNotice(capture).canView && <button type="button" onClick={() => onViewCapture?.(capture.asset)}>查看截图</button>}
                 </div>
               </div>}
             </div>
@@ -646,7 +648,7 @@ export default function AcquisitionReviewLightbox({
           {isVideo && (
             <section className="acquisition-review-shortcuts">
               <strong>快捷键</strong>
-              <p>空格播放 · , / . 逐帧 · S 截图 · J / L 前后 5 秒 · Enter 选中 · M 静音 · F 全屏 · ← / → 切换素材</p>
+              <p>空格播放 · , / . 逐帧 · S 截图 · J / L 前后 2 秒 · Enter 选中 · M 静音 · F 全屏 · ← / → 切换素材</p>
             </section>
           )}
         </>
