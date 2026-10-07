@@ -39,7 +39,7 @@ def test_initialize_database_builds_fresh_schema_via_alembic(tmp_path) -> None:
     assert "gallery_photos" in tables
     assert "video_items" in tables
     assert "acquisition_scripts" in tables
-    assert "app_schema_migrations" in tables
+    assert "app_schema_migrations" not in tables
 
     with engine.connect() as connection:
         assert _alembic_version(connection) == ALEMBIC_HEAD
@@ -115,3 +115,27 @@ def test_fresh_database_upgrade_head_has_no_alembic_drift(tmp_path) -> None:
     command.upgrade(config, "head")
     # check 在无漂移时正常返回；有漂移会抛 CommandError
     command.check(config)
+
+
+def test_upgrade_preserves_legacy_migration_history_without_drift(tmp_path) -> None:
+    """旧迁移记录表保留审计数据，不应被 autogenerate 误判为待删除表。"""
+    url = f"sqlite:///{(tmp_path / 'legacy-history.db').as_posix()}"
+    config = _alembic_config(url)
+    command.upgrade(config, "19a44fe179ff")
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "CREATE TABLE app_schema_migrations "
+            "(migration_key VARCHAR(128) PRIMARY KEY, applied_at DATETIME NOT NULL)"
+        ))
+        connection.execute(text(
+            "INSERT INTO app_schema_migrations VALUES ('legacy-marker', '2026-09-30 12:00:00')"
+        ))
+    command.upgrade(config, "head")
+    command.check(config)
+    with engine.connect() as connection:
+        assert connection.execute(text(
+            "SELECT migration_key, applied_at FROM app_schema_migrations"
+        )).one() == ("legacy-marker", "2026-09-30 12:00:00")
+        assert _alembic_version(connection) == ALEMBIC_HEAD
+    engine.dispose()

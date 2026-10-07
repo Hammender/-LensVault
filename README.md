@@ -57,7 +57,7 @@ docker-compose.yml       本地 MinIO 与 Qdrant 依赖服务
 
 ### 1. 准备配置
 
-复制环境变量模板：
+首次部署且尚无 `.env` 时，复制环境变量模板：
 
 ```powershell
 Copy-Item .env.example .env
@@ -70,6 +70,8 @@ Copy-Item .env.example .env
 - `GALLERY_SIMILARITY_MODEL_PATH` 需要指向完整的本地 DINOv2 Base 模型目录；安装与下载命令见 `docs/gallery-similarity.md`。
 - `AUTH_SECRET_KEY` 发布或长期使用前必须改成随机强密钥。
 - `CORS_ORIGINS` 需要包含实际前端地址。
+
+跨电脑拉取更新时，先保留本机 `.env` 并核对数据库迁移，再启动应用。当前 Windows 开发环境的启动与迁移说明见 [本机开发准备](docs/本机开发准备.md)。
 
 ### 2. 启动依赖服务
 
@@ -92,7 +94,7 @@ docker compose up -d
 python -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -r requirements.txt
-python -m uvicorn app.main:app --reload --app-dir backend
+python -m uvicorn app.main:app --app-dir backend
 ```
 
 后端默认地址：`http://127.0.0.1:8000`

@@ -85,7 +85,15 @@ def test_real_selected_frame_matches_full_decode(sample_video, settings):
                             object_key="source", filename=path.name, size_bytes=len(payload))
     frames = AcquisitionFrameService(storage, settings)
     try:
-        for index in (0, 4, 7, 9):
+        # 不同 FFmpeg 版本可能通过 MP4 编辑列表丢弃末帧，以独立全量解码的可播放帧数为准。
+        decoded = subprocess.run([
+            settings.ffmpeg_path, "-v", "error", "-i", str(path), "-map", "0:v:0",
+            "-fps_mode", "passthrough", "-c:v", "rawvideo", "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
+        ], capture_output=True, check=True, timeout=30).stdout
+        frame_count, remainder = divmod(len(decoded), 96 * 64 * 3)
+        assert remainder == 0
+        assert frame_count >= 8
+        for index in (0, 4, 7, frame_count - 1):
             located, image = frames.extract(asset, index=index)
             expected = subprocess.run([
                 settings.ffmpeg_path, "-v", "error", "-i", str(path), "-map", "0:v:0",
@@ -100,10 +108,10 @@ def test_real_selected_frame_matches_full_decode(sample_video, settings):
                 assert actual.info.get("icc_profile")
             assert located["color_conversion"]["output"] == "sRGB"
             assert located["frame_index"] == index
-            assert located["total_frames"] == 10
+            assert located["total_frames"] == frame_count
             assert frames.locate(asset, located["time_seconds"])["frame_index"] == index
         assert frames.locate(asset, index=0, direction=-1)["frame_index"] == 0
-        assert frames.locate(asset, index=9, direction=1)["frame_index"] == 9
+        assert frames.locate(asset, index=frame_count - 1, direction=1)["frame_index"] == frame_count - 1
         assert storage.reads == 1
         if kind == "variable":
             assert frames.locate(asset, index=7)["time_seconds"] == pytest.approx(.9)

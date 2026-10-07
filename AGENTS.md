@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-`backend/` 包含 FastAPI 后端服务。主要 API 路由位于 `backend/app/main.py`，配置位于 `backend/app/core/config.py`，数据库初始化位于 `backend/app/db.py`，领域逻辑位于 `backend/app/services/`。数据库结构迁移由 Alembic 管理：根目录 `alembic.ini` 为配置入口，迁移脚本位于 `backend/alembic/versions/`（基线 `0001`，结构对齐 `0002`，数据迁移 `0003`），迁移环境 `backend/alembic/env.py`，迁移脚本生成工具 `backend/app/tools/generate_migration.py`。`frontend/` 包含 Vite + React 前端，入口文件为 `frontend/src/main.tsx` 和 `frontend/src/App.tsx`。前端通用请求与类型定义位于 `frontend/src/api.ts` 和 `frontend/src/types.ts`。
+`backend/` 包含 FastAPI 后端服务。主要 API 路由位于 `backend/app/main.py`，配置位于 `backend/app/core/config.py`，数据库初始化位于 `backend/app/db.py`，领域逻辑位于 `backend/app/services/`。数据库结构迁移由 Alembic 管理：根目录 `alembic.ini` 为配置入口，迁移脚本位于 `backend/alembic/versions/`（当前全量基线为 `364bf17881ef`，后续增量迁移以 `down_revision` 串联），迁移环境 `backend/alembic/env.py`，迁移脚本生成工具 `backend/app/tools/generate_migration.py`。`frontend/` 包含 Vite + React 前端，入口文件为 `frontend/src/main.tsx` 和 `frontend/src/App.tsx`。前端通用请求与类型定义位于 `frontend/src/api/` 和 `frontend/src/types/`。
 
 常用手工命令：
 
@@ -13,7 +13,7 @@ cmd /c npm.cmd run dev
 cmd /c npm.cmd run build
 ```
 
-提交前端改动前必须运行 `npm.cmd run build`，该命令也会执行 TypeScript 项目构建。运行依赖 MinIO，`.env` 的字段应与 `.env.example` 对应。
+提交前端改动前必须运行 `npm.cmd run build`，该命令也会执行 TypeScript 项目构建。运行依赖 MinIO 和 Qdrant，`.env` 的字段应与 `.env.example` 对应。
 
 ## 运行环境
 
@@ -39,7 +39,7 @@ cmd /c npm.cmd run build
 
 ## 数据库迁移工作流程（Alembic）
 
-数据库结构变更一律通过 Alembic 迁移脚本完成，不再手写启动期检查/ALTER 函数。启动时 `app.lifecycle.initialize_database` 会自动执行 `alembic upgrade head`（存量旧库首次启动会自动补齐旧结构并登记基线）。任何 Agent 修改了 `backend/app/models/` 下的表结构后，必须走以下流程：
+数据库结构变更一律通过 Alembic 迁移脚本完成，不再手写启动期检查/ALTER 函数。启动时 `app.lifecycle.initialize_database` 会自动执行 `alembic upgrade head`。空库从全量基线建表；无 `alembic_version` 的存量库仅登记到 head，不会自动补齐结构，必须先人工核对。任何 Agent 修改了 `backend/app/models/` 下的表结构后，必须走以下流程：
 
 1. **生成迁移脚本**（基于临时空库 autogenerate，与真实库隔离，结果更干净）：
 
@@ -73,7 +73,13 @@ cmd /c npm.cmd run build
 注意事项：
 
 - 已应用过的迁移脚本不得修改，只能追加新 revision。
-- 本地真实库已通过 `0002` 与 ORM 元数据对齐，可直接对真实库执行 `alembic check` 验证无漂移。生成新迁移脚本仍推荐用 `generate_migration` 工具（基于临时空库，不依赖真实数据）。
+- 更新数据库到 head 后，执行 `python -m alembic check` 验证与 ORM 无漂移。生成新迁移脚本仍推荐用 `generate_migration` 工具（基于临时空库，不依赖真实数据）。
+- 旧库的 `app_schema_migrations` 表保留历史审计记录，当前 ORM 不管理它；Alembic 结构比较明确忽略此表，不生成删表操作。
+- 跨电脑拉取后，先备份本机 SQLite，再执行 `python -m alembic heads` 和 `python -m alembic current` 核对迁移链，确认只有一个 head 且无重号或缺失 revision，再执行升级和结构检查。WAL 模式下使用 SQLite 备份接口生成一致性快照，不能只复制正在使用的主数据库文件。
+- 当前全量基线已替代旧的 `0001`、`0002`、`0003`、`dde49fc544b6` 及同 revision 的旧分类策略脚本。遇到本机未跟踪的旧脚本时，保存在 `data/` 下再移出 `versions/`，不能把两套迁移历史混用。数据库引用未知 revision 时，先核对历史，不得直接 stamp head 跳过迁移。
+- 新增迁移脚本必须纳入 Git，与模型和 `sql/tables.sql` 一起交付；提交前检查 `git status --short`，避免迁移脚本仍为未跟踪状态。
+- `alembic.ini`、`backend/alembic/env.py`、`script.py.mako` 及 `versions/*.py` 属于共享源代码，必须由 Git 管理；公共配置不得保存本机数据库路径或凭据。实际连接串保留在各设备的 `.env`。`.env.example` 仅同步字段和非敏感示例，数据库、缓存和 `data/` 备份不纳入 Git。
+- 多设备同时新增迁移出现多个 head 时，保留双方迁移，审核结构冲突后新增 Alembic merge revision 并提交；不能删除或改写已应用的 revision，也不能用 stamp 掩盖分叉。尽量先拉取最新迁移历史，再生成本次迁移。
 - 迁移环境 `backend/alembic/env.py` 从 `.env` 读取数据库连接串，也可用 `alembic -x database_url=...` 指向其他库；`alembic.ini` 保持 ASCII 内容（它按系统 locale 编码读取）。
 - 启动命令不加 `--reload`：涉及模型/迁移的改动若被自动热重载，可能在半成品代码上对真实库执行迁移。
 

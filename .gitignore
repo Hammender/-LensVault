@@ -9,11 +9,9 @@ app.db
 **/milvus
 # Prevent leftover database in backend
 backend/app/data/
-.env.example
 .idea
 newweb
 *.jar
-alembic.ini
 alembic/
 !backend/alembic/
 !backend/alembic/**

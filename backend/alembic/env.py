@@ -60,6 +60,16 @@ def _database_url() -> str:
     return _dotenv_database_url()
 
 
+def _include_object(object_, name, type_, reflected, compare_to) -> bool:
+    # 旧版数据迁移记录保留用于审计，不由当前 ORM 管理，不能生成删表操作。
+    return not (
+        type_ == "table"
+        and name == "app_schema_migrations"
+        and reflected
+        and compare_to is None
+    )
+
+
 def _configure(connection=None) -> None:
     url = _database_url()
     context.configure(
@@ -69,6 +79,7 @@ def _configure(connection=None) -> None:
         render_as_batch=url.startswith("sqlite"),
         compare_type=True,
         include_schemas=False,
+        include_object=_include_object,
     )
 
 

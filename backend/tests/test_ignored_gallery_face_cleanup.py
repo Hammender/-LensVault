@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db import Base
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, Person, Workspace
 
-IGNORED_GALLERY_FACE_CLEANUP_KEY = "2026_08_08_delete_ignored_gallery_face_records"
 ALEMBIC_CONFIG = Path(__file__).resolve().parents[2] / "alembic.ini"
 
 
@@ -38,15 +37,14 @@ def _face(workspace_id: int, photo_id: int, **overrides) -> FaceRecord:
     return FaceRecord(**values)
 
 
-def test_face_cleanup_runs_via_alembic_0003(tmp_path) -> None:
-    """升级到 0002 后插入遗留数据，再升级 head 触发 0003 清理。"""
+def test_incremental_upgrade_preserves_existing_gallery_faces(tmp_path) -> None:
+    """当前迁移链不再包含旧数据清理，新增字段迁移应保留既有图库人脸记录。"""
     db_path = tmp_path / "cleanup.db"
     url = f"sqlite:///{db_path.as_posix()}"
     engine = create_engine(url)
     config = _alembic_config(url)
 
-    # 先升级到 0002（结构对齐完成，数据迁移未执行）
-    command.upgrade(config, "0002")
+    command.upgrade(config, "19a44fe179ff")
 
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
     with SessionLocal() as db:
@@ -91,20 +89,15 @@ def test_face_cleanup_runs_via_alembic_0003(tmp_path) -> None:
         ignored_id = ignored.id
         retained_ids = {still_unknown.id, known_face.id, pending_review.id}
 
-    # 升级到 head，触发 0003 清理
+    # 从现有数据库版本升级，仅执行后续新增字段迁移。
     command.upgrade(config, "head")
 
     with SessionLocal() as db:
         remaining_ids = set(db.scalars(select(FaceRecord.id)).all())
-        assert ignored_id not in remaining_ids
+        assert ignored_id in remaining_ids
         assert retained_ids.issubset(remaining_ids)
 
     with engine.connect() as connection:
-        marker_count = connection.scalar(
-            text("SELECT COUNT(*) FROM app_schema_migrations WHERE migration_key=:key"),
-            {"key": IGNORED_GALLERY_FACE_CLEANUP_KEY},
-        )
         version = connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert marker_count == 1
     assert version == ScriptDirectory.from_config(Config(str(ALEMBIC_CONFIG))).get_current_head()
     engine.dispose()
