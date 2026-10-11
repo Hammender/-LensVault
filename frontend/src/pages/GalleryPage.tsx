@@ -166,7 +166,12 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
     goPrevLightbox,
     goNextLightbox,
     closeGalleryLightbox,
-    recognitionNotice
+    recognitionNotice,
+    photoIdSearchInput,
+    setPhotoIdSearchInput,
+    activePhotoIdSearch,
+    photoIdSearchHint,
+    handleClearPhotoIdSearch
   } = model;
 
   return (
@@ -183,6 +188,43 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
               </div>
               <div className="gallery-filter-bar-actions">
                 <span>组内 OR，组间 AND</span>
+                <div className="gallery-photo-id-search-wrap">
+                  <label className={`gallery-photo-id-search${photoIdSearchHint ? " invalid" : ""}`}>
+                    <Search size={16} aria-hidden="true" />
+                    <input
+                      className="search-input subtle"
+                      type="text"
+                      inputMode="numeric"
+                      value={photoIdSearchInput}
+                      onChange={(event) => setPhotoIdSearchInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          handleClearPhotoIdSearch();
+                        }
+                      }}
+                      placeholder="按图片编号搜索，如 123"
+                      aria-label="按图片编号搜索"
+                      aria-invalid={photoIdSearchHint ? true : undefined}
+                      aria-describedby={photoIdSearchHint ? "gallery-photo-id-search-hint" : undefined}
+                    />
+                    {photoIdSearchInput !== "" && (
+                      <button
+                        type="button"
+                        className="gallery-photo-id-search-clear"
+                        onClick={handleClearPhotoIdSearch}
+                        aria-label="清除编号搜索"
+                        title="清除编号搜索"
+                      >
+                        <X size={14} aria-hidden="true" />
+                      </button>
+                    )}
+                  </label>
+                  {photoIdSearchHint && (
+                    <span id="gallery-photo-id-search-hint" className="gallery-photo-id-search-hint" role="alert">
+                      {photoIdSearchHint}
+                    </span>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => setGalleryFiltersExpanded((current) => !current)}
@@ -198,7 +240,15 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
             <div className="gallery-filter-summary" aria-label="当前筛选条件">
               <div className="gallery-filter-summary-head">
                 <strong>当前筛选</strong>
-                <span>{galleryFilterCount > 0 ? `${galleryFilterCount} 项已生效` : "尚未添加条件"}</span>
+                <span>
+                  {activePhotoIdSearch != null
+                    ? galleryFilterCount > 0
+                      ? "编号搜索中，人物 / 标签筛选暂不生效"
+                      : "编号搜索中"
+                    : galleryFilterCount > 0
+                      ? `${galleryFilterCount} 项已生效`
+                      : "尚未添加条件"}
+                </span>
               </div>
               <div className="gallery-filter-summary-actions">
                 <div className="gallery-filter-summary-tabs" role="group" aria-label="筛选条件分类">
@@ -224,15 +274,28 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                 <button
                   className="gallery-filter-clear"
                   type="button"
-                  disabled={galleryFilterCount === 0}
+                  disabled={galleryFilterCount === 0 && activePhotoIdSearch == null}
                   onClick={handleClearGalleryFilters}
                 >
                   清除全部
                 </button>
               </div>
 
-              {galleryFilterCount > 0 && (
+              {(galleryFilterCount > 0 || activePhotoIdSearch != null) && (
                 <div className="gallery-active-filters" aria-label="已生效筛选条件列表">
+                  {activePhotoIdSearch != null && (
+                    <button
+                      key="photo-id"
+                      type="button"
+                      className="gallery-active-filter-chip include-chip photo-id-chip"
+                      onClick={handleClearPhotoIdSearch}
+                      title={`点击移除编号搜索：#${activePhotoIdSearch}`}
+                    >
+                      <span className="chip-prefix">编号</span>
+                      <span className="chip-label">#{activePhotoIdSearch}</span>
+                      <X size={13} className="chip-remove-icon" aria-hidden="true" />
+                    </button>
+                  )}
                   {selectedPersonIds.map((id) => {
                     const person = persons.find((p) => p.id === id);
                     if (!person) return null;
@@ -690,7 +753,16 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                 </article>
               );
             })}
-              {galleryPhotos.length === 0 && <div className="empty-card">当前筛选条件下没有展示图。</div>}
+              {galleryPhotos.length === 0 && activePhotoIdSearch != null && (
+                <div className="empty-card gallery-photo-id-empty">
+                  <span>未找到编号为 #{activePhotoIdSearch} 的图片</span>
+                  <button type="button" onClick={handleClearPhotoIdSearch}>
+                    <X size={15} aria-hidden="true" />
+                    清除编号搜索
+                  </button>
+                </div>
+              )}
+              {galleryPhotos.length === 0 && activePhotoIdSearch == null && <div className="empty-card">当前筛选条件下没有展示图。</div>}
             </div>
 
             <div className="pagination-row">

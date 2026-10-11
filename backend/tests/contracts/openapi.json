@@ -3275,6 +3275,19 @@
             "title": "Person Ids",
             "type": "array"
           },
+          "photo_id": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Photo Id"
+          },
           "photo_ids": {
             "items": {
               "type": "integer"
@@ -14423,6 +14436,24 @@
           },
           {
             "in": "query",
+            "name": "photo_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Photo Id"
+            }
+          },
+          {
+            "in": "query",
             "name": "offset",
             "required": false,
             "schema": {
@@ -14799,6 +14830,24 @@
               },
               "title": "Exclude Tag Ids",
               "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "photo_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Photo Id"
             }
           },
           {

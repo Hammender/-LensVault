@@ -24,6 +24,8 @@ import {
 } from "../api";
 import type { ConfirmDialogOptions } from "../components/ConfirmDialog";
 import { formatError } from "../lib/formatError";
+import { parseGalleryPhotoIdQuery, resolveActivePhotoIdSearch } from "../lib/galleryPhotoIdSearch";
+import { useDebounce } from "./useDebounce";
 import {
   deselectGalleryPage,
   isGalleryPageSelected,
@@ -166,6 +168,12 @@ export function useGallery({
   const galleryDetailCloseRef = useRef<HTMLButtonElement | null>(null);
   const galleryDrawerReturnFocusRef = useRef<HTMLElement | null>(null);
   const galleryRequestIdRef = useRef(0);
+  const [photoIdSearchInput, setPhotoIdSearchInput] = useState("");
+  const [activePhotoIdSearch, setActivePhotoIdSearch] = useState<number | null>(null);
+  const activePhotoIdSearchRef = useRef<number | null>(null);
+  const debouncedPhotoIdSearchInput = useDebounce(photoIdSearchInput, 300);
+  const photoIdSearchQuery = useMemo(() => parseGalleryPhotoIdQuery(photoIdSearchInput), [photoIdSearchInput]);
+  const photoIdSearchHint = photoIdSearchQuery.kind === "invalid" ? photoIdSearchQuery.message : null;
   const unknownPersonCount = useMemo(() => persons.filter((person) => person.is_unknown).length, [persons]);
   const galleryFilterCount = selectedPersonIds.length + selectedTagIds.length + excludePersonIds.length + excludeTagIds.length;
   const includedKnownPersons = useMemo(
@@ -192,6 +200,43 @@ export function useGallery({
     () => filterTagMatches(sortByPinyinName([...excludedFilterTags, ...availableExcludeTags]), excludeTagSearch),
     [availableExcludeTags, excludeTagSearch, excludedFilterTags]
   );
+  // 编号搜索生效时忽略人物/标签筛选（但不清空筛选状态），清除搜索后原筛选自动恢复。
+  function listGalleryPhotosWithSearch(
+    personIds: number[],
+    tagIds: number[],
+    epIds: number[],
+    etIds: number[],
+    nextOffset: number,
+  ) {
+    const photoId = activePhotoIdSearchRef.current;
+    if (photoId != null) {
+      return listGalleryPhotos([], [], [], [], nextOffset, galleryPageSize, photoId);
+    }
+    return listGalleryPhotos(personIds, tagIds, epIds, etIds, nextOffset, galleryPageSize);
+  }
+
+  function applyPhotoIdSearch(photoId: number | null) {
+    if (activePhotoIdSearchRef.current === photoId) {
+      return;
+    }
+    activePhotoIdSearchRef.current = photoId;
+    setActivePhotoIdSearch(photoId);
+    setSelectedGalleryPhotoIds([]);
+    refreshGallery(0).catch((cause: unknown) => {
+      setError(formatError(cause, "按编号搜索图片失败。"));
+    });
+  }
+
+  useEffect(() => {
+    // 非法输入同样清除已生效的编号搜索，保证列表、标签与导出始终与输入框一致。
+    applyPhotoIdSearch(resolveActivePhotoIdSearch(parseGalleryPhotoIdQuery(debouncedPhotoIdSearchInput)));
+  }, [debouncedPhotoIdSearchInput]);
+
+  function handleClearPhotoIdSearch() {
+    setPhotoIdSearchInput("");
+    applyPhotoIdSearch(null);
+  }
+
   async function refreshGallery(
     nextOffset = galleryOffset,
     personIds = selectedPersonIds,
@@ -202,7 +247,7 @@ export function useGallery({
     const epIds = nextExcludePersonIds ?? excludePersonIds;
     const etIds = nextExcludeTagIds ?? excludeTagIds;
     const requestId = nextRequestId(galleryRequestIdRef);
-    const response = await listGalleryPhotos(personIds, tagIds, epIds, etIds, nextOffset, galleryPageSize);
+    const response = await listGalleryPhotosWithSearch(personIds, tagIds, epIds, etIds, nextOffset);
     if (!isCurrentRequest(galleryRequestIdRef, requestId)) {
       return;
     }
@@ -364,9 +409,12 @@ export function useGallery({
   }
 
   function handleClearGalleryFilters() {
-    if (galleryFilterCount === 0) {
+    if (galleryFilterCount === 0 && activePhotoIdSearch == null) {
       return;
     }
+    setPhotoIdSearchInput("");
+    activePhotoIdSearchRef.current = null;
+    setActivePhotoIdSearch(null);
     setSelectedGalleryPhotoIds([]);
     setSelectedPersonIds([]);
     setSelectedTagIds([]);
@@ -529,14 +577,21 @@ export function useGallery({
     setBusy(true);
     setError(null);
     try {
+      const exportPhotoId =
+        activePhotoIdSearch != null && (galleryExportScope === "filtered" || galleryExportScope === "from_start")
+          ? activePhotoIdSearch
+          : undefined;
       const { blob, filename } = await downloadGalleryExport({
         scope: galleryExportScope,
         photoIds: galleryExportScope === "selected" ? selectedGalleryPhotoIds : undefined,
-        startPhotoId: galleryExportScope === "from_start" ? galleryExportStartPhotoId ?? undefined : undefined,
-        personIds: galleryExportPersonIds,
-        tagIds: galleryExportTagIds,
-        excludePersonIds: galleryExportExcludePersonIds,
-        excludeTagIds: galleryExportExcludeTagIds
+        // 编号搜索时结果只有被搜索的那一张，起点自动对齐到该图片，避免“起点不在当前筛选结果中”。
+        startPhotoId:
+          galleryExportScope === "from_start" ? exportPhotoId ?? galleryExportStartPhotoId ?? undefined : undefined,
+        personIds: exportPhotoId != null ? [] : galleryExportPersonIds,
+        tagIds: exportPhotoId != null ? [] : galleryExportTagIds,
+        excludePersonIds: exportPhotoId != null ? [] : galleryExportExcludePersonIds,
+        excludeTagIds: exportPhotoId != null ? [] : galleryExportExcludeTagIds,
+        photoId: exportPhotoId
       });
       const downloadUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -1087,7 +1142,7 @@ export function useGallery({
       const newOffset = Math.max(0, galleryOffset - galleryPageSize);
       setBusy(true);
       try {
-        const response = await listGalleryPhotos(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, newOffset, galleryPageSize);
+        const response = await listGalleryPhotosWithSearch(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, newOffset);
         setGalleryPhotos(response.items);
         setGalleryTotal(response.total);
         setGalleryOffset(response.offset);
@@ -1110,7 +1165,7 @@ export function useGallery({
       const newOffset = galleryOffset + galleryPageSize;
       setBusy(true);
       try {
-        const response = await listGalleryPhotos(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, newOffset, galleryPageSize);
+        const response = await listGalleryPhotosWithSearch(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, newOffset);
         setGalleryPhotos(response.items);
         setGalleryTotal(response.total);
         setGalleryOffset(response.offset);
@@ -1163,7 +1218,8 @@ export function useGallery({
     toggleGallerySelectionMode, handleGalleryCardClick, handleGalleryCheckboxClick, toggleCurrentGalleryPageSelection,
     handleDeleteSelectedGalleryPhotos, handleDeleteCurrentPhoto, handleReRecognize, handleJumpToPage,
     goPrevLightbox, goNextLightbox,
-    recognitionNotice
+    recognitionNotice,
+    photoIdSearchInput, setPhotoIdSearchInput, activePhotoIdSearch, photoIdSearchHint, handleClearPhotoIdSearch
   };
 }
 
