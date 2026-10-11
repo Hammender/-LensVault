@@ -24,7 +24,7 @@ import {
 } from "../api";
 import type { ConfirmDialogOptions } from "../components/ConfirmDialog";
 import { formatError } from "../lib/formatError";
-import { parseGalleryPhotoIdQuery } from "../lib/galleryPhotoIdSearch";
+import { parseGalleryPhotoIdQuery, resolveActivePhotoIdSearch } from "../lib/galleryPhotoIdSearch";
 import { useDebounce } from "./useDebounce";
 import {
   deselectGalleryPage,
@@ -222,16 +222,14 @@ export function useGallery({
     activePhotoIdSearchRef.current = photoId;
     setActivePhotoIdSearch(photoId);
     setSelectedGalleryPhotoIds([]);
-    void refreshGallery(0);
+    refreshGallery(0).catch((cause: unknown) => {
+      setError(formatError(cause, "按编号搜索图片失败。"));
+    });
   }
 
   useEffect(() => {
-    const query = parseGalleryPhotoIdQuery(debouncedPhotoIdSearchInput);
-    if (query.kind === "valid") {
-      applyPhotoIdSearch(query.photoId);
-    } else if (query.kind === "empty") {
-      applyPhotoIdSearch(null);
-    }
+    // 非法输入同样清除已生效的编号搜索，保证列表、标签与导出始终与输入框一致。
+    applyPhotoIdSearch(resolveActivePhotoIdSearch(parseGalleryPhotoIdQuery(debouncedPhotoIdSearchInput)));
   }, [debouncedPhotoIdSearchInput]);
 
   function handleClearPhotoIdSearch() {
@@ -586,7 +584,9 @@ export function useGallery({
       const { blob, filename } = await downloadGalleryExport({
         scope: galleryExportScope,
         photoIds: galleryExportScope === "selected" ? selectedGalleryPhotoIds : undefined,
-        startPhotoId: galleryExportScope === "from_start" ? galleryExportStartPhotoId ?? undefined : undefined,
+        // 编号搜索时结果只有被搜索的那一张，起点自动对齐到该图片，避免“起点不在当前筛选结果中”。
+        startPhotoId:
+          galleryExportScope === "from_start" ? exportPhotoId ?? galleryExportStartPhotoId ?? undefined : undefined,
         personIds: exportPhotoId != null ? [] : galleryExportPersonIds,
         tagIds: exportPhotoId != null ? [] : galleryExportTagIds,
         excludePersonIds: exportPhotoId != null ? [] : galleryExportExcludePersonIds,

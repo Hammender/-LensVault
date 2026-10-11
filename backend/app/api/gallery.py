@@ -184,6 +184,9 @@ def _unique_zip_path(path: str, used_paths: set[str]) -> str:
         counter += 1
 
 
+GALLERY_PHOTO_ID_MAX = 2_147_483_647
+
+
 def _apply_gallery_photo_id(query, photo_id: int | None):
     if photo_id is None:
         return query
@@ -493,7 +496,7 @@ def export_gallery_photos(
     tag_ids: list[int] = Query(default=[]),
     exclude_person_ids: list[int] = Query(default=[]),
     exclude_tag_ids: list[int] = Query(default=[]),
-    photo_id: Annotated[int | None, Query(ge=1)] = None,
+    photo_id: Annotated[int | None, Query(ge=1, le=GALLERY_PHOTO_ID_MAX)] = None,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> StreamingResponse:
@@ -900,7 +903,7 @@ def list_gallery_photos(
     tag_ids: list[int] = Query(default=[]),
     exclude_person_ids: list[int] = Query(default=[]),
     exclude_tag_ids: list[int] = Query(default=[]),
-    photo_id: Annotated[int | None, Query(ge=1)] = None,
+    photo_id: Annotated[int | None, Query(ge=1, le=GALLERY_PHOTO_ID_MAX)] = None,
     offset: int = 0,
     limit: int = 24,
     db: Session = Depends(get_db),

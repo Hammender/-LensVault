@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGalleryPhotoIdQuery } from "./galleryPhotoIdSearch";
+import { parseGalleryPhotoIdQuery, resolveActivePhotoIdSearch } from "./galleryPhotoIdSearch";
 
 describe("展示图编号搜索解析", () => {
   it("空输入视为未搜索", () => {
@@ -23,5 +23,12 @@ describe("展示图编号搜索解析", () => {
   it("拒绝超出数据库整数范围的编号", () => {
     expect(parseGalleryPhotoIdQuery("2147483647")).toEqual({ kind: "valid", photoId: 2147483647 });
     expect(parseGalleryPhotoIdQuery("2147483648").kind).toBe("invalid");
+    expect(parseGalleryPhotoIdQuery("3000000000").kind).toBe("invalid");
+  });
+
+  it("只有合法编号才保持搜索生效，非法或空输入都会清除已生效的搜索", () => {
+    expect(resolveActivePhotoIdSearch(parseGalleryPhotoIdQuery("#123"))).toBe(123);
+    expect(resolveActivePhotoIdSearch(parseGalleryPhotoIdQuery("12a"))).toBeNull();
+    expect(resolveActivePhotoIdSearch(parseGalleryPhotoIdQuery(""))).toBeNull();
   });
 });

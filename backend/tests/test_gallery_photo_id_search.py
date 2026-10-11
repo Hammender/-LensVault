@@ -4,10 +4,15 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api.gallery import _resolve_gallery_export_photos, list_gallery_photos
+from app.api.gallery import router as gallery_router
+from app.db import get_db
+from app.dependencies.context import require_context
 from app.models import GalleryPhoto, GalleryPhotoTag, Tag, Workspace
 from app.schemas import GalleryPhotoExportRequest
 
@@ -113,7 +118,28 @@ def test_filtered_export_honours_photo_id(db_session: Session) -> None:
     assert [photo.id for photo in exported] == [photos[2].id]
 
 
-@pytest.mark.parametrize("value", [0, -1])
+@pytest.mark.parametrize("value", [0, -1, 2_147_483_648])
 def test_export_request_rejects_non_positive_photo_id(value: int) -> None:
     with pytest.raises(ValidationError):
         GalleryPhotoExportRequest(scope="filtered", photo_id=value)
+
+
+def _http_client(db: Session, workspace_id: int) -> TestClient:
+    app = FastAPI()
+    app.state.services = SimpleNamespace(pictures=SimpleNamespace())
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[require_context] = lambda: SimpleNamespace(workspace_id=workspace_id)
+    app.include_router(gallery_router)
+    return TestClient(app, raise_server_exceptions=True)
+
+
+def test_list_endpoint_validates_photo_id_range(db_session: Session) -> None:
+    workspace, _, photos, _, _ = _seed(db_session)
+    client = _http_client(db_session, workspace.id)
+
+    ok = client.get("/api/gallery/photos", params={"photo_id": photos[0].id})
+    assert ok.status_code == 200
+    assert ok.json()["total"] == 1
+    assert client.get("/api/gallery/photos", params={"photo_id": 2_147_483_647}).json()["total"] == 0
+    for value in (0, 2_147_483_648, 3_000_000_000):
+        assert client.get("/api/gallery/photos", params={"photo_id": value}).status_code == 422

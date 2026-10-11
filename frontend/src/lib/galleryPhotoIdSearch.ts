@@ -5,6 +5,10 @@ export type GalleryPhotoIdQuery =
   | { kind: "valid"; photoId: number }
   | { kind: "invalid"; message: string };
 
+export function resolveActivePhotoIdSearch(query: GalleryPhotoIdQuery): number | null {
+  return query.kind === "valid" ? query.photoId : null;
+}
+
 export function parseGalleryPhotoIdQuery(raw: string): GalleryPhotoIdQuery {
   const trimmed = raw.trim();
   if (trimmed === "") {
