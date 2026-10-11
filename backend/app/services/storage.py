@@ -96,6 +96,18 @@ class MinioStorage:
             response.close()
             response.release_conn()
 
+    def get_bytes_with_type(self, object_key: str) -> tuple[bytes, str]:
+        response = self.client.get_object(self.bucket, object_key)
+        try:
+            return response.read(), response.headers.get("Content-Type", "application/octet-stream")
+        finally:
+            response.close()
+            response.release_conn()
+
+    def remove_prefix(self, prefix: str) -> None:
+        for item in self.client.list_objects(self.bucket, prefix=prefix, recursive=True):
+            self.remove_object(item.object_name)
+
     def remove_object(self, object_key: str) -> None:
         try:
             self.client.remove_object(self.bucket, object_key)

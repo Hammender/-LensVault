@@ -64,6 +64,42 @@ def request_for(site):
     return Request({"type": "http", "app": app})
 
 
+@pytest.mark.parametrize("stage", ["download", "enumerate_pages", "setup"])
+def test_run_failures_log_identifiers_without_credentials(plugin_site, monkeypatch, caplog, stage):
+    site = plugin_site
+    secret = "private-cookie-value"
+    account = site.service.plugins.save_credential(site.db, 1, "test-gallery", "默认", {"cookie": secret})
+    run = new_run(site, credential_id=account.id)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(f"TLS 下载失败 {secret}")
+
+    def fake_run(manifest, operation, request, **kwargs):
+        if operation == stage:
+            fail()
+        return iter([{"page_number": 1, "items": [{"external_key": "one", "source_url": "https://example.test/one.jpg"}],
+                      "stop_reason": "collection_end"}])
+
+    if stage == "setup":
+        monkeypatch.setattr(site.service, "get_definition", fail)
+    monkeypatch.setattr(site.service.plugins, "run", fake_run)
+    site.service.process_run(site.db, run.id)
+    site.db.refresh(run)
+    assert run.id in caplog.text
+    assert "TLS 下载失败" in caplog.text
+    assert "已隐藏凭据" in caplog.text
+    assert secret not in caplog.text
+    if stage == "download":
+        item = site.db.scalar(select(AcquisitionRunItem).where(AcquisitionRunItem.run_id == run.id))
+        assert item.status == "failed"
+        assert item.error_message in caplog.text
+        assert f"run_item_id={item.id}" in caplog.text
+        assert run.error_count == 1
+    else:
+        assert run.status == "failed"
+        assert secret not in run.error_message
+
+
 @pytest.mark.parametrize("failure", ["credentials", "manifest", "parameters"])
 def test_pre_execution_failure_finishes_run(plugin_site, failure):
     site = plugin_site

@@ -25,6 +25,7 @@
 | `verify_gallery_tag_reconcile.py` | 核验标签重整计划与当前数据库逐图一致性，并检查临时调试人物是否绑定人脸。 | 否 |
 | `summarize_gallery_rerecognition.py` | 按迁移冻结快照汇总新人脸模型对全图库的重构效果。 | 否 |
 | `cleanup_debug2_spurious_jenny.py` | 清理临时调试人物2队列中新模型误加的金珍妮-Jenny 标签和对应人脸。 | 预演只写报告，`--apply` 写 SQLite |
+| `restore_debug1_legacy_tags.py` | 把临时调试人物1 图片中已知集合未变的图整份复原为 AdaFace 迁移前人物标签；已知集合已变的图整张保留。 | 预演只写报告，`--apply` 写 SQLite |
 
 ## 通用、数据库和资源工具
 

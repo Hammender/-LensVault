@@ -76,6 +76,8 @@ from app.services.similarity import (
     orb_feature_similarity,
 )
 from app.services.storage import MinioStorage
+from app.services.preview_runtime import preview_source_guard, preview_source_exists
+from app.services.thumbnails import acquisition_preview_cache_prefix
 from app.services.telegram import TelegramRunAborted, TelegramService
 from app.services.acquisition_plugins.manager import PluginAborted, PluginAdapter, PluginManager
 from app.services.acquisition_plugins.context import PluginExecutionContext
@@ -860,6 +862,8 @@ class AcquisitionService:
         except Exception as exc:
             db.rollback()
             current = db.get(AcquisitionRun, run_id)
+            if not isinstance(exc, PluginAborted):
+                logger.error("采集任务失败 run_id=%s error=%s", run_id, safe_error(str(exc), context.secrets))
             if current is not None and current.status in {"pending", "running"}:
                 current.status = "interrupted" if isinstance(exc, PluginAborted) else "failed"
                 current.error_message = safe_error(str(exc), context.secrets)
@@ -1044,6 +1048,7 @@ class AcquisitionService:
             run.status = "failed"
             run.error_message = safe_error(str(exc), context.secrets)
             run.completed_at = shanghai_now()
+            logger.error("采集任务失败 run_id=%s script=%s error=%s", run_id, run.script_key, run.error_message)
         db.commit()
 
     def _process_telegram_run(
@@ -1604,6 +1609,11 @@ class AcquisitionService:
         run_item.error_message = str(exc)
         run.error_count += 1
         db.commit()
+        # 插件错误已由调用方脱敏，不附加可能包含原始凭据的异常堆栈。
+        logger.warning(
+            "采集媒体失败 run_id=%s script=%s run_item_id=%s source_item_id=%s error=%s",
+            run_id, run.script_key, prepared.run_item_id, prepared.source_item_id, str(exc),
+        )
 
     def _process_remote_item(
         self,
@@ -1638,8 +1648,20 @@ class AcquisitionService:
             for item in db.scalars(select(AcquisitionSourceItem).where(AcquisitionSourceItem.id.in_(source_item_ids))).all()
         }
         for asset in assets:
-            if asset.object_key:
-                self.storage.remove_object(asset.object_key)
+            with preview_source_guard(asset.object_key) if asset.object_key else nullcontext():
+                if asset.object_key:
+                    self.storage.remove_object(asset.object_key)
+                remove_prefix = getattr(self.storage, "remove_prefix", None)
+                if remove_prefix is not None:
+                    try:
+                        remove_prefix(acquisition_preview_cache_prefix(asset.workspace_id, asset.id, asset.sha256))
+                    except Exception:
+                        logger.warning("清理采集预览缓存失败 asset_id=%s", asset.id, exc_info=True)
+                cover_key = self._preview_key(asset.workspace_id, asset.id)
+                self.storage.remove_object(cover_key)
+                if asset.preview_object_key and asset.preview_object_key != cover_key:
+                    self.storage.remove_object(asset.preview_object_key)
+                asset.preview_object_key = None
             asset.object_key = None
             asset.status = "rejected"
         for run_item in run_items:
@@ -1697,6 +1719,7 @@ class AcquisitionService:
         return batch
 
     def process_import_batch(self, db: Session, batch_id: str) -> None:
+        batch_started_at = time.perf_counter()
         batch = db.get(AcquisitionImportBatch, batch_id)
         if batch is None or batch.status not in {"queued", "running"}:
             return
@@ -1711,6 +1734,7 @@ class AcquisitionService:
             ).all()
         )
         for item_id in item_ids:
+            item_started_at = time.perf_counter()
             item = db.get(AcquisitionImportBatchItem, item_id)
             if item is None or item.status in {"imported", "gallery_duplicate"}:
                 continue
@@ -1782,17 +1806,46 @@ class AcquisitionService:
                     continue
                 item.promotion_intent = "new"
                 db.commit()
-                payload = self.storage.get_bytes(asset.object_key)
+                source_key = asset.object_key
+                filename = asset.filename
+                content_type = asset.content_type
+                workspace_id = batch.workspace_id
+                rich_text = batch.is_rich_text
+                db.rollback()
+                download_started_at = time.perf_counter()
+                payload = self.storage.get_bytes(source_key)
+                download_ms = (time.perf_counter() - download_started_at) * 1000
+                import_options = {}
+                recognition_ms = 0.0
+                if hasattr(self.pictures, "prepare_gallery_recognition"):
+                    recognition_started_at = time.perf_counter()
+                    try:
+                        prepared_image = self.pictures.prepare_gallery_image(payload)
+                        import_options["prepared_image"] = prepared_image
+                        with Session(db.get_bind()) as recognition_db:
+                            import_options["recognition_plan"] = self.pictures.prepare_gallery_recognition(
+                                recognition_db, payload, workspace_id, image_bgr=prepared_image[3],
+                            )
+                    except Exception:
+                        logger.exception("采集图片识别失败，继续保存图片 batch_id=%s item_id=%s", batch_id, item_id)
+                        import_options["recognition_plan"] = None
+                    recognition_ms = (time.perf_counter() - recognition_started_at) * 1000
+                persist_started_at = time.perf_counter()
                 photo, summary = self.pictures.import_gallery_photo(
                     db,
-                    asset.filename,
+                    filename,
                     payload,
-                    asset.content_type,
-                    workspace_id=batch.workspace_id,
-                    source_object_key=asset.object_key,
+                    content_type,
+                    workspace_id=workspace_id,
+                    source_object_key=source_key,
                     ingest_source="acquisition",
-                    is_rich_text=batch.is_rich_text,
+                    is_rich_text=rich_text,
+                    **import_options,
                 )
+                persist_ms = (time.perf_counter() - persist_started_at) * 1000
+                if max(download_ms, recognition_ms, persist_ms) >= 1000:
+                    logger.warning("采集图片入库阶段耗时 batch_id=%s item_id=%s 读取=%.0fms 识别=%.0fms 保存=%.0fms",
+                                   batch_id, item_id, download_ms, recognition_ms, persist_ms)
                 if summary.duplicated:
                     self._finish_gallery_duplicate(db, item, asset, photo)
                 else:
@@ -1801,6 +1854,7 @@ class AcquisitionService:
                 db.commit()
                 self._cleanup_asset_object(db, asset)
             except Exception as exc:
+                logger.exception("采集图片入库失败 batch_id=%s item_id=%s", batch_id, item_id)
                 db.rollback()
                 item = db.get(AcquisitionImportBatchItem, item_id)
                 asset = db.get(AcquisitionAsset, item.asset_id) if item is not None else None
@@ -1824,10 +1878,17 @@ class AcquisitionService:
                 db.commit()
                 if item is not None and asset is not None and item.status in {"imported", "gallery_duplicate"}:
                     self._cleanup_asset_object(db, asset)
+            finally:
+                item_duration_ms = (time.perf_counter() - item_started_at) * 1000
+                if item_duration_ms >= 1000:
+                    logger.warning("采集图片入库耗时 batch_id=%s item_id=%s duration_ms=%.0f",
+                                   batch_id, item_id, item_duration_ms)
         batch = db.get(AcquisitionImportBatch, batch_id)
         if batch is not None:
             self._refresh_import_batch(db, batch_id, finish=True)
             db.commit()
+            logger.info("采集图片入库完成 batch_id=%s count=%s duration_ms=%.0f",
+                        batch_id, batch.total_count, (time.perf_counter() - batch_started_at) * 1000)
 
     def import_assets(
         self,
@@ -2109,9 +2170,15 @@ class AcquisitionService:
                     return None
                 cover = output_path.read_bytes()
             key = self._preview_key(asset.workspace_id, asset.id)
-            self.storage.put_bytes(key, cover, "image/jpeg")
-            asset.preview_object_key = key
-            db.commit()
+            with preview_source_guard(asset.object_key):
+                if not preview_source_exists(self.storage, asset.object_key):
+                    return None
+                self.storage.put_bytes(key, cover, "image/jpeg")
+                if not preview_source_exists(self.storage, asset.object_key):
+                    self.storage.remove_object(key)
+                    return None
+                asset.preview_object_key = key
+                db.commit()
             return cover
         except Exception:
             db.rollback()
@@ -2119,16 +2186,25 @@ class AcquisitionService:
 
     def _cleanup_asset_object(self, db: Session, asset: AcquisitionAsset, commit: bool = True) -> None:
         pending_error: str | None = None
-        if asset.object_key:
+        with preview_source_guard(asset.object_key) if asset.object_key else nullcontext():
+            if asset.object_key:
+                try:
+                    self.storage.remove_object(asset.object_key)
+                except Exception as exc:
+                    pending_error = f"临时文件待清理：{exc}"
+                else:
+                    asset.object_key = None
+            remove_prefix = getattr(self.storage, "remove_prefix", None)
+            if remove_prefix is not None:
+                try:
+                    remove_prefix(acquisition_preview_cache_prefix(asset.workspace_id, asset.id, asset.sha256))
+                except Exception as exc:
+                    logger.warning("清理采集预览缓存失败 asset_id=%s error=%s", asset.id, exc)
             try:
-                self.storage.remove_object(asset.object_key)
-            except Exception as exc:
-                pending_error = f"临时文件待清理：{exc}"
-            else:
-                asset.object_key = None
-        if asset.preview_object_key:
-            try:
-                self.storage.remove_object(asset.preview_object_key)
+                cover_key = self._preview_key(asset.workspace_id, asset.id)
+                self.storage.remove_object(cover_key)
+                if asset.preview_object_key and asset.preview_object_key != cover_key:
+                    self.storage.remove_object(asset.preview_object_key)
             except Exception:
                 pass
             else:

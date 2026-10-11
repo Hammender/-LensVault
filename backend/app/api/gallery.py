@@ -8,12 +8,13 @@ import logging
 from typing import Annotated, Literal
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import anyio
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import func
 from fastapi.responses import StreamingResponse
 from PIL import Image, ImageOps
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api._helpers import get_workspace_object
 from app.core.timezones import shanghai_isoformat, shanghai_now
@@ -60,7 +61,8 @@ from app.services.similarity import (
     select_normal_near_duplicate_auto_delete_photo_ids,
 )
 from app.services.tasks import create_task
-from app.services.thumbnails import animated_thumbnail_cache_key, render_gallery_thumbnail
+from app.services.preview_runtime import preview_runtime, put_preview_if_source_exists
+from app.services.thumbnails import gallery_preview_cache_key, normalize_preview_edge, render_gallery_static_thumbnail, render_gallery_thumbnail
 
 _services_context: ContextVar[object] = ContextVar("gallery_services")
 
@@ -912,6 +914,11 @@ def list_gallery_photos(
     query = (
         select(GalleryPhoto)
         .where(GalleryPhoto.workspace_id == current.workspace_id)
+        .options(
+            selectinload(GalleryPhoto.person_tags).selectinload(GalleryPhotoPersonTag.person),
+            selectinload(GalleryPhoto.tags).selectinload(GalleryPhotoTag.tag),
+            selectinload(GalleryPhoto.promoted_samples),
+        )
         .order_by(*_gallery_display_order())
     )
     count_query = select(func.count(GalleryPhoto.id)).where(GalleryPhoto.workspace_id == current.workspace_id)
@@ -921,13 +928,6 @@ def list_gallery_photos(
     count_query = _apply_gallery_photo_id(count_query, photo_id)
 
     photos = db.scalars(query.offset(offset).limit(limit)).unique().all()
-    for photo in photos:
-        photo.person_tags
-        photo.tags
-        for person_tag in photo.person_tags:
-            person_tag.person
-        for tag_link in photo.tags:
-            tag_link.tag
     total = db.scalar(count_query) or 0
     return PaginatedGalleryPhotos(items=[_gallery_photo_to_list_item(photo) for photo in photos], total=total, offset=offset, limit=limit)
 
@@ -994,55 +994,80 @@ def get_gallery_original(
 
 
 @router.get("/api/gallery/photos/{photo_id}/thumbnail")
-def get_gallery_thumbnail(
+async def get_gallery_thumbnail(
     photo_id: int,
-    width: int = 480,
+    request: Request,
+    width: int = Query(480, ge=1, le=2048),
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> Response:
-    photo = get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
-    payload = storage.get_bytes(photo.object_key)
-    image = Image.open(BytesIO(payload)).convert("RGB")
-    image.thumbnail((width, width))
-    buffer = BytesIO()
-    image.save(buffer, format="JPEG", quality=92)
-    return Response(content=buffer.getvalue(), media_type="image/jpeg")
+    def snapshot() -> tuple[int | None, int, str, str]:
+        photo = get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+        result = photo.workspace_id, photo.id, photo.sha256, photo.object_key
+        db.rollback()
+        return result
+
+    workspace_id, image_id, sha256, source_key = await anyio.to_thread.run_sync(snapshot)
+    edge = normalize_preview_edge(width)
+    cache_key = gallery_preview_cache_key(workspace_id, image_id, sha256, "static", edge)
+    storage_service = request.app.state.services.storage
+
+    def load() -> bytes:
+        try:
+            return storage_service.get_bytes(cache_key)
+        except Exception as exc:
+            if getattr(exc, "code", None) not in {"NoSuchKey", "NoSuchObject"} and not isinstance(exc, (KeyError, FileNotFoundError)):
+                raise
+        payload = render_gallery_static_thumbnail(storage_service.get_bytes(source_key), edge)
+        try:
+            put_preview_if_source_exists(storage_service, source_key, cache_key, payload, "image/jpeg")
+        except Exception:
+            logger.warning("图库缩略图缓存写入失败 photo_id=%s", photo_id, exc_info=True)
+        return payload
+
+    result = await preview_runtime(request).run(cache_key, load)
+    return Response(content=result, media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
 @router.get("/api/gallery/photos/{photo_id}/animated-thumbnail")
-def get_gallery_animated_thumbnail(
+async def get_gallery_animated_thumbnail(
     photo_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> Response:
-    photo = get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
-    cache_key = animated_thumbnail_cache_key(photo.workspace_id, photo.id, photo.sha256)
+    def snapshot() -> tuple[int | None, int, str, str, str | None]:
+        photo = get_workspace_object(db, GalleryPhoto, photo_id, current.workspace_id, "Photo")
+        result = photo.workspace_id, photo.id, photo.sha256, photo.object_key, photo.content_type
+        db.rollback()
+        return result
+
+    workspace_id, image_id, sha256, source_key, source_type = await anyio.to_thread.run_sync(snapshot)
+    cache_key = gallery_preview_cache_key(workspace_id, image_id, sha256, "animated", 720)
+    storage_service = request.app.state.services.storage
     cache_headers = {"Cache-Control": "private, max-age=31536000, immutable"}
 
-    try:
-        cached = storage.get_bytes(cache_key)
-    except Exception:
-        cached = None
-    if cached is not None:
-        return Response(content=cached, media_type="image/webp", headers=cache_headers)
-
-    payload = storage.get_bytes(photo.object_key)
-    try:
-        thumbnail = render_gallery_thumbnail(payload)
-    except Exception:
-        logger.exception("Failed to render animated gallery thumbnail photo_id=%s", photo.id)
-        return Response(
-            content=payload,
-            media_type=photo.content_type or "application/octet-stream",
-            headers=cache_headers,
-        )
-
-    if thumbnail.is_animated:
+    def load() -> tuple[bytes, str]:
         try:
-            storage.put_bytes(cache_key, thumbnail.payload, thumbnail.media_type)
+            return storage_service.get_bytes_with_type(cache_key)
+        except Exception as exc:
+            if getattr(exc, "code", None) not in {"NoSuchKey", "NoSuchObject"} and not isinstance(exc, (KeyError, FileNotFoundError)):
+                raise
+        payload = storage_service.get_bytes(source_key)
+        try:
+            thumbnail = render_gallery_thumbnail(payload)
         except Exception:
-            logger.exception("Failed to cache animated gallery thumbnail photo_id=%s", photo.id)
-    return Response(content=thumbnail.payload, media_type=thumbnail.media_type, headers=cache_headers)
+            logger.exception("图库预览渲染失败 photo_id=%s", photo_id)
+            return payload, source_type or "application/octet-stream"
+        try:
+            put_preview_if_source_exists(storage_service, source_key, cache_key, thumbnail.payload, thumbnail.media_type)
+        except Exception:
+            logger.warning("图库预览缓存写入失败 photo_id=%s", photo_id, exc_info=True)
+        return thumbnail.payload, thumbnail.media_type
+
+    payload, media_type = await preview_runtime(request).run(cache_key, load)
+    return Response(content=payload, media_type=media_type, headers=cache_headers)
 
 
 @router.post("/api/gallery/photos/{photo_id}/persons", response_model=GalleryPhotoDetail)

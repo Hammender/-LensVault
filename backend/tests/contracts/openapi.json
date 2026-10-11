@@ -16985,6 +16985,8 @@
             "required": false,
             "schema": {
               "default": 480,
+              "maximum": 2048,
+              "minimum": 1,
               "title": "Width",
               "type": "integer"
             }

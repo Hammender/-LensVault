@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+import threading
 from io import BytesIO
 from pathlib import Path
 import tempfile
@@ -241,6 +243,73 @@ def test_import_gallery_photo_decodes_image_once(monkeypatch: pytest.MonkeyPatch
     assert face.bgr_calls == 1
     assert face.bytes_calls == 0
     assert len(opens) == 1
+
+
+def test_prepared_gallery_image_is_reused_for_recognition_and_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    from PIL import Image as PilImage
+
+    opens = 0
+    original_open = PilImage.open
+
+    def counting_open(*args, **kwargs):
+        nonlocal opens
+        opens += 1
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.image_metadata.Image.open", counting_open)
+    service = PictureService(  # type: ignore[arg-type]
+        FakeStorage(), RecordingFaceService(), FakeVectorStore(), FakeOcrService(), Settings(),
+    )
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    payload = _jpeg_bytes()
+    prepared = service.prepare_gallery_image(payload)
+    with Session(engine) as db:
+        recognition = service.prepare_gallery_recognition(db, payload, None, image_bgr=prepared[3])
+        service.import_gallery_photo(db, "reuse.jpg", payload, "image/jpeg",
+                                     recognition_plan=recognition, prepared_image=prepared)
+    assert opens == 1
+
+
+def test_gallery_recognition_does_not_hold_sqlite_write_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database = tmp_path / "recognition.db"
+    engine = create_engine(f"sqlite:///{database.as_posix()}")
+    Base.metadata.create_all(engine)
+    service = PictureService(  # type: ignore[arg-type]
+        FakeStorage(), RecordingFaceService(), FakeVectorStore(), FakeOcrService(), Settings(),
+    )
+    started = threading.Event()
+    release = threading.Event()
+    errors: list[Exception] = []
+
+    def pause_recognition(*_args, **_kwargs):
+        started.set()
+        if not release.wait(timeout=3):
+            raise TimeoutError("识别测试等待超时")
+        return []
+
+    monkeypatch.setattr(service, "_recognition_plan", pause_recognition)
+
+    def import_photo():
+        try:
+            with Session(engine) as db:
+                service.import_gallery_photo(db, "photo.jpg", _jpeg_bytes(), "image/jpeg")
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=import_photo)
+    worker.start()
+    try:
+        assert started.wait(timeout=3)
+        with sqlite3.connect(database, timeout=0.2) as concurrent:
+            concurrent.execute("BEGIN IMMEDIATE")
+            concurrent.execute("ROLLBACK")
+    finally:
+        release.set()
+        worker.join(timeout=3)
+        engine.dispose()
+    assert not worker.is_alive()
+    assert not errors
 
 
 def test_create_onnx_inference_session_passes_options(monkeypatch: pytest.MonkeyPatch) -> None:

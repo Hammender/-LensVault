@@ -23,8 +23,9 @@ from app.services.face_profiles import ReferenceFace, aggregate_hits, build_cent
 from app.services.image_metadata import load_rgb_image, parse_image_metadata, parse_image_metadata_from_image
 from app.services.qdrant import FaceSearchHit, QdrantVectorStore
 from app.services.ocr import OcrService
+from app.services.preview_runtime import preview_source_guard
 from app.services.storage import MinioStorage
-from app.services.thumbnails import animated_thumbnail_cache_key
+from app.services.thumbnails import animated_thumbnail_cache_key, gallery_preview_cache_prefix
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -798,6 +799,7 @@ class PictureService:
         *,
         ingest_source: str = "manual_upload",
         recognition_plan: list[tuple[DetectedFace, PersonMatch]] | None | object = _RECOGNITION_NOT_PRECOMPUTED,
+        prepared_image: tuple[int, int, datetime | None, np.ndarray] | None = None,
     ) -> tuple[GalleryPhoto, GalleryImportSummary]:
         summary = GalleryImportSummary()
         logger.info(
@@ -826,12 +828,16 @@ class PictureService:
             )
             return existing, summary
 
-        image = load_rgb_image(payload)
-        try:
-            width, height, taken_at = parse_image_metadata_from_image(image)
-            image_bgr = np.ascontiguousarray(np.asarray(image)[:, :, ::-1])
-        finally:
-            image.close()
+        width, height, taken_at, image_bgr = prepared_image or self.prepare_gallery_image(payload)
+        if recognition_plan is _RECOGNITION_NOT_PRECOMPUTED:
+            try:
+                recognition_plan = self._recognition_plan(db, payload, workspace_id, image_bgr=image_bgr)
+            except Exception:
+                logger.exception("Gallery face detection failed, keep photo without faces filename=%s", filename)
+                recognition_plan = None
+        extracted_text = None
+        if is_rich_text and not (rich_text and rich_text.strip()):
+            extracted_text = self.ocr_service.extract_text(payload)
         object_key = self._build_object_key(workspace_id, "gallery", filename)
         if source_object_key:
             self.storage.copy_object(object_key, source_object_key)
@@ -868,9 +874,8 @@ class PictureService:
             rich_tag.is_system = True
             self.ensure_gallery_tag(db, photo.id, rich_tag, source="system")
             if not photo.rich_text:
-                extracted = self.ocr_service.extract_text(payload)
-                photo.rich_text = extracted
-                photo.ocr_status = "ok" if extracted else "failed"
+                photo.rich_text = extracted_text
+                photo.ocr_status = "ok" if extracted_text else "failed"
                 logger.info(
                     "Gallery rich text OCR completed photo_id=%s status=%s chars=%d",
                     photo.id,
@@ -886,16 +891,6 @@ class PictureService:
         if tag_names:
             logger.info("Gallery manual tags applied photo_id=%s tags=%d", photo.id, len(tag_names))
 
-        if recognition_plan is _RECOGNITION_NOT_PRECOMPUTED:
-            try:
-                recognition_plan = self._recognition_plan(db, payload, workspace_id, image_bgr=image_bgr)
-            except Exception:
-                logger.exception(
-                    "Gallery face detection failed, keep photo without faces photo_id=%s filename=%s",
-                    photo.id,
-                    filename,
-                )
-                recognition_plan = None
         if recognition_plan is None:
             db.commit()
             db.refresh(photo)
@@ -979,13 +974,25 @@ class PictureService:
         )
         return photo, summary
 
+    @staticmethod
+    def prepare_gallery_image(payload: bytes) -> tuple[int, int, datetime | None, np.ndarray]:
+        image = load_rgb_image(payload)
+        try:
+            width, height, taken_at = parse_image_metadata_from_image(image)
+            image_bgr = np.ascontiguousarray(np.asarray(image)[:, :, ::-1])
+            return width, height, taken_at, image_bgr
+        finally:
+            image.close()
+
     def prepare_gallery_recognition(
         self,
         db: Session,
         payload: bytes,
         workspace_id: int,
+        *,
+        image_bgr: np.ndarray | None = None,
     ) -> list[tuple[DetectedFace, PersonMatch]]:
-        return self._recognition_plan(db, payload, workspace_id)
+        return self._recognition_plan(db, payload, workspace_id, image_bgr=image_bgr)
 
     def rename_person(self, db: Session, person: Person, new_name: str) -> Person:
         if self.is_singleton_unknown_person(person):
@@ -1067,8 +1074,15 @@ class PictureService:
         for workspace_id in workspace_ids:
             mark_similarity_scans_stale(db, workspace_id)
         for photo in photos:
-            self.storage.remove_object(animated_thumbnail_cache_key(photo.workspace_id, photo.id, photo.sha256))
-            self.storage.remove_object(photo.object_key)
+            with preview_source_guard(photo.object_key):
+                self.storage.remove_object(photo.object_key)
+                self.storage.remove_object(animated_thumbnail_cache_key(photo.workspace_id, photo.id, photo.sha256))
+                remove_prefix = getattr(self.storage, "remove_prefix", None)
+                if remove_prefix is not None:
+                    try:
+                        remove_prefix(gallery_preview_cache_prefix(photo.workspace_id, photo.id, photo.sha256))
+                    except Exception:
+                        logger.warning("清理图库预览缓存失败 photo_id=%s", photo.id, exc_info=True)
             db.delete(photo)
             deleted += 1
             logger.info("Delete gallery photo photo_id=%s", photo.id)

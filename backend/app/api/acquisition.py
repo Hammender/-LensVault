@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from datetime import datetime
-from threading import BoundedSemaphore, Lock
 from typing import Annotated, Literal, cast
 
+import anyio
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import exists, func, select
@@ -84,25 +85,12 @@ from app.services.acquisition import AcquisitionService
 from app.services.similarity import choose_quality_recommendation, compose_group_quality_scores
 from app.services.tasks import create_task, update_task
 from app.services.thumbnails import render_acquisition_preview
+from app.services.preview_runtime import preview_runtime, put_preview_if_source_exists
+from app.services.thumbnails import acquisition_preview_cache_key, normalize_preview_edge
 
 
 router = APIRouter(prefix="/api/acquisition", tags=["采集"])
-_preview_render_slots: BoundedSemaphore | None = None
-_preview_render_slots_lock = Lock()
-
-
-def _preview_slots() -> BoundedSemaphore:
-    global _preview_render_slots
-    if _preview_render_slots is not None:
-        return _preview_render_slots
-    with _preview_render_slots_lock:
-        if _preview_render_slots is None:
-            _preview_render_slots = BoundedSemaphore(
-                max(1, int(get_settings().image_compute_thumbnail_parallel))
-            )
-        return _preview_render_slots
-
-
+logger = logging.getLogger(__name__)
 _SIMILARITY_TASK_KINDS = {
     ("normal", "pending_only"): "acquisition_similarity_scan",
     ("mirror", "pending_only"): "acquisition_similarity_scan_mirror_pending",
@@ -1287,33 +1275,59 @@ def capture_asset_frame(asset_id: str, payload: AcquisitionFrameLocate, request:
 
 
 @router.get("/assets/{asset_id}/preview", response_class=Response)
-def get_asset_preview(
+async def get_asset_preview(
     asset_id: str,
     request: Request,
     max_edge: Annotated[int, Query(ge=160, le=2048)] = 480,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> Response:
-    asset = db.get(AcquisitionAsset, asset_id)
-    if asset is None or asset.workspace_id != current.workspace_id or not asset.object_key:
-        raise HTTPException(status_code=404, detail="采集临时图片不存在")
+    def snapshot() -> tuple[int | None, str, str, str, str, str | None]:
+        asset = db.get(AcquisitionAsset, asset_id)
+        if asset is None or asset.workspace_id != current.workspace_id or not asset.object_key:
+            raise HTTPException(status_code=404, detail="采集临时图片不存在")
+        media_type = getattr(asset, "media_type", "image")
+        if media_type not in {"image", "video"}:
+            media_type = "image"
+        result = asset.workspace_id, asset.id, asset.sha256, media_type, asset.object_key, getattr(asset, "preview_object_key", None)
+        db.rollback()
+        return result
 
-    media_type = getattr(asset, "media_type", "image")
-    if media_type not in {"image", "video"}:
-        media_type = "image"
-    with _preview_slots():
+    workspace_id, stored_id, sha256, media_type, source_key, preview_key = await anyio.to_thread.run_sync(snapshot)
+    edge = normalize_preview_edge(max_edge)
+    cache_key = acquisition_preview_cache_key(workspace_id, stored_id, sha256, edge)
+    storage_service = request.app.state.services.storage
+
+    def load() -> bytes:
+        try:
+            return storage_service.get_bytes(cache_key)
+        except Exception as exc:
+            if getattr(exc, "code", None) not in {"NoSuchKey", "NoSuchObject"} and not isinstance(exc, (KeyError, FileNotFoundError)):
+                raise
         if media_type == "video":
-            payload = _service(request).ensure_video_preview(db, asset)
+            session_factory = request.app.state.session_factory
+            with session_factory() as preview_db:
+                current_asset = preview_db.get(AcquisitionAsset, asset_id)
+                if current_asset is None or current_asset.workspace_id != current.workspace_id or not current_asset.object_key:
+                    raise HTTPException(status_code=404, detail="采集临时图片不存在")
+                payload = _service(request).ensure_video_preview(preview_db, current_asset)
             if not payload:
                 raise HTTPException(status_code=404, detail="视频封面不可用")
-        elif getattr(asset, "preview_object_key", None):
-            payload = request.app.state.services.storage.get_bytes(asset.preview_object_key)
+        elif preview_key:
+            payload = storage_service.get_bytes(preview_key)
         else:
-            payload = request.app.state.services.storage.get_bytes(asset.object_key)
-        preview = render_acquisition_preview(payload, max_edge)
+            payload = storage_service.get_bytes(source_key)
+        preview = render_acquisition_preview(payload, edge)
+        try:
+            put_preview_if_source_exists(storage_service, source_key, cache_key, preview.payload, preview.media_type)
+        except Exception:
+            logger.warning("采集预览缓存写入失败 asset_id=%s", asset_id, exc_info=True)
+        return preview.payload
+
+    result = await preview_runtime(request).run(cache_key, load)
     return Response(
-        content=preview.payload,
-        media_type=preview.media_type,
+        content=result,
+        media_type="image/jpeg",
         headers={"Cache-Control": "private, max-age=31536000, immutable"},
     )
 
