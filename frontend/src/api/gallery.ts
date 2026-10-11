@@ -24,6 +24,7 @@ export type GalleryExportOptions = {
   tagIds?: number[];
   excludePersonIds?: number[];
   excludeTagIds?: number[];
+  photoId?: number;
 };
 
 export async function listGalleryPhotos(
@@ -32,13 +33,17 @@ export async function listGalleryPhotos(
   excludePersonIds: number[],
   excludeTagIds: number[],
   offset: number,
-  limit: number
+  limit: number,
+  photoId?: number | null
 ): Promise<PaginatedGalleryPhotos> {
   const url = new URL("/api/gallery/photos", window.location.origin);
   personIds.forEach((id) => url.searchParams.append("person_ids", String(id)));
   tagIds.forEach((id) => url.searchParams.append("tag_ids", String(id)));
   excludePersonIds.forEach((id) => url.searchParams.append("exclude_person_ids", String(id)));
   excludeTagIds.forEach((id) => url.searchParams.append("exclude_tag_ids", String(id)));
+  if (photoId != null) {
+    url.searchParams.set("photo_id", String(photoId));
+  }
   url.searchParams.set("offset", String(offset));
   url.searchParams.set("limit", String(limit));
   return parseResponse<PaginatedGalleryPhotos>(await authFetch(url.pathname + url.search));
@@ -151,7 +156,7 @@ export async function addGalleryPhotoTag(photoId: number, payload: { tagId?: num
 export async function deleteGalleryPhotoTag(photoId: number, tagId: number): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/tags/${tagId}`, { method: "DELETE" })); }
 export async function importGalleryPhotos(files: File[], metadata: GalleryUploadMetadata[]): Promise<Task> { const form = new FormData(); files.forEach((file) => form.append("files", file)); form.append("metadata_json", JSON.stringify(metadata)); return parseResponse<Task>(await authFetch("/api/gallery/photos/import", { method: "POST", body: form })); }
 export async function importGalleryRichPhotos(files: File[], metadata: GalleryUploadMetadata[]): Promise<Task> { const form = new FormData(); files.forEach((file) => form.append("files", file)); form.append("metadata_json", JSON.stringify(metadata)); return parseResponse<Task>(await authFetch("/api/gallery/rich-photos/import", { method: "POST", body: form })); }
-export function getGalleryExportUrl(options: GalleryExportOptions): string { const url = new URL("/api/gallery/photos/export", window.location.origin); url.searchParams.set("scope", options.scope); options.personIds?.forEach((id) => url.searchParams.append("person_ids", String(id))); options.tagIds?.forEach((id) => url.searchParams.append("tag_ids", String(id))); options.excludePersonIds?.forEach((id) => url.searchParams.append("exclude_person_ids", String(id))); options.excludeTagIds?.forEach((id) => url.searchParams.append("exclude_tag_ids", String(id))); return withWorkspaceContext(url.pathname + url.search); }
+export function getGalleryExportUrl(options: GalleryExportOptions): string { const url = new URL("/api/gallery/photos/export", window.location.origin); url.searchParams.set("scope", options.scope); options.personIds?.forEach((id) => url.searchParams.append("person_ids", String(id))); options.tagIds?.forEach((id) => url.searchParams.append("tag_ids", String(id))); options.excludePersonIds?.forEach((id) => url.searchParams.append("exclude_person_ids", String(id))); options.excludeTagIds?.forEach((id) => url.searchParams.append("exclude_tag_ids", String(id))); if (options.photoId != null) url.searchParams.set("photo_id", String(options.photoId)); return withWorkspaceContext(url.pathname + url.search); }
 export async function downloadGalleryExport(options: GalleryExportOptions): Promise<{ blob: Blob; filename: string }> {
   const response = await authFetch("/api/gallery/photos/export", {
     method: "POST",
@@ -163,7 +168,8 @@ export async function downloadGalleryExport(options: GalleryExportOptions): Prom
       person_ids: options.personIds ?? [],
       tag_ids: options.tagIds ?? [],
       exclude_person_ids: options.excludePersonIds ?? [],
-      exclude_tag_ids: options.excludeTagIds ?? []
+      exclude_tag_ids: options.excludeTagIds ?? [],
+      photo_id: options.photoId ?? null
     })
   });
   return parseBlobResponse(response, "gallery_export.zip", "导出失败。");

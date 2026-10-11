@@ -5,7 +5,7 @@ from datetime import datetime
 from io import BytesIO
 import json
 import logging
-from typing import Literal
+from typing import Annotated, Literal
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -182,6 +182,12 @@ def _unique_zip_path(path: str, used_paths: set[str]) -> str:
             used_paths.add(candidate)
             return candidate
         counter += 1
+
+
+def _apply_gallery_photo_id(query, photo_id: int | None):
+    if photo_id is None:
+        return query
+    return query.where(GalleryPhoto.id == photo_id)
 
 
 def _apply_gallery_filters(query, person_ids: list[int], tag_ids: list[int], exclude_person_ids: list[int], exclude_tag_ids: list[int]):
@@ -402,6 +408,7 @@ def _resolve_gallery_export_photos(
             payload.exclude_person_ids,
             payload.exclude_tag_ids,
         )
+        filtered_query = _apply_gallery_photo_id(filtered_query, payload.photo_id)
         photos = db.scalars(filtered_query).unique().all()
         if payload.scope == "from_start":
             start_index = next(
@@ -486,6 +493,7 @@ def export_gallery_photos(
     tag_ids: list[int] = Query(default=[]),
     exclude_person_ids: list[int] = Query(default=[]),
     exclude_tag_ids: list[int] = Query(default=[]),
+    photo_id: Annotated[int | None, Query(ge=1)] = None,
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> StreamingResponse:
@@ -495,6 +503,7 @@ def export_gallery_photos(
         tag_ids=tag_ids,
         exclude_person_ids=exclude_person_ids,
         exclude_tag_ids=exclude_tag_ids,
+        photo_id=photo_id,
     )
     photos = _resolve_gallery_export_photos(db, current.workspace_id, payload)
     return _build_gallery_export_response(request, photos, scope)
@@ -891,6 +900,7 @@ def list_gallery_photos(
     tag_ids: list[int] = Query(default=[]),
     exclude_person_ids: list[int] = Query(default=[]),
     exclude_tag_ids: list[int] = Query(default=[]),
+    photo_id: Annotated[int | None, Query(ge=1)] = None,
     offset: int = 0,
     limit: int = 24,
     db: Session = Depends(get_db),
@@ -904,6 +914,8 @@ def list_gallery_photos(
     count_query = select(func.count(GalleryPhoto.id)).where(GalleryPhoto.workspace_id == current.workspace_id)
     query = _apply_gallery_filters(query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
     count_query = _apply_gallery_filters(count_query, person_ids, tag_ids, exclude_person_ids, exclude_tag_ids)
+    query = _apply_gallery_photo_id(query, photo_id)
+    count_query = _apply_gallery_photo_id(count_query, photo_id)
 
     photos = db.scalars(query.offset(offset).limit(limit)).unique().all()
     for photo in photos:

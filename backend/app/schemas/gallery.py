@@ -140,6 +140,7 @@ class GalleryPhotoExportRequest(BaseModel):
     tag_ids: list[int] = Field(default_factory=list)
     exclude_person_ids: list[int] = Field(default_factory=list)
     exclude_tag_ids: list[int] = Field(default_factory=list)
+    photo_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_scope(self) -> "GalleryPhotoExportRequest":
