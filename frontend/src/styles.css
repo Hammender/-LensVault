@@ -1295,17 +1295,25 @@ input:focus, select:focus, textarea:focus {
   font-size: 0.75rem;
   font-weight: 600;
   box-shadow: none;
-  opacity: 0;
-  pointer-events: none;
+  /* 默认常显，保证触控设备可点；细指针+hover 设备再藏到悬停时 */
+  opacity: 1;
+  pointer-events: auto;
   transition: opacity 0.15s ease, background 0.15s ease;
 }
 
-.gallery-masonry .photo-card-wrap:hover .photo-detail-trigger,
-.gallery-masonry .photo-card-wrap.needs-review .photo-detail-trigger,
-.gallery-masonry .photo-card.selected ~ .photo-detail-trigger,
-.gallery-masonry .photo-card-wrap:focus-within .photo-detail-trigger {
-  opacity: 1;
-  pointer-events: auto;
+@media (hover: hover) and (pointer: fine) {
+  .gallery-masonry .photo-detail-trigger {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .gallery-masonry .photo-card-wrap:hover .photo-detail-trigger,
+  .gallery-masonry .photo-card-wrap.needs-review .photo-detail-trigger,
+  .gallery-masonry .photo-card.selected ~ .photo-detail-trigger,
+  .gallery-masonry .photo-card-wrap:focus-within .photo-detail-trigger {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .gallery-masonry .photo-detail-trigger.review {

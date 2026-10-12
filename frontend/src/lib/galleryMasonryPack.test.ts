@@ -4,6 +4,7 @@ import {
   galleryCardNeedsReview,
   galleryPhotoAspectRatio,
   galleryPhotoRelativeHeight,
+  flattenGalleryMasonryVisualOrder,
   packGalleryMasonryPage,
   resolveGalleryColumnCount,
 } from "./galleryMasonryPack";
@@ -51,6 +52,26 @@ describe("展示图瀑布流智能装箱", () => {
       { id: 2, width: 300, height: 600 },
     ];
     expect(packGalleryMasonryPage(page, 1)[0].map((item) => item.id)).toEqual([2, 1]);
+  });
+
+  it("无结果时不生成空列；视觉顺序为列优先展平", () => {
+    expect(packGalleryMasonryPage([], 4)).toEqual([]);
+    const columns = packGalleryMasonryPage(
+      [
+        { id: 1, width: 300, height: 400 },
+        { id: 2, width: 300, height: 500 },
+        { id: 3, width: 300, height: 300 },
+      ],
+      2,
+    );
+    expect(flattenGalleryMasonryVisualOrder(columns)).toEqual(columns.flatMap((col) => col.map((item) => item.id)));
+  });
+
+  it("图文卡相对高度高于同尺寸普通竖图估算，便于装箱", () => {
+    const plain = galleryPhotoRelativeHeight(400, 300, false);
+    const rich = galleryPhotoRelativeHeight(400, 300, true);
+    expect(rich).toBe(1.15);
+    expect(rich).toBeGreaterThan(plain);
   });
 
   it("姓名用间隔号拼接，未知人物触发待复核标记", () => {

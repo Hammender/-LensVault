@@ -11,6 +11,7 @@ import { sortByPinyinName } from "../lib/sort";
 import {
   formatGalleryCardPersonNames,
   galleryCardNeedsReview,
+  flattenGalleryMasonryVisualOrder,
   packGalleryMasonryPage,
   resolveGalleryColumnCount,
 } from "../lib/galleryMasonryPack";
@@ -197,6 +198,10 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
   const galleryMasonryColumns = useMemo(
     () => packGalleryMasonryPage(galleryPhotos, galleryColumnCount),
     [galleryPhotos, galleryColumnCount],
+  );
+  const galleryVisualPageIds = useMemo(
+    () => flattenGalleryMasonryVisualOrder(galleryMasonryColumns),
+    [galleryMasonryColumns],
   );
 
 
@@ -688,7 +693,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
             </div>
 
             <div className="gallery-masonry" ref={galleryGridRef} style={{ ["--gallery-cols" as string]: galleryColumnCount }}>
-              {galleryMasonryColumns.map((column, columnIndex) => (
+              {galleryPhotos.length > 0 && galleryMasonryColumns.map((column, columnIndex) => (
                 <div className="gallery-masonry-column" key={`col-${columnIndex}`}>
                   {column.map((photo) => {
                     const personLabel = formatGalleryCardPersonNames(photo.persons);
@@ -703,7 +708,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                           type="button"
                           className={`photo-card${photo.is_rich_text ? " rich-card" : ""}${selected ? " selected" : ""}`}
                           onClick={(event) => {
-                            handleGalleryCardClick(photo.id, event.shiftKey);
+                            handleGalleryCardClick(photo.id, event.shiftKey, galleryVisualPageIds);
                           }}
                         >
                           {photo.is_rich_text ? (
@@ -759,7 +764,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                               }}
                               onChange={(event) => {
                                 const nativeEvent = event.nativeEvent as MouseEvent;
-                                handleGalleryCheckboxClick(photo.id, Boolean(nativeEvent?.shiftKey));
+                                handleGalleryCheckboxClick(photo.id, Boolean(nativeEvent?.shiftKey), galleryVisualPageIds);
                               }}
                             />
                           </label>
