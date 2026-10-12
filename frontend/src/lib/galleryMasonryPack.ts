@@ -5,6 +5,7 @@
  * 1. 用 width/height 估算每张图在单位列宽下的相对高度 h = 1 / aspectRatio（缺尺寸时按竖图 3:4）；
  *    图文卡（is_rich_text）按约 4:3 预览 + 文案区估为 1.15，贴近 .rich-card-layout 渲染。
  * 2. 先按相对高度降序（同等高度保持原相对次序），减少矮图先入导致的前排空洞。
+ *    再加上卡片下方说明栏（人名 + 详情按钮）的常数高度 GALLERY_CARD_CAPTION_RELATIVE_HEIGHT。
  * 3. 贪心放入当前累计高度最短的一列（shortest-column bin packing）。
  *
  * 不修改服务端排序与分页总数；换页后重新装箱。导出/选择仍按 photo.id。
@@ -39,6 +40,21 @@ export function galleryPhotoRelativeHeight(
   return 1 / galleryPhotoAspectRatio(width, height);
 }
 
+/**
+ * 卡片下方人名/详情说明栏的相对高度（以列宽为 1 计）。
+ * 说明栏约 44px，按常见列宽 ~280px 折算约 0.16；常数偏移即可，多行人名不再细算。
+ */
+export const GALLERY_CARD_CAPTION_RELATIVE_HEIGHT = 0.16;
+
+/** 装箱用的整卡相对高度：图片区 + 说明栏。 */
+export function galleryCardRelativeHeight(
+  width: number | null,
+  height: number | null,
+  isRichText = false,
+): number {
+  return galleryPhotoRelativeHeight(width, height, isRichText) + GALLERY_CARD_CAPTION_RELATIVE_HEIGHT;
+}
+
 export function resolveGalleryColumnCount(containerWidth: number): number {
   if (containerWidth >= 1500) return 5;
   if (containerWidth >= 1180) return 4;
@@ -62,7 +78,7 @@ export function packGalleryMasonryPage<T extends MasonryPackInput>(
     .map((item, index) => ({
       item,
       index,
-      height: galleryPhotoRelativeHeight(item.width, item.height, Boolean(item.is_rich_text)),
+      height: galleryCardRelativeHeight(item.width, item.height, Boolean(item.is_rich_text)),
     }))
     .sort((a, b) => b.height - a.height || a.index - b.index);
 
@@ -90,7 +106,7 @@ export function formatGalleryCardPersonNames(
   persons: readonly { person_name: string }[],
 ): string {
   const names = persons.map((person) => person.person_name.trim()).filter(Boolean);
-  return names.length > 0 ? names.join(" · ") : "未标注人物";
+  return names.length > 0 ? names.join(" · ") : "未识别";
 }
 
 export function galleryCardNeedsReview(

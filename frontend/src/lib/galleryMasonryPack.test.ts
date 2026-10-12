@@ -3,6 +3,7 @@ import {
   formatGalleryCardPersonNames,
   galleryCardNeedsReview,
   galleryPhotoAspectRatio,
+  galleryCardRelativeHeight,
   galleryPhotoRelativeHeight,
   flattenGalleryMasonryVisualOrder,
   packGalleryMasonryPage,
@@ -38,11 +39,11 @@ describe("展示图瀑布流智能装箱", () => {
     expect(ids).toEqual([1, 2, 3, 4, 5, 6]);
 
     const heights = columns.map((col) =>
-      col.reduce((sum, item) => sum + galleryPhotoRelativeHeight(item.width, item.height), 0),
+      col.reduce((sum, item) => sum + galleryCardRelativeHeight(item.width, item.height), 0),
     );
     const spread = Math.max(...heights) - Math.min(...heights);
     // 贪心后各列相对高度差应小于「全部塞进一列」的极端情况
-    const naive = page.reduce((sum, item) => sum + galleryPhotoRelativeHeight(item.width, item.height), 0);
+    const naive = page.reduce((sum, item) => sum + galleryCardRelativeHeight(item.width, item.height), 0);
     expect(spread).toBeLessThan(naive);
   });
 
@@ -76,7 +77,7 @@ describe("展示图瀑布流智能装箱", () => {
 
   it("姓名用间隔号拼接，未知人物触发待复核标记", () => {
     expect(formatGalleryCardPersonNames([{ person_name: "刘亦菲" }, { person_name: "范冰冰" }])).toBe("刘亦菲 · 范冰冰");
-    expect(formatGalleryCardPersonNames([])).toBe("未标注人物");
+    expect(formatGalleryCardPersonNames([])).toBe("未识别");
     expect(galleryCardNeedsReview([{ is_unknown: false }, { is_unknown: true }])).toBe(true);
     expect(galleryCardNeedsReview([{ is_unknown: false }])).toBe(false);
   });

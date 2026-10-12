@@ -698,6 +698,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                   {column.map((photo) => {
                     const personLabel = formatGalleryCardPersonNames(photo.persons);
                     const needsReview = galleryCardNeedsReview(photo.persons);
+                    const hasPersons = photo.persons.some((person) => person.person_name.trim());
                     const selected = selectedGalleryPhotoIds.includes(photo.id);
                     return (
                       <article
@@ -730,25 +731,24 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                               }
                             />
                           )}
-                          <div className="photo-card-caption">
-                            <span className="photo-card-names">{personLabel}</span>
-                            <span className="photo-card-id">#{photo.id}</span>
-                          </div>
                         </button>
-                        <button
-                          type="button"
-                          className={`photo-detail-trigger${needsReview ? " review" : ""}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void openGalleryPhoto(photo.id);
-                          }}
-                          aria-label={needsReview ? `查看并纠正图片 #${photo.id}` : `查看图片 #${photo.id} 的详情`}
-                          title={needsReview ? "详情 · 可能需纠正人物" : "详情"}
-                        >
-                          {needsReview ? <span className="photo-detail-dot" aria-hidden="true" /> : null}
-                          <Info size={15} aria-hidden="true" />
-                          <span>详情</span>
-                        </button>
+                        <div className="photo-card-caption">
+                          <span className={`photo-card-names${hasPersons ? "" : " empty"}`}>{personLabel}</span>
+                            <button
+                              type="button"
+                              className={`photo-detail-trigger${needsReview ? " review" : ""}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void openGalleryPhoto(photo.id);
+                              }}
+                              aria-label={needsReview ? `查看并纠正图片 #${photo.id}` : `查看图片 #${photo.id} 的详情`}
+                              title={needsReview ? "详情 · 可能需纠正人物" : "详情"}
+                            >
+                              {needsReview ? <span className="photo-detail-dot" aria-hidden="true" /> : null}
+                              <Info size={15} aria-hidden="true" />
+                              <span>详情</span>
+                            </button>
+                        </div>
                         {gallerySelectionMode && (
                           <label
                             className="corner-check"

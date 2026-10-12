@@ -1246,44 +1246,40 @@ input:focus, select:focus, textarea:focus {
   background: #ebe4da;
 }
 
+/* 人名说明栏：放在图片下方，不遮挡画面 */
 .gallery-masonry .photo-card-caption {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 1;
-  padding: 28px 12px 11px;
-  background: linear-gradient(180deg, transparent, rgba(28, 18, 12, 0.72));
-  color: #fff;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 4px 2px;
   text-align: left;
-  pointer-events: none;
 }
 
 .gallery-masonry .photo-card-names {
-  display: block;
-  font-size: 0.92rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: 5px;
+  font-size: 0.9rem;
   font-weight: 650;
+  line-height: 1.35;
   letter-spacing: 0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-.gallery-masonry .photo-card-id {
-  display: block;
-  margin-top: 2px;
-  font-size: 0.72rem;
-  color: rgba(255, 255, 255, 0.72);
+.gallery-masonry .photo-card-names.empty {
+  font-weight: 500;
+  color: rgba(53, 37, 29, 0.42);
 }
 
 .gallery-masonry .photo-detail-trigger {
-  top: 10px;
-  right: 10px;
-  bottom: auto;
+  position: static;
+  flex: 0 0 auto;
   width: auto;
   min-width: 0;
-  height: 30px;
+  height: 28px;
   padding: 0 10px;
   border-radius: 999px;
   border: 1px solid rgba(53, 37, 29, 0.14);
@@ -1295,25 +1291,14 @@ input:focus, select:focus, textarea:focus {
   font-size: 0.75rem;
   font-weight: 600;
   box-shadow: none;
-  /* 默认常显，保证触控设备可点；细指针+hover 设备再藏到悬停时 */
   opacity: 1;
   pointer-events: auto;
-  transition: opacity 0.15s ease, background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .gallery-masonry .photo-detail-trigger {
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .gallery-masonry .photo-card-wrap:hover .photo-detail-trigger,
-  .gallery-masonry .photo-card-wrap.needs-review .photo-detail-trigger,
-  .gallery-masonry .photo-card.selected ~ .photo-detail-trigger,
-  .gallery-masonry .photo-card-wrap:focus-within .photo-detail-trigger {
-    opacity: 1;
-    pointer-events: auto;
-  }
+.gallery-masonry .photo-detail-trigger:hover {
+  background: #fff;
+  border-color: rgba(199, 71, 85, 0.32);
 }
 
 .gallery-masonry .photo-detail-trigger.review {
@@ -1344,11 +1329,7 @@ input:focus, select:focus, textarea:focus {
 }
 
 .gallery-masonry .rich-card-copy {
-  padding: 10px 12px 44px;
-}
-
-.gallery-masonry .rich-card .photo-card-caption {
-  background: linear-gradient(180deg, transparent, rgba(28, 18, 12, 0.78));
+  padding: 10px 12px 12px;
 }
 
 /* 灯箱元信息栏略收轻边框 */
