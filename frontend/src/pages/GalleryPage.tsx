@@ -1,4 +1,5 @@
 import { Info, Pin, PinOff, Search, SlidersHorizontal, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import PhotoLightbox from "../components/PhotoLightbox";
 import SearchableSelect from "../components/SearchableSelect";
@@ -7,6 +8,12 @@ import { isGalleryPageSelected } from "../lib/gallerySelection";
 import { filterPersonMatches } from "../lib/personPicker";
 import type { GalleryModel } from "../hooks/useGallery";
 import { sortByPinyinName } from "../lib/sort";
+import {
+  formatGalleryCardPersonNames,
+  galleryCardNeedsReview,
+  packGalleryMasonryPage,
+  resolveGalleryColumnCount,
+} from "../lib/galleryMasonryPack";
 import { formatPhotoDate } from "../lib/utils";
 
 export default function GalleryPage({ model }: { model: GalleryModel }) {
@@ -174,6 +181,25 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
     handleClearPhotoIdSearch
   } = model;
 
+  const galleryGridRef = useRef<HTMLDivElement | null>(null);
+  const [galleryColumnCount, setGalleryColumnCount] = useState(4);
+  useEffect(() => {
+    const node = galleryGridRef.current;
+    if (!node || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const update = () => setGalleryColumnCount(resolveGalleryColumnCount(node.clientWidth));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  const galleryMasonryColumns = useMemo(
+    () => packGalleryMasonryPage(galleryPhotos, galleryColumnCount),
+    [galleryPhotos, galleryColumnCount],
+  );
+
+
   return (
     <>
       <main className={`page-grid gallery-page${galleryDetailPinned && galleryDrawer === "detail" ? " detail-pinned" : ""}`}>
@@ -183,11 +209,11 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
           >
             <div className="gallery-filter-bar-head">
               <div>
-                <p className="eyebrow">筛选器</p>
-                <h2 id="gallery-filter-title">人物 + 自定义标签</h2>
+                <p className="eyebrow">筛选</p>
+                <h2 id="gallery-filter-title">找人 · 编号</h2>
               </div>
               <div className="gallery-filter-bar-actions">
-                <span>组内 OR，组间 AND</span>
+                <span className="gallery-filter-hint">可多选</span>
                 <div className="gallery-photo-id-search-wrap">
                   <label className={`gallery-photo-id-search${photoIdSearchHint ? " invalid" : ""}`}>
                     <Search size={16} aria-hidden="true" />
@@ -599,7 +625,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
             <div className="section-head">
               <div>
                 <p className="eyebrow">展示图库</p>
-                <h2>按条件浏览图片</h2>
+                <h2>写真浏览</h2>
               </div>
               <div className="micro-row section-actions">
                 <span>{galleryTotal} 张结果</span>
@@ -661,98 +687,89 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
               </div>
             </div>
 
-            <div className="gallery-grid">
-              {galleryPhotos.map((photo) => {
-                const isLandscape = photo.width && photo.height && photo.width / photo.height > 1.15;
-                const wrapClass = photo.is_rich_text
-                  ? "photo-card-wrap rich-card-wrap"
-                  : `photo-card-wrap ${isLandscape ? "span-2" : ""}`;
-
-                return (
-                  <article key={photo.id} className={wrapClass}>
-                    <button
-                      className={`${photo.is_rich_text ? "photo-card rich-card" : "photo-card"}${selectedGalleryPhotoIds.includes(photo.id) ? " selected" : ""}`}
-                      onClick={(event) => {
-                        handleGalleryCardClick(photo.id, event.shiftKey);
-                      }}
-                    >
-                    {photo.is_rich_text ? (
-                      <div className="rich-card-layout">
-                        <img src={photo.animated_thumbnail_url} alt="图库预览" loading="lazy" />
-                        <div className="rich-card-copy">
-                          <p className="rich-snippet">{photo.rich_text || "未识别到文本，可在详情里手动补录。"}</p>
-                          <div className="micro-row">
-                            {photo.persons.map((person) => (
-                              <small key={`${photo.id}-p-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
-                                {person.person_name}
-                              </small>
-                            ))}
+            <div className="gallery-masonry" ref={galleryGridRef} style={{ ["--gallery-cols" as string]: galleryColumnCount }}>
+              {galleryMasonryColumns.map((column, columnIndex) => (
+                <div className="gallery-masonry-column" key={`col-${columnIndex}`}>
+                  {column.map((photo) => {
+                    const personLabel = formatGalleryCardPersonNames(photo.persons);
+                    const needsReview = galleryCardNeedsReview(photo.persons);
+                    const selected = selectedGalleryPhotoIds.includes(photo.id);
+                    return (
+                      <article
+                        key={photo.id}
+                        className={`photo-card-wrap gallery-masonry-item${photo.is_rich_text ? " rich-card-wrap" : ""}${needsReview ? " needs-review" : ""}`}
+                      >
+                        <button
+                          type="button"
+                          className={`photo-card${photo.is_rich_text ? " rich-card" : ""}${selected ? " selected" : ""}`}
+                          onClick={(event) => {
+                            handleGalleryCardClick(photo.id, event.shiftKey);
+                          }}
+                        >
+                          {photo.is_rich_text ? (
+                            <div className="rich-card-layout">
+                              <img src={photo.animated_thumbnail_url} alt={personLabel} loading="lazy" />
+                              <div className="rich-card-copy">
+                                <p className="rich-snippet">{photo.rich_text || "未识别到文本，可在详情里手动补录。"}</p>
+                              </div>
+                            </div>
+                          ) : (
+                            <img
+                              src={photo.animated_thumbnail_url}
+                              alt={personLabel}
+                              loading="lazy"
+                              style={
+                                photo.width && photo.height && photo.width > 0 && photo.height > 0
+                                  ? { aspectRatio: `${photo.width} / ${photo.height}` }
+                                  : undefined
+                              }
+                            />
+                          )}
+                          <div className="photo-card-caption">
+                            <span className="photo-card-names">{personLabel}</span>
+                            <span className="photo-card-id">#{photo.id}</span>
                           </div>
-                          <div className="micro-row">
-                            {sortByPinyinName(photo.tags).map((tag) => (
-                              <small key={`${photo.id}-t-${tag.id}`} className="pill muted">
-                                #{tag.name}
-                              </small>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <img src={photo.animated_thumbnail_url} alt="图库预览" loading="lazy" />
-                        <div className="photo-meta">
-                          <div className="micro-row">
-                            {photo.persons.map((person) => (
-                              <small key={`${photo.id}-p-${person.person_id}`} className={person.is_unknown ? "pill unknown" : "pill"}>
-                                {person.person_name}
-                              </small>
-                            ))}
-                          </div>
-                          <div className="micro-row">
-                            {sortByPinyinName(photo.tags).map((tag) => (
-                              <small key={`${photo.id}-t-${tag.id}`} className="pill muted">
-                                #{tag.name}
-                              </small>
-                            ))}
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </button>
-                  <button
-                    className="photo-detail-trigger"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void openGalleryPhoto(photo.id);
-                    }}
-                    aria-label={`查看图片 #${photo.id} 的详情`}
-                    title="查看详情"
-                  >
-                    <Info size={17} aria-hidden="true" />
-                  </button>
-                  {gallerySelectionMode && (
-                    <label
-                      className="corner-check"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedGalleryPhotoIds.includes(photo.id)}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                        }}
-                        onChange={(event) => {
-                          const nativeEvent = event.nativeEvent as MouseEvent;
-                          handleGalleryCheckboxClick(photo.id, Boolean(nativeEvent?.shiftKey));
-                        }}
-                      />
-                    </label>
-                  )}
-                </article>
-              );
-            })}
+                        </button>
+                        <button
+                          type="button"
+                          className={`photo-detail-trigger${needsReview ? " review" : ""}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void openGalleryPhoto(photo.id);
+                          }}
+                          aria-label={needsReview ? `查看并纠正图片 #${photo.id}` : `查看图片 #${photo.id} 的详情`}
+                          title={needsReview ? "详情 · 可能需纠正人物" : "详情"}
+                        >
+                          {needsReview ? <span className="photo-detail-dot" aria-hidden="true" /> : null}
+                          <Info size={15} aria-hidden="true" />
+                          <span>详情</span>
+                        </button>
+                        {gallerySelectionMode && (
+                          <label
+                            className="corner-check"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                              }}
+                              onChange={(event) => {
+                                const nativeEvent = event.nativeEvent as MouseEvent;
+                                handleGalleryCheckboxClick(photo.id, Boolean(nativeEvent?.shiftKey));
+                              }}
+                            />
+                          </label>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
               {galleryPhotos.length === 0 && activePhotoIdSearch != null && (
                 <div className="empty-card gallery-photo-id-empty">
                   <span>未找到编号为 #{activePhotoIdSearch} 的图片</span>
@@ -762,8 +779,9 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                   </button>
                 </div>
               )}
-              {galleryPhotos.length === 0 && activePhotoIdSearch == null && <div className="empty-card">当前筛选条件下没有展示图。</div>}
-            </div>
+              {galleryPhotos.length === 0 && activePhotoIdSearch == null && (
+                <div className="empty-card">当前筛选条件下没有展示图。</div>
+              )}
 
             <div className="pagination-row">
               <button disabled={galleryOffset === 0 || busy} onClick={() => void refreshGallery(Math.max(0, galleryOffset - galleryPageSize))}>

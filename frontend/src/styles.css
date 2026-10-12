@@ -358,6 +358,15 @@ input:focus, select:focus, textarea:focus {
 
 .gallery-panel {
   grid-column: 1;
+  border-width: 1px;
+  border-color: rgba(53, 37, 29, 0.12);
+  box-shadow: 0 10px 28px rgba(60, 40, 20, 0.06);
+  padding: 22px 22px 24px;
+}
+
+.gallery-page .gallery-filter-bar.panel {
+  border-width: 1px;
+  border-color: rgba(53, 37, 29, 0.12);
 }
 
 .people-page { grid-template-columns: 320px minmax(0, 1fr); }
@@ -662,7 +671,9 @@ input:focus, select:focus, textarea:focus {
 
 .gallery-filter-bar {
   grid-column: 1 / -1;
-  padding: 24px 28px;
+  padding: 16px 20px 14px;
+  border-width: 1px;
+  box-shadow: 0 10px 28px rgba(60, 40, 20, 0.06);
 }
 
 .gallery-filter-bar-head,
@@ -674,12 +685,18 @@ input:focus, select:focus, textarea:focus {
 
 .gallery-filter-bar-head {
   justify-content: space-between;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(53, 37, 29, 0.1);
 }
 
 .gallery-filter-bar-head h2 {
-  font-size: 1.7rem;
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+
+.gallery-filter-hint {
+  color: var(--muted);
+  font-size: .85rem;
 }
 
 .gallery-filter-bar-actions {
@@ -1174,6 +1191,169 @@ input:focus, select:focus, textarea:focus {
 .gallery-grid {
   grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
 }
+
+/* 展示图库：瀑布流智能装箱布局 */
+.gallery-masonry {
+  --gallery-cols: 4;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+}
+
+.gallery-masonry-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.gallery-masonry-item {
+  width: 100%;
+}
+
+.gallery-panel .section-head h2 {
+  font-size: 1.45rem;
+}
+
+.gallery-masonry .photo-card-wrap {
+  gap: 0;
+}
+
+.gallery-masonry .photo-card {
+  position: relative;
+  border-width: 1px;
+  border-color: rgba(53, 37, 29, 0.1);
+  box-shadow: 0 8px 20px rgba(60, 40, 20, 0.07);
+  background: #fff;
+  height: auto;
+}
+
+.gallery-masonry .photo-card:hover {
+  border-color: rgba(199, 71, 85, 0.28);
+  box-shadow: 0 14px 28px rgba(60, 40, 20, 0.12);
+}
+
+.gallery-masonry .photo-card.selected {
+  border-color: rgba(199, 71, 85, 0.5);
+  box-shadow: 0 0 0 1px rgba(199, 71, 85, 0.28), 0 14px 28px rgba(60, 40, 20, 0.1);
+}
+
+.gallery-masonry .photo-card > img {
+  aspect-ratio: 3 / 4;
+  border-bottom: none;
+  background: #ebe4da;
+}
+
+.gallery-masonry .photo-card-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  padding: 28px 12px 11px;
+  background: linear-gradient(180deg, transparent, rgba(28, 18, 12, 0.72));
+  color: #fff;
+  text-align: left;
+  pointer-events: none;
+}
+
+.gallery-masonry .photo-card-names {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+}
+
+.gallery-masonry .photo-card-id {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.gallery-masonry .photo-detail-trigger {
+  top: 10px;
+  right: 10px;
+  bottom: auto;
+  width: auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(53, 37, 29, 0.14);
+  background: rgba(255, 252, 247, 0.92);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.gallery-masonry .photo-card-wrap:hover .photo-detail-trigger,
+.gallery-masonry .photo-card-wrap.needs-review .photo-detail-trigger,
+.gallery-masonry .photo-card.selected ~ .photo-detail-trigger,
+.gallery-masonry .photo-card-wrap:focus-within .photo-detail-trigger {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.gallery-masonry .photo-detail-trigger.review {
+  background: rgba(181, 71, 58, 0.12);
+  border-color: rgba(181, 71, 58, 0.35);
+  color: #8a2f28;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.gallery-masonry .photo-detail-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #b5473a;
+  box-shadow: 0 0 6px rgba(181, 71, 58, 0.45);
+}
+
+.gallery-masonry .rich-card-layout {
+  min-height: 220px;
+  grid-template-columns: 1fr;
+}
+
+.gallery-masonry .rich-card-layout img {
+  aspect-ratio: 4 / 3;
+  border-right: none;
+  max-height: 220px;
+}
+
+.gallery-masonry .rich-card-copy {
+  padding: 10px 12px 44px;
+}
+
+.gallery-masonry .rich-card .photo-card-caption {
+  background: linear-gradient(180deg, transparent, rgba(28, 18, 12, 0.78));
+}
+
+/* 灯箱元信息栏略收轻边框 */
+.gallery-lightbox.lightbox-shell {
+  border-width: 1px;
+  box-shadow: 0 24px 60px rgba(40, 28, 18, 0.28);
+}
+
+.gallery-lightbox .lightbox-meta-rail {
+  border-left: 1px solid rgba(53, 37, 29, 0.12);
+  background: rgba(255, 253, 249, 0.96);
+}
+
 
 @media (min-width: 1800px) {
   .gallery-panel {
@@ -5581,4 +5761,29 @@ time {
   width: 16px;
   height: 16px;
   margin: 0;
+}
+
+
+.gallery-filter-results .soft-chip {
+  padding: 8px 14px;
+  font-size: 0.92rem;
+  border-radius: 999px;
+  border-width: 1px;
+  box-shadow: none;
+}
+
+.gallery-filter-results .soft-chip.active {
+  background: rgba(199, 71, 85, 0.12);
+  border-color: rgba(199, 71, 85, 0.35);
+  color: #8f2f3b;
+  box-shadow: none;
+}
+
+@media (max-width: 900px) {
+  .gallery-masonry {
+    gap: 10px;
+  }
+  .gallery-masonry-column {
+    gap: 10px;
+  }
 }
