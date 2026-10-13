@@ -1364,6 +1364,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
       {lightboxPhoto && (
         <PhotoLightbox
           image={{ src: lightboxPhoto.original_url, alt: lightboxPhoto.is_rich_text ? "图文大图预览" : "大图预览" }}
+          backdropClassName="gallery-lightbox-backdrop"
           shellClassName={`gallery-lightbox${lightboxPhoto.is_rich_text ? " rich-lightbox" : ""}`}
           meta={lightboxMeta}
           busy={busy}
