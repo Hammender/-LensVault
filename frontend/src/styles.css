@@ -1332,10 +1332,27 @@ input:focus, select:focus, textarea:focus {
   padding: 10px 12px 12px;
 }
 
-/* 灯箱外壳与元信息栏略收轻边框 */
+/* 图库灯箱：深色看图外壳 + 浅色信息栏 */
 .gallery-lightbox.lightbox-shell {
   border-width: 1px;
-  box-shadow: 0 24px 60px rgba(40, 28, 18, 0.28);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #0b0b0d;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
+}
+
+.gallery-lightbox-backdrop .lightbox-image-stage,
+.gallery-lightbox-backdrop .rich-lightbox-image-wrap {
+  background: #0b0b0d;
+}
+
+.gallery-lightbox-backdrop .lightbox-image-message {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.gallery-lightbox-backdrop .rich-lightbox-copy {
+  background: rgba(255, 253, 249, 0.98);
+  border-left-color: rgba(53, 37, 29, 0.12);
+  color: var(--text);
 }
 
 .gallery-lightbox-backdrop .lightbox-meta-rail {
@@ -3292,9 +3309,9 @@ input:focus, select:focus, textarea:focus {
   flex-direction: row;
   align-items: stretch;
   gap: 16px;
-  width: min(100%, calc(100vw - 48px));
-  height: min(94vh, 1080px);
-  max-width: calc(100vw - 48px);
+  width: min(100%, calc(100vw - 72px));
+  height: min(88vh, 1000px);
+  max-width: calc(100vw - 72px);
 }
 
 .lightbox-shell {
@@ -3680,6 +3697,8 @@ input:focus, select:focus, textarea:focus {
   max-height: none;
   margin-right: 0;
   align-self: stretch;
+  background: #0b0b0d;
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .gallery-lightbox-backdrop .lightbox-meta-rail {
@@ -3698,14 +3717,29 @@ input:focus, select:focus, textarea:focus {
   align-self: stretch;
   align-content: start;
   border-radius: 8px;
+  background: rgba(255, 253, 249, 0.96);
+  color: var(--text);
+}
+
+.gallery-lightbox-backdrop .lightbox-close {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.gallery-lightbox-backdrop .lightbox-close:hover:not(:disabled),
+.gallery-lightbox-backdrop .lightbox-close:focus-visible:not(:disabled) {
+  background: rgba(255, 255, 255, 0.28);
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
 }
 
 .gallery-lightbox-backdrop .lightbox-arrow {
   min-width: 48px;
   height: 48px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(12, 12, 14, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.14);
   color: #fff;
   box-shadow: none;
   backdrop-filter: blur(8px);
@@ -3714,15 +3748,15 @@ input:focus, select:focus, textarea:focus {
 .gallery-lightbox-backdrop .lightbox-arrow:hover:not(:disabled),
 .gallery-lightbox-backdrop .lightbox-arrow:active:not(:disabled),
 .gallery-lightbox-backdrop .lightbox-arrow:focus-visible {
-  background: rgba(12, 12, 14, 0.72);
-  border-color: rgba(255, 255, 255, 0.34);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+  background: rgba(255, 255, 255, 0.28);
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
   transform: translateY(-50%);
 }
 
 .gallery-lightbox-backdrop .lightbox-arrow:disabled {
   opacity: 0.28;
-  background: rgba(12, 12, 14, 0.28);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 @media (max-width: 1900px) {
