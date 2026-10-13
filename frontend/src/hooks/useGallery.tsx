@@ -923,8 +923,9 @@ export function useGallery({
     });
   }
 
-  function handleGalleryCardClick(photoId: number, shiftKey: boolean) {
-    const pageIds = galleryPhotos.map((photo) => photo.id);
+  function handleGalleryCardClick(photoId: number, shiftKey: boolean, visualPageIds?: number[]) {
+    // Shift 范围按瀑布流视觉顺序；未传入时回退接口顺序。灯箱翻页仍用 galleryPhotos（接口序）。
+    const pageIds = visualPageIds ?? galleryPhotos.map((photo) => photo.id);
     if (shiftKey) {
       if (!gallerySelectionMode) {
         setGallerySelectionMode(true);
@@ -945,8 +946,8 @@ export function useGallery({
     openGalleryLightbox(photoId);
   }
 
-  function handleGalleryCheckboxClick(photoId: number, shiftKey: boolean) {
-    const pageIds = galleryPhotos.map((photo) => photo.id);
+  function handleGalleryCheckboxClick(photoId: number, shiftKey: boolean, visualPageIds?: number[]) {
+    const pageIds = visualPageIds ?? galleryPhotos.map((photo) => photo.id);
     if (shiftKey) {
       if (!gallerySelectionMode) {
         setGallerySelectionMode(true);
@@ -1078,6 +1079,7 @@ export function useGallery({
 
   const matchingTagsForPhoto = filterTagMatches(availableTagsForPhoto, manualTagSearch);
 
+  // 灯箱左右翻页仍跟随接口返回的 galleryPhotos 顺序，不跟随瀑布流装箱后的视觉顺序。
   const lightboxIndex = lightboxPhotoId === null ? -1 : galleryPhotos.findIndex((photo) => photo.id === lightboxPhotoId);
   const lightboxPhoto = lightboxIndex >= 0 ? galleryPhotos[lightboxIndex] : null;
 

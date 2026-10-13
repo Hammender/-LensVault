@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { isTextEditingTarget } from "../lib/utils";
@@ -136,6 +137,31 @@ export default function PhotoLightbox({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [busy, canGoNext, canGoPrevious, image, keyboardEnabled, ignoreInteractiveTargets, onClose, onCustomKeyDown, onNext, onPrevious]);
 
+  const previousButton = (
+    <button
+      type="button"
+      className="lightbox-arrow left"
+      disabled={!canGoPrevious || busy}
+      onClick={() => void onPrevious()}
+      onPointerDown={(event) => event.stopPropagation()}
+      aria-label={previousLabel || "上一张"}
+    >
+      ‹ {previousLabel && <span>{previousLabel}</span>}
+    </button>
+  );
+  const nextButton = (
+    <button
+      type="button"
+      className="lightbox-arrow right"
+      disabled={!canGoNext || busy}
+      onClick={() => void onNext()}
+      onPointerDown={(event) => event.stopPropagation()}
+      aria-label={nextLabel || "下一张"}
+    >
+      {nextLabel && <span>{nextLabel}</span>} ›
+    </button>
+  );
+
   const imageNode = image ? (
     <div
       ref={imageStageRef}
@@ -152,6 +178,7 @@ export default function PhotoLightbox({
       onPointerUp={() => { dragRef.current = null; }}
       onPointerCancel={() => { dragRef.current = null; }}
     >
+      {previousButton}
       {!loadedImage && !imageFailed && <span className="lightbox-image-message">正在加载原图…</span>}
       {imageFailed && <span className="lightbox-image-message" role="alert">原图加载失败，请重试</span>}
       <img
@@ -170,57 +197,48 @@ export default function PhotoLightbox({
         }}
         onError={() => { setImageSize(null); setImageFailed(true); }}
       />
+      {nextButton}
     </div>
   ) : null;
 
   return (
     <div className={`lightbox-backdrop ${backdropClassName}`.trim()} onClick={onClose} role="presentation">
-      <div
-        ref={shellRef}
-        className={`lightbox-shell ${shellClassName}`.trim()}
-        onClick={(event) => event.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={ariaLabel}
-        tabIndex={-1}
-      >
-        <button className="lightbox-close" onClick={onClose}>关闭</button>
-        <button
-          className="lightbox-arrow left"
-          disabled={!canGoPrevious || busy}
-          onClick={() => void onPrevious()}
-          aria-label={previousLabel || "上一张"}
+      <div className="lightbox-frame">
+        <div
+          ref={shellRef}
+          className={`lightbox-shell ${shellClassName}`.trim()}
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-label={ariaLabel}
+          tabIndex={-1}
         >
-          ‹ {previousLabel && <span>{previousLabel}</span>}
-        </button>
-        {image ? typeof children === "function" ? children(imageNode) : imageNode : typeof children === "function" ? null : children}
-        <button
-          className="lightbox-arrow right"
-          disabled={!canGoNext || busy}
-          onClick={() => void onNext()}
-          aria-label={nextLabel || "下一张"}
-        >
-          {nextLabel && <span>{nextLabel}</span>} ›
-        </button>
+          <button type="button" className="lightbox-close" onClick={onClose} aria-label="关闭">
+            <X size={20} strokeWidth={2.25} aria-hidden="true" />
+          </button>
+          {!image && previousButton}
+          {image ? typeof children === "function" ? children(imageNode) : imageNode : typeof children === "function" ? null : children}
+          {!image && nextButton}
+        </div>
+        {(meta || image) && (
+          <aside className={`lightbox-meta-rail${image ? " has-image-controls" : ""}`} onClick={(event) => event.stopPropagation()}>
+            {image ? <div className="lightbox-meta-content">{meta}</div> : meta}
+            {image && <div className="lightbox-image-controls" role="group" aria-label="图片查看方式">
+              <span>原图 {loadedImage ? `${loadedImage.width} × ${loadedImage.height}` : imageFailed ? "加载失败" : "加载中"}</span>
+              <div className="lightbox-image-mode-buttons">
+                <button type="button" aria-pressed={mode === "fit"} disabled={!loadedImage} onClick={() => { setMode("fit"); setPan({ x: 0, y: 0 }); }}>适应窗口</button>
+                <button type="button" aria-pressed={mode === "actual"} disabled={!loadedImage} onClick={() => { setMode("actual"); setPan({ x: 0, y: 0 }); }}>原尺寸</button>
+              </div>
+              <div className="lightbox-image-zoom-buttons">
+                <button type="button" aria-label="缩小图片" disabled={!loadedImage} onClick={() => zoom(0.8)}>−</button>
+                <output aria-label="图片缩放比例">{loadedImage ? `${Math.round(scale * 100)}%` : "—"}</output>
+                <button type="button" aria-label="放大图片" disabled={!loadedImage} onClick={() => zoom(1.25)}>＋</button>
+              </div>
+              <small>按 O 切换适应窗口与原尺寸</small>
+            </div>}
+          </aside>
+        )}
       </div>
-      {(meta || image) && (
-        <aside className={`lightbox-meta-rail${image ? " has-image-controls" : ""}`} onClick={(event) => event.stopPropagation()}>
-          {image ? <div className="lightbox-meta-content">{meta}</div> : meta}
-          {image && <div className="lightbox-image-controls" role="group" aria-label="图片查看方式">
-            <span>原图 {loadedImage ? `${loadedImage.width} × ${loadedImage.height}` : imageFailed ? "加载失败" : "加载中"}</span>
-            <div className="lightbox-image-mode-buttons">
-              <button type="button" aria-pressed={mode === "fit"} disabled={!loadedImage} onClick={() => { setMode("fit"); setPan({ x: 0, y: 0 }); }}>适应窗口</button>
-              <button type="button" aria-pressed={mode === "actual"} disabled={!loadedImage} onClick={() => { setMode("actual"); setPan({ x: 0, y: 0 }); }}>原尺寸</button>
-            </div>
-            <div className="lightbox-image-zoom-buttons">
-              <button type="button" aria-label="缩小图片" disabled={!loadedImage} onClick={() => zoom(0.8)}>−</button>
-              <output aria-label="图片缩放比例">{loadedImage ? `${Math.round(scale * 100)}%` : "—"}</output>
-              <button type="button" aria-label="放大图片" disabled={!loadedImage} onClick={() => zoom(1.25)}>＋</button>
-            </div>
-            <small>按 O 切换适应窗口与原尺寸</small>
-          </div>}
-        </aside>
-      )}
     </div>
   );
 }
