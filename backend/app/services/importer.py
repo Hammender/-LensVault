@@ -32,6 +32,12 @@ logger.setLevel(logging.INFO)
 _RECOGNITION_NOT_PRECOMPUTED = object()
 
 
+def _open_zip(source: bytes | Path) -> ZipFile:
+    if isinstance(source, (bytes, bytearray)):
+        return ZipFile(BytesIO(source))
+    return ZipFile(Path(source))
+
+
 @dataclass
 class GalleryImportSummary:
     known_matches: int = 0
@@ -188,12 +194,12 @@ class PictureService:
             return selected_plan("primary", plan, reason="accepted_match")
         if not self.settings.face_rotation_fallback_enabled:
             return selected_plan("primary", plan, reason="fallback_disabled")
-        fallback = getattr(self.face_service, "detect_faces_with_rotation_fallback", None)
+        fallback = getattr(self.face_service, "detect_rotations", None)
         if not callable(fallback):
             return selected_plan("primary", plan, reason="fallback_unavailable")
         logger.info("Rotation fallback triggered reason=has_rejected_face faces=%d", len(plan))
         if image_bgr is not None:
-            fallback_bgr = getattr(self.face_service, "detect_faces_with_rotation_fallback_bgr", None)
+            fallback_bgr = getattr(self.face_service, "detect_rotations_bgr", None)
             fallback_faces = fallback_bgr(image_bgr) if callable(fallback_bgr) else fallback(payload)
         else:
             fallback_faces = fallback(payload)
@@ -827,6 +833,8 @@ class PictureService:
                 existing.id,
             )
             return existing, summary
+        if db.in_transaction():
+            db.commit()
 
         width, height, taken_at, image_bgr = prepared_image or self.prepare_gallery_image(payload)
         if recognition_plan is _RECOGNITION_NOT_PRECOMPUTED:
@@ -838,11 +846,17 @@ class PictureService:
         extracted_text = None
         if is_rich_text and not (rich_text and rich_text.strip()):
             extracted_text = self.ocr_service.extract_text(payload)
+        if db.in_transaction():
+            db.commit()
         object_key = self._build_object_key(workspace_id, "gallery", filename)
-        if source_object_key:
-            self.storage.copy_object(object_key, source_object_key)
-        else:
-            self.storage.put_bytes(object_key, payload, content_type)
+        try:
+            if source_object_key:
+                self.storage.copy_object(object_key, source_object_key)
+            else:
+                self.storage.put_bytes(object_key, payload, content_type)
+        except Exception:
+            self.storage.remove_object(object_key)
+            raise
         logger.debug(
             "Stored gallery object filename=%s object_key=%s size=%sx%s",
             filename,
@@ -891,8 +905,12 @@ class PictureService:
         if tag_names:
             logger.info("Gallery manual tags applied photo_id=%s tags=%d", photo.id, len(tag_names))
 
-        if recognition_plan is None:
+        try:
             db.commit()
+        except Exception:
+            self.storage.remove_object(object_key)
+            raise
+        if recognition_plan is None:
             db.refresh(photo)
             return photo, summary
         logger.info(
@@ -1699,11 +1717,11 @@ class PictureService:
         }
         return photo
 
-    def import_persons_from_zip(self, db: Session, zip_bytes: bytes, workspace_id: int | None, progress_callback=None) -> dict:
-        logger.info("Start person import from zip bytes=%d", len(zip_bytes))
+    def import_persons_from_zip(self, db: Session, zip_source: bytes | Path, workspace_id: int | None, progress_callback=None) -> dict:
+        logger.info("Start person import from zip source=%s", type(zip_source).__name__)
         result = {"created_persons": 0, "existing_persons": 0, "added_samples": 0, "skipped_samples": 0, "tags_added": 0}
 
-        with ZipFile(BytesIO(zip_bytes)) as zf:
+        with _open_zip(zip_source) as zf:
             manifest = json.loads(zf.read("metadata.json"))
             total_persons = len(manifest.get("persons", []))
             total_samples = sum(len(p.get("samples", [])) for p in manifest.get("persons", []))
@@ -1878,8 +1896,8 @@ class PictureService:
         )
         return result
 
-    def import_gallery_from_zip(self, db: Session, zip_bytes: bytes, workspace_id: int | None, progress_callback=None) -> dict:
-        logger.info("Start gallery import from zip bytes=%d", len(zip_bytes))
+    def import_gallery_from_zip(self, db: Session, zip_source: bytes | Path, workspace_id: int | None, progress_callback=None) -> dict:
+        logger.info("Start gallery import from zip source=%s", type(zip_source).__name__)
         result = {
             "added_photos": 0,
             "updated_existing": 0,
@@ -1888,7 +1906,7 @@ class PictureService:
             "persons_added": 0,
         }
 
-        with ZipFile(BytesIO(zip_bytes)) as zf:
+        with _open_zip(zip_source) as zf:
             try:
                 manifest = json.loads(zf.read("metadata.json"))
             except KeyError as exc:

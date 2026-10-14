@@ -256,6 +256,7 @@ class SubtitleService:
                 except Exception:
                     logger.exception("Failed to update subtitle task after generation error task_id=%s", task_id)
         finally:
+            self._unload_asr_model_if_configured()
             if task_id:
                 self._clear_cancel_event(task_id)
             db.close()

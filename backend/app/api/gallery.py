@@ -5,6 +5,9 @@ from datetime import datetime
 from io import BytesIO
 import json
 import logging
+import os
+import tempfile
+from pathlib import Path
 from typing import Annotated, Literal
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -62,6 +65,7 @@ from app.services.similarity import (
 )
 from app.services.tasks import create_task
 from app.services.preview_runtime import preview_runtime, put_preview_if_source_exists
+from app.services.import_spool import spool_upload
 from app.services.thumbnails import gallery_preview_cache_key, normalize_preview_edge, render_gallery_static_thumbnail, render_gallery_thumbnail
 
 _services_context: ContextVar[object] = ContextVar("gallery_services")
@@ -345,8 +349,11 @@ async def import_gallery_photos(
 ) -> TaskRead:
     metadata = _parse_gallery_metadata(metadata_json, len(files))
     _validate_gallery_person_ids(db, metadata, current.workspace_id)
-    uploads = [(file.filename, await file.read(), file.content_type) for file in files]
-    task = create_task(db, "gallery_import", f"已排队 {len(uploads)} 张普通图片", current.workspace_id)
+    task = create_task(db, "gallery_import", f"已排队 {len(files)} 张普通图片", current.workspace_id)
+    uploads = [
+        (file.filename, await spool_upload(request.app.state.settings, task.id, index, file), file.content_type)
+        for index, file in enumerate(files)
+    ]
     logger.info("Gallery import enqueued task_id=%s files=%d metadata_items=%d rich_mode=false", task.id, len(uploads), len(metadata))
     background_tasks.add_task(
         process_gallery_import_task,
@@ -372,8 +379,11 @@ async def import_gallery_rich_photos(
 ) -> TaskRead:
     metadata = _parse_gallery_metadata(metadata_json, len(files))
     _validate_gallery_person_ids(db, metadata, current.workspace_id)
-    uploads = [(file.filename, await file.read(), file.content_type) for file in files]
-    task = create_task(db, "gallery_rich_import", f"已排队 {len(uploads)} 张图文图片", current.workspace_id)
+    task = create_task(db, "gallery_rich_import", f"已排队 {len(files)} 张图文图片", current.workspace_id)
+    uploads = [
+        (file.filename, await spool_upload(request.app.state.settings, task.id, index, file), file.content_type)
+        for index, file in enumerate(files)
+    ]
     logger.info("Gallery rich import enqueued task_id=%s files=%d metadata_items=%d rich_mode=true", task.id, len(uploads), len(metadata))
     background_tasks.add_task(
         process_gallery_import_task,
@@ -443,48 +453,75 @@ def _build_gallery_export_response(
 
     manifest_photos: list[dict] = []
     used_paths: set[str] = set()
-    buffer = BytesIO()
     storage = request.app.state.services.storage
-    with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
-        for display_index, photo in enumerate(photos):
-            image_bytes = storage.get_bytes(photo.object_key)
-            normal_tags = sorted({link.tag.name for link in photo.tags if not link.tag.is_system})
-            folder_names = normal_tags or ["_未分类"]
-            filename = _safe_zip_name(f"{photo.id}_{photo.filename}", f"{photo.id}_photo")
-            zip_paths: list[str] = []
-            for tag_name in folder_names:
-                zip_path = _unique_zip_path(f"gallery/by_tag/{_safe_zip_name(tag_name, '_未分类')}/{filename}", used_paths)
-                archive.writestr(zip_path, image_bytes)
-                zip_paths.append(zip_path)
-            manifest_photos.append(
-                {
-                    "id": photo.id,
-                    "display_index": display_index,
-                    "filename": photo.filename,
-                    "sha256": photo.sha256,
-                    "content_type": photo.content_type,
-                    "width": photo.width,
-                    "height": photo.height,
-                    "taken_at": photo.taken_at.isoformat() if photo.taken_at else None,
-                    "is_rich_text": photo.is_rich_text,
-                    "rich_text": photo.rich_text,
-                    "ocr_status": photo.ocr_status,
-                    "tags": normal_tags,
-                    "persons": [
-                        {"name": item.person.name, "display_name": item.person.display_name, "is_unknown": item.person.is_unknown, "source": item.source}
-                        for item in sorted(photo.person_tags, key=lambda item: (item.person.is_unknown, item.person.display_name.lower()))
-                    ],
-                    "paths": zip_paths,
-                }
-            )
-        archive.writestr(
-            "metadata.json",
-            json.dumps({"version": 2, "kind": "gallery_export", "scope": scope, "exported_at": shanghai_isoformat(shanghai_now()), "photos": manifest_photos}, ensure_ascii=False, indent=2),
-        )
+    settings = getattr(request.app.state, "settings", None)
+    data_dir = getattr(settings, "data_dir", None)
+    temp_root = Path(data_dir) / "tmp" / "exports" if data_dir else Path(tempfile.gettempdir()) / "pictureshow-exports"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    temp_fd, temp_name = tempfile.mkstemp(prefix="gallery-export-", suffix=".zip", dir=temp_root)
+    os.close(temp_fd)
+    archive_path = Path(temp_name)
 
-    buffer.seek(0)
+    def write_object(archive: ZipFile, zip_path: str, object_key: str) -> None:
+        response = storage.get_stream(object_key)
+        try:
+            with archive.open(zip_path, "w") as target:
+                while chunk := response.read(1024 * 1024):
+                    target.write(chunk)
+        finally:
+            response.close()
+            response.release_conn()
+
+    try:
+        with ZipFile(archive_path, "w", ZIP_DEFLATED, allowZip64=True) as archive:
+            for display_index, photo in enumerate(photos):
+                normal_tags = sorted({link.tag.name for link in photo.tags if not link.tag.is_system})
+                folder_names = normal_tags or ["_未分类"]
+                filename = _safe_zip_name(f"{photo.id}_{photo.filename}", f"{photo.id}_photo")
+                zip_paths: list[str] = []
+                for tag_name in folder_names:
+                    zip_path = _unique_zip_path(f"gallery/by_tag/{_safe_zip_name(tag_name, '_未分类')}/{filename}", used_paths)
+                    write_object(archive, zip_path, photo.object_key)
+                    zip_paths.append(zip_path)
+                manifest_photos.append(
+                    {
+                        "id": photo.id,
+                        "display_index": display_index,
+                        "filename": photo.filename,
+                        "sha256": photo.sha256,
+                        "content_type": photo.content_type,
+                        "width": photo.width,
+                        "height": photo.height,
+                        "taken_at": photo.taken_at.isoformat() if photo.taken_at else None,
+                        "is_rich_text": photo.is_rich_text,
+                        "rich_text": photo.rich_text,
+                        "ocr_status": photo.ocr_status,
+                        "tags": normal_tags,
+                        "persons": [
+                            {"name": item.person.name, "display_name": item.person.display_name, "is_unknown": item.person.is_unknown, "source": item.source}
+                            for item in sorted(photo.person_tags, key=lambda item: (item.person.is_unknown, item.person.display_name.lower()))
+                        ],
+                        "paths": zip_paths,
+                    }
+                )
+            archive.writestr(
+                "metadata.json",
+                json.dumps({"version": 2, "kind": "gallery_export", "scope": scope, "exported_at": shanghai_isoformat(shanghai_now()), "photos": manifest_photos}, ensure_ascii=False, indent=2),
+            )
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+
+    def iterate_archive():
+        try:
+            with archive_path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    yield chunk
+        finally:
+            archive_path.unlink(missing_ok=True)
+
     return StreamingResponse(
-        buffer,
+        iterate_archive(),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="gallery_export_{shanghai_now():%Y%m%d_%H%M%S}.zip"'},
     )
@@ -533,15 +570,15 @@ async def import_gallery_export_zip(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
-    zip_bytes = await file.read()
     task = create_task(db, "gallery_zip_import", "已排队展示图 ZIP 导入", current.workspace_id)
-    logger.info("Gallery zip import enqueued task_id=%s bytes=%d", task.id, len(zip_bytes))
+    zip_path = await spool_upload(request.app.state.settings, task.id, 0, file)
+    logger.info("Gallery zip import enqueued task_id=%s path=%s", task.id, zip_path.name)
     background_tasks.add_task(
         process_gallery_zip_import_task,
         request.app.state.session_factory,
         request.app.state.services.pictures,
         task.id,
-        zip_bytes,
+        zip_path,
         current.workspace_id,
     )
     return TaskRead.model_validate(task)

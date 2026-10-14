@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
+import time
+from threading import Lock
 from uuid import uuid4
 
 from sqlalchemy import update
@@ -8,6 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.core.timezones import shanghai_now
 from app.models import Task
+
+_progress_lock = Lock()
+_last_progress_at: dict[str, float] = {}
+_PROGRESS_INTERVAL_SECONDS = 1.0
 
 
 def create_task(db: Session, kind: str, message: str | None = None, workspace_id: int | None = None) -> Task:
@@ -29,6 +36,43 @@ def update_task(db: Session, task_id: str, **changes: object) -> Task:
     db.commit()
     db.refresh(task)
     return task
+
+
+def record_task_progress(
+    session_factory: Callable[[], Session],
+    task_id: str,
+    *,
+    progress: float | None = None,
+    message: str | None = None,
+    status: str | None = None,
+    force: bool = False,
+) -> None:
+    """用独立短事务更新任务进度，避免把扫描自己的事务提前提交。"""
+    terminal = status in {"completed", "failed", "canceled"}
+    now = time.monotonic()
+    if not force and not terminal:
+        with _progress_lock:
+            last = _last_progress_at.get(task_id, 0.0)
+            if now - last < _PROGRESS_INTERVAL_SECONDS:
+                return
+    db = session_factory()
+    try:
+        changes: dict[str, object] = {}
+        if progress is not None:
+            changes["progress"] = progress
+        if message is not None:
+            changes["message"] = message
+        if status is not None:
+            changes["status"] = status
+        if changes:
+            update_task(db, task_id, **changes)
+    finally:
+        db.close()
+    with _progress_lock:
+        if terminal:
+            _last_progress_at.pop(task_id, None)
+        else:
+            _last_progress_at[task_id] = time.monotonic()
 
 
 def fail_incomplete_tasks(

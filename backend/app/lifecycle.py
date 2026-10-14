@@ -16,6 +16,7 @@ from app.models import VideoItem, Workspace
 from app.native_runtime import configure_native_compute_runtime
 from app.services.acquisition_adapters import SCRIPT_REGISTRY
 from app.services.container import ServiceContainer
+from app.services.import_spool import cleanup_stale_imports
 from app.services.tasks import fail_incomplete_tasks
 
 
@@ -123,20 +124,13 @@ def initialize_runtime(
     session_factory: Callable[[], Session],
     logger: logging.Logger,
 ) -> None:
-    logger.info("应用启动：开始检查存储、向量库、人脸识别和 OCR 依赖")
+    logger.info("应用启动：开始检查存储、向量库和人脸识别")
     library_threads = configure_native_compute_runtime(settings.image_compute_library_threads)
     logger.info("原生计算线程已封顶：library_threads=%s", library_threads)
     services.storage.ensure_bucket()
     services.vector_store.ensure_collections()
     services.face.warmup()
-    ocr_status = services.ocr.engine_status()
-    logger.info(
-        "OCR 引擎状态：rapidocr_ready=%s tesseract_ready=%s rapidocr_error=%s tesseract_error=%s",
-        ocr_status["rapidocr_ready"],
-        ocr_status["tesseract_ready"],
-        ocr_status["rapidocr_error"] or "-",
-        ocr_status["tesseract_error"] or "-",
-    )
+    cleanup_stale_imports(settings)
 
     db = session_factory()
     try:

@@ -112,6 +112,9 @@ class FakeExtractor:
         self.batch_sizes.append(len(images))
         return [np.full(768, index + 1, dtype=np.float32) for index in range(len(images))]
 
+    def unload(self) -> None:
+        return None
+
 
 def create_scope(db: Session, photo_count: int = 3) -> tuple[Workspace, Person, list[GalleryPhoto]]:
     workspace = Workspace(name="测试空间")
@@ -280,13 +283,37 @@ def test_candidate_pairs_respect_cross_type_switch(db_session: Session) -> None:
     scanner = GallerySimilarityScanner(FakeStorage({}), FakeVectorStore(), Settings(), FakeExtractor())
     photo_map = {photo.id: photo for photo in photos}
     people = {photo.id: {person.id} for photo in photos}
+    features = {
+        photos[0].id: GallerySimilarityFeature(gallery_photo_id=photos[0].id, phash="0" * 16, dhash="0" * 16, mirror_phash="0" * 16, mirror_dhash="0" * 16),
+        photos[1].id: GallerySimilarityFeature(gallery_photo_id=photos[1].id, phash="0" * 16, dhash="0" * 16, mirror_phash="0" * 16, mirror_dhash="0" * 16),
+        photos[2].id: GallerySimilarityFeature(gallery_photo_id=photos[2].id, phash="f" * 16, dhash="f" * 16, mirror_phash="f" * 16, mirror_dhash="f" * 16),
+    }
 
-    same_type = scanner._candidate_pairs(photo_map, people, include_cross_type=False)
-    cross_type = scanner._candidate_pairs(photo_map, people, include_cross_type=True)
+    same_type = scanner._candidate_pairs(photo_map, people, features, include_cross_type=False)
+    cross_type = scanner._candidate_pairs(photo_map, people, features, include_cross_type=True)
+    features[photos[2].id].phash = "0" * 16
+    features[photos[2].id].dhash = "0" * 16
+    cross_same_hash = scanner._candidate_pairs(photo_map, people, features, include_cross_type=True)
 
     assert same_type[person.id] == {(photos[0].id, photos[1].id)}
-    assert len(cross_type[person.id]) == 3
+    assert cross_type[person.id] == {(photos[0].id, photos[1].id)}
+    assert (photos[0].id, photos[2].id) in cross_same_hash[person.id] or (photos[2].id, photos[0].id) in cross_same_hash[person.id]
     assert workspace.id is not None
+
+
+def test_hash_candidate_radius_keeps_perceptual_promotion_boundary() -> None:
+    left = "0" * 16
+    near = f"{(1 << 23) - 1:016x}"
+    far = f"{(1 << 24) - 1:016x}"
+    assert (int(left, 16) ^ int(near, 16)).bit_count() == 23
+    features = {
+        1: GallerySimilarityFeature(gallery_photo_id=1, phash=left, dhash=left, mirror_phash=left, mirror_dhash=left),
+        2: GallerySimilarityFeature(gallery_photo_id=2, phash=near, dhash=near, mirror_phash=near, mirror_dhash=near),
+    }
+    assert GallerySimilarityScanner._hash_candidate_pairs([1, 2], features, mirrored=False) == {(1, 2)}
+    features[2].phash = far
+    features[2].dhash = far
+    assert GallerySimilarityScanner._hash_candidate_pairs([1, 2], features, mirrored=False) == set()
 
 
 def test_feature_generation_is_batched_and_reuses_qdrant_cache(db_session: Session) -> None:

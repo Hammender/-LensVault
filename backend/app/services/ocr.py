@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from io import BytesIO
+from threading import Lock
 
 import numpy as np
 from PIL import Image
@@ -15,26 +16,38 @@ class OcrService:
     def __init__(self) -> None:
         self._rapid_ocr = None
         self._rapid_ocr_load_err: str | None = None
+        self._rapid_ocr_attempted = False
         self._tesseract_ready = False
+        self._tesseract_checked = False
         self._tesseract_err: str | None = None
-        try:
-            from rapidocr_onnxruntime import RapidOCR  # type: ignore
+        self._load_lock = Lock()
 
-            self._rapid_ocr = RapidOCR()
-            logger.info("OCR engine ready: RapidOCR")
-        except Exception as exc:  # pragma: no cover - optional dependency
-            self._rapid_ocr_load_err = str(exc)
-            logger.warning("RapidOCR unavailable, fallback to pytesseract. reason=%s", exc)
-        try:
-            import pytesseract  # type: ignore
+    def _ensure_engines(self) -> None:
+        if self._rapid_ocr_attempted and self._tesseract_checked:
+            return
+        with self._load_lock:
+            if not self._rapid_ocr_attempted:
+                try:
+                    from rapidocr_onnxruntime import RapidOCR  # type: ignore
 
-            _ = pytesseract.get_tesseract_version()
-            self._tesseract_ready = True
-            logger.info("OCR engine ready: Tesseract")
-        except Exception as exc:  # pragma: no cover - optional dependency
-            self._tesseract_ready = False
-            self._tesseract_err = str(exc)
-            logger.warning("Tesseract unavailable. reason=%s", exc)
+                    self._rapid_ocr = RapidOCR()
+                    logger.info("OCR engine ready: RapidOCR")
+                except Exception as exc:  # pragma: no cover - optional dependency
+                    self._rapid_ocr_load_err = str(exc)
+                    logger.warning("RapidOCR unavailable, fallback to pytesseract. reason=%s", exc)
+                self._rapid_ocr_attempted = True
+            if not self._tesseract_checked:
+                try:
+                    import pytesseract  # type: ignore
+
+                    _ = pytesseract.get_tesseract_version()
+                    self._tesseract_ready = True
+                    logger.info("OCR engine ready: Tesseract")
+                except Exception as exc:  # pragma: no cover - optional dependency
+                    self._tesseract_ready = False
+                    self._tesseract_err = str(exc)
+                    logger.warning("Tesseract unavailable. reason=%s", exc)
+                self._tesseract_checked = True
 
     def engine_status(self) -> dict[str, str | bool]:
         return {
@@ -45,6 +58,7 @@ class OcrService:
         }
 
     def extract_text(self, payload: bytes) -> str | None:
+        self._ensure_engines()
         if self._rapid_ocr is None and not self._tesseract_ready:
             logger.error("OCR skipped: no available OCR engines")
             return None

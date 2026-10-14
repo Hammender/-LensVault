@@ -4,6 +4,9 @@ from datetime import datetime
 from io import BytesIO
 import json
 import logging
+import os
+import tempfile
+from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, Response, UploadFile
@@ -16,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.api._helpers import get_workspace_object
 from app.core.timezones import shanghai_isoformat, shanghai_now
 from app.background_tasks import process_person_import_task
+from app.services.import_spool import spool_upload
 from app.db import get_db
 from app.dependencies.context import CurrentContext, require_context
 from app.http.media import stream_storage_object
@@ -97,46 +101,73 @@ def export_persons(
         select(Person).where(Person.workspace_id == current.workspace_id, Person.is_unknown == False).order_by(Person.display_name)
     ).all()
     export_data: list[dict] = []
-    buffer = BytesIO()
     storage = request.app.state.services.storage
+    settings = getattr(request.app.state, "settings", None)
+    data_dir = getattr(settings, "data_dir", None)
+    temp_root = Path(data_dir) / "tmp" / "exports" if data_dir else Path(tempfile.gettempdir()) / "pictureshow-exports"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    temp_fd, temp_name = tempfile.mkstemp(prefix="person-export-", suffix=".zip", dir=temp_root)
+    os.close(temp_fd)
+    archive_path = Path(temp_name)
 
-    with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
-        for person in persons:
-            samples = db.scalars(select(SamplePhoto).where(SamplePhoto.person_id == person.id).order_by(SamplePhoto.filename)).all()
-            tag_names = [tag_link.tag.name for tag_link in db.scalars(select(PersonTag).where(PersonTag.person_id == person.id)).all()]
-            export_samples: list[dict] = []
-            for sample in samples:
-                archive.writestr(f"samples/{person.name}/{sample.filename}", storage.get_bytes(sample.object_key))
-                export_samples.append(
+    def write_object(archive: ZipFile, zip_path: str, object_key: str) -> None:
+        response = storage.get_stream(object_key)
+        try:
+            with archive.open(zip_path, "w") as target:
+                while chunk := response.read(1024 * 1024):
+                    target.write(chunk)
+        finally:
+            response.close()
+            response.release_conn()
+
+    try:
+        with ZipFile(archive_path, "w", ZIP_DEFLATED, allowZip64=True) as archive:
+            for person in persons:
+                samples = db.scalars(select(SamplePhoto).where(SamplePhoto.person_id == person.id).order_by(SamplePhoto.filename)).all()
+                tag_names = [tag_link.tag.name for tag_link in db.scalars(select(PersonTag).where(PersonTag.person_id == person.id)).all()]
+                export_samples: list[dict] = []
+                for sample in samples:
+                    write_object(archive, f"samples/{person.name}/{sample.filename}", sample.object_key)
+                    export_samples.append(
+                        {
+                            "filename": sample.filename,
+                            "sha256": sample.sha256,
+                            "content_type": sample.content_type,
+                            "object_key": sample.object_key,
+                            "width": sample.width,
+                            "height": sample.height,
+                            "taken_at": sample.taken_at.isoformat() if sample.taken_at else None,
+                        }
+                    )
+                export_data.append(
                     {
-                        "filename": sample.filename,
-                        "sha256": sample.sha256,
-                        "content_type": sample.content_type,
-                        "object_key": sample.object_key,
-                        "width": sample.width,
-                        "height": sample.height,
-                        "taken_at": sample.taken_at.isoformat() if sample.taken_at else None,
+                        "name": person.name,
+                        "display_name": person.display_name,
+                        "note": person.note,
+                        "is_unknown": person.is_unknown,
+                        "tags": sorted(set(tag_names)),
+                        "samples": export_samples,
                     }
                 )
-            export_data.append(
-                {
-                    "name": person.name,
-                    "display_name": person.display_name,
-                    "note": person.note,
-                    "is_unknown": person.is_unknown,
-                    "tags": sorted(set(tag_names)),
-                    "samples": export_samples,
-                }
+            archive.writestr(
+                "metadata.json",
+                json.dumps({"version": 1, "exported_at": shanghai_isoformat(shanghai_now()), "persons": export_data}, ensure_ascii=False, indent=2),
             )
-        archive.writestr(
-            "metadata.json",
-            json.dumps({"version": 1, "exported_at": shanghai_isoformat(shanghai_now()), "persons": export_data}, ensure_ascii=False, indent=2),
-        )
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
 
-    buffer.seek(0)
+    def iterate_archive():
+        try:
+            with archive_path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    yield chunk
+        finally:
+            archive_path.unlink(missing_ok=True)
+
     timestamp = shanghai_now().strftime("%Y%m%d_%H%M%S")
     return StreamingResponse(
-        buffer,
+        iterate_archive(),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="person_samples_{timestamp}.zip"'},
     )
@@ -150,15 +181,15 @@ async def import_persons(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
-    zip_bytes = await file.read()
     task = create_task(db, "person_import", "已排队样本库导入", current.workspace_id)
-    logger.info("Person import enqueued task_id=%s bytes=%d", task.id, len(zip_bytes))
+    zip_path = await spool_upload(request.app.state.settings, task.id, 0, file)
+    logger.info("Person import enqueued task_id=%s path=%s", task.id, zip_path.name)
     background_tasks.add_task(
         process_person_import_task,
         request.app.state.session_factory,
         request.app.state.services.pictures,
         task.id,
-        zip_bytes,
+        zip_path,
         current.workspace_id,
     )
     return TaskRead.model_validate(task)

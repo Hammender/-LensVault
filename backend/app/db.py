@@ -30,6 +30,8 @@ def _configure_sqlite_connection(dbapi_connection: object, _: object) -> None:
     # immediately failing concurrent API/background-task writes.
     handle.execute("PRAGMA busy_timeout=30000")
     handle.execute("PRAGMA synchronous=NORMAL")
+    handle.execute("PRAGMA temp_store=MEMORY")
+    handle.execute("PRAGMA wal_autocheckpoint=1000")
     handle.close()
 
 

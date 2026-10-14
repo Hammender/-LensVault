@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import hashlib
 import logging
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -17,7 +18,25 @@ from app.services.similarity import (
     select_exact_mirror_auto_delete_photo_ids,
     select_normal_near_duplicate_auto_delete_photo_ids,
 )
-from app.services.tasks import update_task
+from app.services.import_spool import cleanup_import
+from app.services.tasks import record_task_progress, update_task
+
+
+def _upload_bytes(payload: bytes | Path) -> bytes:
+    if isinstance(payload, Path):
+        return payload.read_bytes()
+    return payload
+
+
+def _upload_sha256(payload: bytes | Path) -> str:
+    digest = hashlib.sha256()
+    if isinstance(payload, Path):
+        with payload.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    digest.update(payload)
+    return digest.hexdigest()
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +91,7 @@ def process_gallery_import_task(
         if set(persons_by_id) != requested_person_ids:
             raise ValueError("所选人物不存在，请先在样本库创建人物后再上传。")
 
-        upload_hashes = [hashlib.sha256(payload).hexdigest() for _, payload, _ in uploads]
+        upload_hashes = [_upload_sha256(payload) for _, payload, _ in uploads]
         existing_hashes = set(
             db.scalars(
                 select(GalleryPhoto.sha256).where(
@@ -97,7 +116,7 @@ def process_gallery_import_task(
             try:
                 return index, picture_service.prepare_gallery_recognition(
                     recognition_db,
-                    uploads[index][1],
+                    _upload_bytes(uploads[index][1]),
                     workspace_id,
                 )
             finally:
@@ -123,8 +142,8 @@ def process_gallery_import_task(
                             uploads[index][0],
                         )
                     completed += 1
-                    update_task(
-                        db,
+                    record_task_progress(
+                        session_factory,
                         task_id,
                         status="running",
                         progress=0.05 + 0.65 * (completed / len(recognition_indexes)),
@@ -133,7 +152,8 @@ def process_gallery_import_task(
         else:
             update_task(db, task_id, status="running", progress=0.7, message="图片均已存在，正在整理上传结果")
 
-        for index, (filename, payload, content_type) in enumerate(uploads, start=1):
+        for index, (filename, stored_payload, content_type) in enumerate(uploads, start=1):
+            payload = _upload_bytes(stored_payload)
             metadata = metadata_by_index[index - 1] if index - 1 < len(metadata_by_index) else {"person_ids": [], "tag_names": []}
             logger.info(
                 "Gallery import processing task_id=%s index=%d/%d filename=%s bytes=%d manual_persons=%d manual_tags=%d",
@@ -176,8 +196,10 @@ def process_gallery_import_task(
                 total_unknown_faces,
                 total_duplicated,
             )
-            update_task(
-                db,
+            if isinstance(stored_payload, Path):
+                stored_payload.unlink(missing_ok=True)
+            record_task_progress(
+                session_factory,
                 task_id,
                 status="running",
                 progress=0.7 + 0.3 * (index / total),
@@ -231,6 +253,9 @@ def process_gallery_import_task(
         _mark_task_failed(session_factory, task_id, exc)
     finally:
         db.close()
+        settings = getattr(picture_service, "settings", None)
+        if getattr(settings, "data_dir", None):
+            cleanup_import(settings, task_id)
         logger.debug("Gallery import task db session closed task_id=%s", task_id)
 
 
@@ -238,25 +263,25 @@ def process_person_import_task(
     session_factory: SessionFactory,
     picture_service: Any,
     task_id: str,
-    zip_bytes: bytes,
+    zip_source: bytes | Path,
     workspace_id: int,
 ) -> None:
-    logger.info("Person import task started task_id=%s bytes=%d", task_id, len(zip_bytes))
+    logger.info("Person import task started task_id=%s", task_id)
     db = session_factory()
     try:
         update_task(db, task_id, status="running", progress=0.05, message="正在解析导入数据")
 
         def progress_callback(processed: int, total: int) -> None:
             progress = 0.05 + 0.9 * (processed / max(total, 1))
-            update_task(
-                db,
+            record_task_progress(
+                session_factory,
                 task_id,
                 status="running",
                 progress=min(progress, 1.0),
                 message=f"正在处理 {processed}/{total} 个样本",
             )
 
-        result = picture_service.import_persons_from_zip(db, zip_bytes, workspace_id, progress_callback)
+        result = picture_service.import_persons_from_zip(db, zip_source, workspace_id, progress_callback)
         message = (
             f"导入完成：创建 {result['created_persons']} 个人物，"
             f"匹配 {result['existing_persons']} 个已有，"
@@ -275,6 +300,9 @@ def process_person_import_task(
         _mark_task_failed(session_factory, task_id, exc)
     finally:
         db.close()
+        settings = getattr(picture_service, "settings", None)
+        if getattr(settings, "data_dir", None):
+            cleanup_import(settings, task_id)
         logger.debug("Person import task db session closed task_id=%s", task_id)
 
 
@@ -282,25 +310,25 @@ def process_gallery_zip_import_task(
     session_factory: SessionFactory,
     picture_service: Any,
     task_id: str,
-    zip_bytes: bytes,
+    zip_source: bytes | Path,
     workspace_id: int,
 ) -> None:
-    logger.info("Gallery zip import task started task_id=%s bytes=%d", task_id, len(zip_bytes))
+    logger.info("Gallery zip import task started task_id=%s", task_id)
     db = session_factory()
     try:
         update_task(db, task_id, status="running", progress=0.05, message="正在解析展示图 ZIP")
 
         def progress_callback(processed: int, total: int) -> None:
             progress = 0.05 + 0.9 * (processed / max(total, 1))
-            update_task(
-                db,
+            record_task_progress(
+                session_factory,
                 task_id,
                 status="running",
                 progress=min(progress, 1.0),
                 message=f"正在还原展示图 {processed}/{total}",
             )
 
-        result = picture_service.import_gallery_from_zip(db, zip_bytes, workspace_id, progress_callback)
+        result = picture_service.import_gallery_from_zip(db, zip_source, workspace_id, progress_callback)
         if result["added_photos"] or result["updated_existing"] or result["persons_added"]:
             mark_similarity_scans_stale(db, workspace_id)
             db.commit()
@@ -332,6 +360,9 @@ def process_gallery_zip_import_task(
         _mark_task_failed(session_factory, task_id, exc)
     finally:
         db.close()
+        settings = getattr(picture_service, "settings", None)
+        if getattr(settings, "data_dir", None):
+            cleanup_import(settings, task_id)
         logger.debug("Gallery zip import task db session closed task_id=%s", task_id)
 
 
@@ -353,7 +384,13 @@ def process_gallery_similarity_scan_task(
         update_task(db, task_id, status="running", progress=0.02, message="正在准备相似图片扫描")
 
         def progress_callback(progress: float, message: str) -> None:
-            update_task(db, task_id, status="running", progress=min(progress, 0.99), message=message)
+            record_task_progress(
+                session_factory,
+                task_id,
+                status="running",
+                progress=min(progress, 0.99),
+                message=message,
+            )
 
         similarity_service.run_scan(db, scan, progress_callback)
         auto_deleted = 0

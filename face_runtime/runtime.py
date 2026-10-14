@@ -200,12 +200,6 @@ class FaceRuntime:
                 and roll_angle is not None
                 and abs(roll_angle) >= self.roll_correction_min_angle
             )
-            logger.info(
-                "Face orientation evaluated bbox=%s roll=%s correction_triggered=%s",
-                detection.bbox,
-                f"{roll_angle:.2f}" if roll_angle is not None else "unknown",
-                correction_triggered,
-            )
             corrected: tuple[np.ndarray, FaceDetection] | None = None
             if correction_triggered:
                 try:
@@ -271,15 +265,8 @@ class FaceRuntime:
                     exc_info=True,
                 )
                 continue
-            logger.info(
-                "Rotation fallback detection angle=%.1f detected_faces=%d",
-                normalized_angle,
-                len(detections),
-            )
-            retained_before = len(candidates)
             for detection_index, detection in enumerate(detections):
                 try:
-                    detected_roll = self.estimate_roll_angle(detection.keypoints)
                     bbox = self.transform_bbox(
                         detection.bbox,
                         inverse_matrix,
@@ -287,19 +274,9 @@ class FaceRuntime:
                         image_bgr.shape[0],
                     )
                     if bbox is None:
-                        logger.info(
-                            "Rotation fallback candidate skipped angle=%.1f face_index=%d reason=invalid_bbox",
-                            normalized_angle,
-                            detection_index,
-                        )
                         continue
                     mapped_keypoints = self.transform_points(detection.keypoints, inverse_matrix)
                     if not np.isfinite(mapped_keypoints).all():
-                        logger.info(
-                            "Rotation fallback candidate skipped angle=%.1f face_index=%d reason=invalid_keypoints",
-                            normalized_angle,
-                            detection_index,
-                        )
                         continue
                     embedding, _ = self.embed_detection(rotated, detection)
                     left, top, right, bottom = bbox
@@ -320,12 +297,6 @@ class FaceRuntime:
                             orientation_corrected=True,
                         )
                     )
-                    logger.info(
-                        "Rotation fallback candidate retained angle=%.1f face_index=%d residual_roll=%s",
-                        normalized_angle,
-                        detection_index,
-                        f"{detected_roll:.2f}" if detected_roll is not None else "unknown",
-                    )
                 except Exception:
                     logger.warning(
                         "Rotation fallback face failed angle=%.1f face_index=%d",
@@ -333,17 +304,7 @@ class FaceRuntime:
                         detection_index,
                         exc_info=True,
                     )
-            logger.info(
-                "Rotation fallback angle completed angle=%.1f retained_candidates=%d",
-                normalized_angle,
-                len(candidates) - retained_before,
-            )
         deduplicated = self.deduplicate_faces(candidates)
-        logger.info(
-            "Rotation fallback candidates merged retained_candidates=%d merged_faces=%d",
-            len(candidates),
-            len(deduplicated),
-        )
         return deduplicated
 
     def _correct_rolled_detection(
@@ -355,12 +316,6 @@ class FaceRuntime:
         crop = self._padded_square_crop(image_bgr, detection.bbox, scale=1.5)
         rotated = self.rotate_same_size(crop, roll_angle)
         detections, _ = self.detect_bgr(rotated)
-        logger.info(
-            "Roll correction redetection bbox=%s input_roll=%.2f detected_faces=%d",
-            detection.bbox,
-            roll_angle,
-            len(detections),
-        )
         if not detections:
             return None
         center = np.asarray([rotated.shape[1] / 2.0, rotated.shape[0] / 2.0], dtype=np.float32)
@@ -379,13 +334,7 @@ class FaceRuntime:
                 )
             ),
         )
-        corrected_roll = self.estimate_roll_angle(corrected_detection.keypoints)
         embedding, _ = self.embed_detection(rotated, corrected_detection)
-        logger.info(
-            "Roll correction candidate retained bbox=%s residual_roll=%s",
-            detection.bbox,
-            f"{corrected_roll:.2f}" if corrected_roll is not None else "unknown",
-        )
         return embedding, corrected_detection
 
     @staticmethod

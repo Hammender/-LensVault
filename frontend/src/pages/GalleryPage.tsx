@@ -1,5 +1,5 @@
 import { Info, Pin, PinOff, Search, SlidersHorizontal, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import PhotoLightbox from "../components/PhotoLightbox";
 import SearchableSelect from "../components/SearchableSelect";
@@ -16,6 +16,7 @@ import {
   resolveGalleryColumnCount,
 } from "../lib/galleryMasonryPack";
 import { formatPhotoDate } from "../lib/utils";
+import { readGalleryLightboxOrder } from "../lib/galleryLightboxOrder";
 
 export default function GalleryPage({ model }: { model: GalleryModel }) {
   const {
@@ -93,6 +94,9 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
     canGoPrev,
     canGoNext,
     lightboxMeta,
+    lightboxNavigating,
+    lightboxLayoutRequest,
+    completeLightboxLayout,
     galleryExportModalOpen,
     galleryExportScope,
     galleryExportPersonIds,
@@ -184,7 +188,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
 
   const galleryGridRef = useRef<HTMLDivElement | null>(null);
   const [galleryColumnCount, setGalleryColumnCount] = useState(4);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = galleryGridRef.current;
     if (!node || typeof ResizeObserver === "undefined") {
       return;
@@ -203,6 +207,19 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
     () => flattenGalleryMasonryVisualOrder(galleryMasonryColumns),
     [galleryMasonryColumns],
   );
+
+  useLayoutEffect(() => {
+    const node = galleryGridRef.current;
+    const request = lightboxLayoutRequest;
+    if (!node || !request || request.photos !== galleryPhotos || request.offset !== galleryOffset) return;
+    // 灯箱或侧栏改变可用宽度时，先提交正确列数，再采集目标页的实际位置。
+    const columnCount = resolveGalleryColumnCount(node.clientWidth);
+    if (columnCount !== galleryColumnCount) {
+      setGalleryColumnCount(columnCount);
+      return;
+    }
+    completeLightboxLayout(request.requestId, readGalleryLightboxOrder(node));
+  }, [lightboxLayoutRequest, galleryPhotos, galleryOffset, galleryColumnCount, completeLightboxLayout]);
 
 
   return (
@@ -703,13 +720,16 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                     return (
                       <article
                         key={photo.id}
+                        data-gallery-photo-id={photo.id}
                         className={`photo-card-wrap gallery-masonry-item${photo.is_rich_text ? " rich-card-wrap" : ""}${needsReview ? " needs-review" : ""}`}
                       >
                         <button
                           type="button"
                           className={`photo-card${photo.is_rich_text ? " rich-card" : ""}${selected ? " selected" : ""}`}
                           onClick={(event) => {
-                            handleGalleryCardClick(photo.id, event.shiftKey, galleryVisualPageIds);
+                            const lightboxIds = !event.shiftKey && !gallerySelectionMode && galleryGridRef.current
+                              ? readGalleryLightboxOrder(galleryGridRef.current) : undefined;
+                            handleGalleryCardClick(photo.id, event.shiftKey, galleryVisualPageIds, lightboxIds);
                           }}
                         >
                           {photo.is_rich_text ? (
@@ -1367,7 +1387,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
           backdropClassName="gallery-lightbox-backdrop"
           shellClassName={`gallery-lightbox${lightboxPhoto.is_rich_text ? " rich-lightbox" : ""}`}
           meta={lightboxMeta}
-          busy={busy}
+          busy={busy || lightboxNavigating}
           keyboardEnabled={!lightboxEditMode}
           canGoPrevious={canGoPrev}
           canGoNext={canGoNext}
@@ -1398,7 +1418,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                     <span>OCR状态：{lightboxPhoto.ocr_status ?? "unknown"}</span>
                     {lightboxEditMode ? (
                       <button
-                        disabled={busy}
+                        disabled={busy || lightboxNavigating}
                         onClick={() => {
                           void handleSaveLightboxRichText();
                           setLightboxEditMode(false);
@@ -1408,7 +1428,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                       </button>
                     ) : (
                       <button
-                        disabled={busy}
+                        disabled={busy || lightboxNavigating}
                         onClick={() => {
                           setLightboxRichTextDraft(lightboxPhoto.rich_text || "");
                           setLightboxEditMode(true);

@@ -347,7 +347,7 @@ class FallbackFaceService:
     def detect_faces(self, _payload: bytes) -> list[DetectedFace]:
         return self.primary
 
-    def detect_faces_with_rotation_fallback(self, _payload: bytes) -> list[DetectedFace]:
+    def detect_rotations(self, _payload: bytes) -> list[DetectedFace]:
         self.fallback_calls += 1
         return self.fallback
 
@@ -447,3 +447,37 @@ def test_no_face_detection_uses_configured_rotation_fallback() -> None:
 
     assert runtime.fallback_calls == 1
     assert len(result) == 1
+
+
+class CountingRuntime:
+    def __init__(self) -> None:
+        self.analyze_calls = 0
+        self.rotation_calls = 0
+
+    def analyze_bgr(self, _array: np.ndarray) -> list[DetectedFace]:
+        self.analyze_calls += 1
+        return [detected_face(1)]
+
+    def analyze_rotations_bgr(self, _array: np.ndarray, angles: tuple[float, ...]) -> list[DetectedFace]:
+        self.rotation_calls += 1
+        assert angles == (90.0, -90.0, -180.0)
+        return [detected_face(2)]
+
+    def prefer_rotated_faces(self, primary: list[DetectedFace], rotated: list[DetectedFace]) -> list[DetectedFace]:
+        return primary + rotated
+
+
+def test_rotation_only_entry_does_not_repeat_upright_detection() -> None:
+    runtime = CountingRuntime()
+    service = FaceService(Settings(gallery_recognition_workers=4))
+    service._runtime = runtime  # type: ignore[assignment]
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+
+    rotated = service.detect_rotations_bgr(image)
+    merged = service.detect_faces_with_rotation_fallback_bgr(image, primary_faces=[detected_face(3)])
+
+    assert runtime.analyze_calls == 0
+    assert runtime.rotation_calls == 2
+    assert [face.embedding[0] for face in rotated] == [2]
+    assert [face.embedding[0] for face in merged] == [3, 2]
+    assert service._detect_slots._value == 1

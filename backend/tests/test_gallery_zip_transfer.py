@@ -33,6 +33,26 @@ class MemoryStorage:
     def get_bytes(self, object_key: str) -> bytes:
         return self.objects[object_key]
 
+    def get_stream(self, object_key: str):
+        payload = self.objects[object_key]
+
+        class _Stream:
+            def read(self, size: int = -1) -> bytes:
+                nonlocal payload
+                if size < 0:
+                    chunk, payload = payload, b""
+                    return chunk
+                chunk, payload = payload[:size], payload[size:]
+                return chunk
+
+            def close(self) -> None:
+                return None
+
+            def release_conn(self) -> None:
+                return None
+
+        return _Stream()
+
 
 class ForbiddenFaceService:
     def detect_faces(self, _payload: bytes) -> list[object]:

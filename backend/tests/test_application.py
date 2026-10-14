@@ -91,7 +91,7 @@ def test_create_app_uses_injected_lifecycle_dependencies(tmp_path, monkeypatch) 
     asyncio.run(run_lifespan())
 
     assert inspect(engine).has_table("video_items")
-    assert calls == ["storage", "vector_store", "face", "ocr"]
+    assert calls == ["storage", "vector_store", "face"]
     assert recovered_types == [
         "gallery_import",
         "gallery_rich_import",

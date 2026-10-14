@@ -10,7 +10,7 @@
  *
  * 不修改服务端排序与分页总数；换页后重新装箱。导出/选择仍按 photo.id。
  * Shift 框选请使用 flattenGalleryMasonryVisualOrder（列优先：左→右、列内上→下），与 DOM 一致。
- * 灯箱左右翻页仍按接口返回的 galleryPhotos 顺序，与瀑布流展示顺序无关。
+ * 灯箱另按卡片实际顶部位置生成横向阅读顺序，并在本次浏览期间固定各页顺序。
  */
 
 export type MasonryPackInput = {

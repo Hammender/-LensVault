@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     subtitle_asr_model_path: Path = Path("E:/AI-MODELS/ASR/faster-whisper-medium")
     subtitle_asr_device: str = "cpu"
     subtitle_asr_compute_type: str = "int8"
-    subtitle_asr_unload_after_transcribe: bool = False
+    subtitle_asr_unload_after_transcribe: bool = True
     subtitle_translation_provider: str = "local_hymt2"
     subtitle_translation_base_url: str = "http://127.0.0.1:8081/v1"
     subtitle_translation_model: str = "Hy-MT2-1.8B-Q4_K_M"

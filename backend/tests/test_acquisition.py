@@ -1057,7 +1057,7 @@ class AcquisitionSimilarityTests(unittest.TestCase):
         class FakeGalleryScanner:
             vector_store = FakeGalleryVectorStore()
 
-            def ensure_features(self, _db, _photos, _progress=None, *, include_vectors=True):
+            def ensure_features(self, _db, _photos, _progress=None, *, include_vectors=True, retain_vectors=True):
                 original = "0" * 16 if include_vectors else "f" * 16
                 return {
                     gallery_photo.id: SimpleNamespace(

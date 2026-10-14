@@ -83,7 +83,7 @@ from app.schemas import (
 from app.mappers.gallery import gallery_photo_to_list_item
 from app.services.acquisition import AcquisitionService
 from app.services.similarity import choose_quality_recommendation, compose_group_quality_scores
-from app.services.tasks import create_task, update_task
+from app.services.tasks import create_task, record_task_progress, update_task
 from app.services.thumbnails import render_acquisition_preview
 from app.services.preview_runtime import preview_runtime, put_preview_if_source_exists
 from app.services.thumbnails import acquisition_preview_cache_key, normalize_preview_edge
@@ -643,11 +643,17 @@ def _process_similarity(
             db,
             workspace_id,
             scan_task_id=task_id,
-            progress=lambda value, message: update_task(db, task_id, progress=value, message=message),
+            progress=lambda value, message: record_task_progress(
+                session_factory, task_id, progress=value, message=message, status="running"
+            ),
             scan_type=scan_type,
             scope=scope,
         )
-        update_task(db, task_id, status="completed", progress=1.0, message=f"扫描完成，发现 {created} 条相似关系")
+        skipped = int(getattr(service, "last_scan_skipped", 0) or 0)
+        message = f"扫描完成，发现 {created} 条相似关系"
+        if skipped:
+            message += f"，跳过 {skipped} 张无法读取的图片"
+        update_task(db, task_id, status="completed", progress=1.0, message=message)
     except Exception as exc:
         db.rollback()
         update_task(db, task_id, status="failed", message=f"相似扫描失败：{exc}")

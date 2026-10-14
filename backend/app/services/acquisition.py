@@ -15,6 +15,7 @@ from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from collections import OrderedDict
 from collections.abc import Callable
 from urllib.error import HTTPError
 from urllib.parse import urlparse
@@ -60,8 +61,10 @@ from app.services.acquisition_adapters import (
     is_tls_transport_error,
 )
 from app.services.similarity import (
+    HASH_CANDIDATE_RADIUS,
     DinoV2FeatureExtractor,
     GallerySimilarityScanner,
+    HammingBKTree,
     PrimaryFaceAssessment,
     PerceptualFeatures,
     assess_primary_face,
@@ -117,52 +120,6 @@ class PendingRemote:
     remote: RemoteItem
     source_item_id: int
     run_item_id: int
-
-
-class _HammingBKTree:
-    def __init__(self) -> None:
-        self.root: tuple[int, list[int], dict[int, object]] | None = None
-
-    @staticmethod
-    def _distance(left: int, right: int) -> int:
-        return (left ^ right).bit_count()
-
-    def add(self, hash_value: str, identifier: int) -> None:
-        value = int(hash_value, 16)
-        if self.root is None:
-            self.root = (value, [identifier], {})
-            return
-        node = self.root
-        while True:
-            node_value, identifiers, children = node
-            distance = self._distance(value, node_value)
-            if distance == 0:
-                identifiers.append(identifier)
-                return
-            child = children.get(distance)
-            if child is None:
-                children[distance] = (value, [identifier], {})
-                return
-            node = child  # type: ignore[assignment]
-
-    def query(self, hash_value: str, max_distance: int) -> set[int]:
-        if self.root is None:
-            return set()
-        value = int(hash_value, 16)
-        matches: set[int] = set()
-        pending = [self.root]
-        while pending:
-            node_value, identifiers, children = pending.pop()
-            distance = self._distance(value, node_value)
-            if distance <= max_distance:
-                matches.update(identifiers)
-            minimum = distance - max_distance
-            maximum = distance + max_distance
-            pending.extend(
-                child for edge_distance, child in children.items()
-                if minimum <= edge_distance <= maximum
-            )
-        return matches
 
 
 class _DownloadStartLimiter:
@@ -2242,6 +2199,23 @@ class AcquisitionService:
         scan_type: str = "normal",
         scope: str = "pending_only",
     ) -> int:
+        try:
+            return self._scan_similarity(db, workspace_id, scan_task_id, progress, scan_type=scan_type, scope=scope)
+        finally:
+            unload = getattr(self.similarity_extractor, "unload", None)
+            if callable(unload):
+                unload()
+
+    def _scan_similarity(
+        self,
+        db: Session,
+        workspace_id: int | None,
+        scan_task_id: str | None = None,
+        progress: Callable[[float, str], None] | None = None,
+        *,
+        scan_type: str = "normal",
+        scope: str = "pending_only",
+    ) -> int:
         # 扫描由用户手动触发，只创建人工审核提示，不会自动删除或合并图片。
         if scan_type not in {"normal", "mirror"}:
             raise ValueError("不支持的相似检查类型")
@@ -2256,17 +2230,30 @@ class AcquisitionService:
             )
             .order_by(AcquisitionAsset.created_at.asc(), AcquisitionAsset.id.asc())
         ).all()
-        asset_payloads: dict[str, bytes] = {}
+        if db.in_transaction():
+            db.commit()
         fingerprints: dict[str, object] = {}
         mirror_hashes: dict[str, tuple[str, str]] = {}
         asset_count = len(assets)
+        skipped = 0
+        self.last_scan_skipped = 0
         if progress:
             progress(0.05, f"准备扫描 {asset_count} 张待审核图片")
         for index, asset in enumerate(assets):
             try:
+                if db.in_transaction():
+                    db.commit()
                 payload = self.storage.get_bytes(asset.object_key or "")
-                asset_payloads[asset.id] = payload
                 perceptual = compute_perceptual_features(payload)
+                mirrored_hashes = compute_mirrored_perceptual_hashes(payload) if scan_type == "mirror" else None
+                primary_face = PrimaryFaceAssessment(None, None, False)
+                if self.face_service is not None:
+                    try:
+                        detections = self.face_service.detect_faces(payload)  # type: ignore[attr-defined]
+                        primary_face = assess_primary_face(payload, detections, self.settings)
+                    except Exception:
+                        primary_face = PrimaryFaceAssessment(None, None, False)
+                del payload
                 fingerprints[asset.id] = perceptual
                 asset.blur_score = getattr(perceptual, "blur_score", asset.blur_score)
                 asset.quality_score = getattr(perceptual, "quality_score", asset.quality_score)
@@ -2279,32 +2266,43 @@ class AcquisitionService:
                 asset.sharpness_score = getattr(perceptual, "sharpness_score", asset.sharpness_score)
                 asset.artifact_score = getattr(perceptual, "artifact_score", asset.artifact_score)
                 asset.exposure_score = getattr(perceptual, "exposure_score", asset.exposure_score)
-                primary_face = PrimaryFaceAssessment(None, None, False)
-                if self.face_service is not None:
-                    try:
-                        detections = self.face_service.detect_faces(payload)  # type: ignore[attr-defined]
-                        primary_face = assess_primary_face(payload, detections, self.settings)
-                    except Exception:
-                        primary_face = PrimaryFaceAssessment(None, None, False)
                 asset.primary_face_quality_score = primary_face.quality_score
                 asset.primary_face_embedding = primary_face.embedding
                 asset.primary_face_dominant = primary_face.dominant
+                if mirrored_hashes is not None:
+                    mirror_hashes[asset.id] = mirrored_hashes
                 db.add(asset)
-                if scan_type == "mirror":
-                    mirror_hashes[asset.id] = compute_mirrored_perceptual_hashes(payload)
+                db.commit()
             except Exception:
-                continue
+                skipped += 1
+                logger.exception("采集相似扫描跳过图片 asset_id=%s", asset.id)
+                db.rollback()
             if progress and (index % 5 == 0 or index + 1 == asset_count):
                 progress(0.05 + 0.3 * (index + 1) / max(1, asset_count), f"读取图片 {index + 1}/{asset_count}")
-        asset_vectors = self._encode_similarity_vectors(asset_payloads) if scan_type == "normal" else {}
+        if db.in_transaction():
+            db.commit()
+        self.last_scan_skipped = skipped
+        comparable_assets = [asset for asset in assets if asset.id in fingerprints and asset.object_key]
+        asset_vectors = (
+            self._encode_similarity_vectors([(asset.id, asset.object_key) for asset in comparable_assets])
+            if scan_type == "normal"
+            else {}
+        )
         candidates: list[AcquisitionSimilarityCandidate] = []
-        orb_cache: dict[tuple[str, bool], object] = {}
+        orb_cache: OrderedDict[tuple[str, bool], object] = OrderedDict()
+        assets_by_id = {asset.id: asset for asset in comparable_assets}
 
         def asset_orb(asset_id: str, *, mirrored: bool = False):
             key = (asset_id, mirrored)
-            if key not in orb_cache:
-                orb_cache[key] = compute_orb_features(asset_payloads[asset_id], mirrored=mirrored)
-            return orb_cache[key]
+            cached = orb_cache.get(key)
+            if cached is not None:
+                orb_cache.move_to_end(key)
+                return cached
+            feature = compute_orb_features(self.storage.get_bytes(assets_by_id[asset_id].object_key or ""), mirrored=mirrored)
+            orb_cache[key] = feature
+            if len(orb_cache) > 256:
+                orb_cache.popitem(last=False)
+            return feature
 
         def perceptual_score(left, right_phash: str, right_dhash: str) -> float:
             return (
@@ -2319,54 +2317,91 @@ class AcquisitionService:
             return max(base_score, min(1.0, 0.85 + local_score * 0.15))
 
         if scope == "pending_only":
-            comparable_assets = [asset for asset in assets if asset.id in fingerprints]
-            pair_total = len(comparable_assets) * (len(comparable_assets) - 1) // 2
-            compared = 0
-            for index, asset in enumerate(comparable_assets):
-                left = fingerprints[asset.id]
-                for other in comparable_assets[index + 1 :]:
-                    right = fingerprints[other.id]
-                    direct_base = perceptual_score(left, right.phash, right.dhash)
-                    direct_score = promoted_near_score(
-                        direct_base,
-                        asset_orb(asset.id),
-                        asset_orb(other.id),
+            use_mirror = scan_type == "mirror"
+            phash_tree = HammingBKTree()
+            dhash_tree = HammingBKTree()
+            for asset in comparable_assets:
+                feature = fingerprints[asset.id]
+                index_phash, index_dhash = mirror_hashes[asset.id] if use_mirror else (feature.phash, feature.dhash)
+                if index_phash and index_dhash:
+                    phash_tree.add(index_phash, asset.id)
+                    dhash_tree.add(index_dhash, asset.id)
+            pair_ids: list[tuple[str, str]] = []
+            seen_pairs: set[tuple[str, str]] = set()
+            for asset in comparable_assets:
+                feature = fingerprints[asset.id]
+                if not feature.phash or not feature.dhash:
+                    continue
+                found = phash_tree.query(feature.phash, HASH_CANDIDATE_RADIUS) | dhash_tree.query(feature.dhash, HASH_CANDIDATE_RADIUS)
+                for other_id in found:
+                    if other_id == asset.id:
+                        continue
+                    pair = tuple(sorted((asset.id, other_id)))
+                    if pair not in seen_pairs:
+                        seen_pairs.add(pair)
+                        pair_ids.append(pair)
+            accepted_pairs: set[tuple[str, str]] = set()
+            pair_total = len(pair_ids)
+            asset_order = {asset.id: index for index, asset in enumerate(comparable_assets)}
+            for compared, pair in enumerate(pair_ids, start=1):
+                left_id, right_id = pair if asset_order[pair[0]] < asset_order[pair[1]] else (pair[1], pair[0])
+                left = fingerprints[left_id]
+                right = fingerprints[right_id]
+                direct_base = perceptual_score(left, right.phash, right.dhash)
+                direct_score = promoted_near_score(direct_base, asset_orb(left_id), asset_orb(right_id))
+                relation_type = "near_duplicate"
+                score = direct_score
+                accepted = direct_score >= self.settings.gallery_similarity_near_threshold
+                if use_mirror:
+                    mirror_phash, mirror_dhash = mirror_hashes[right_id]
+                    mirror_base = perceptual_score(left, mirror_phash, mirror_dhash)
+                    score = promoted_near_score(
+                        mirror_base,
+                        asset_orb(left_id),
+                        asset_orb(right_id, mirrored=True),
                     )
-                    relation_type = "near_duplicate"
-                    score = direct_score
-                    accepted = direct_score >= self.settings.gallery_similarity_near_threshold
-                    if scan_type == "mirror":
-                        mirror_phash, mirror_dhash = mirror_hashes[other.id]
-                        mirror_base = perceptual_score(left, mirror_phash, mirror_dhash)
-                        score = promoted_near_score(
-                            mirror_base,
-                            asset_orb(asset.id),
-                            asset_orb(other.id, mirrored=True),
-                        )
-                        accepted = (
-                            score >= self.settings.gallery_similarity_near_threshold
-                            and score > direct_score
-                        )
-                    elif not accepted:
-                        vector_score = cosine_similarity(asset_vectors[asset.id], asset_vectors[other.id])
-                        if vector_score >= self.settings.gallery_similarity_scene_threshold:
-                            score = vector_score
-                            relation_type = "same_scene"
-                            accepted = True
-                    if accepted:
-                        candidates.append(AcquisitionSimilarityCandidate(
-                            workspace_id=workspace_id,
-                            scan_task_id=scan_task_id,
-                            scan_type=scan_type,
-                            scan_scope=scope,
-                            relation_type=relation_type,
-                            asset_id=asset.id,
-                            other_asset_id=other.id,
-                            score=score,
-                        ))
-                    compared += 1
-                    if progress and (compared % 100 == 0 or compared == pair_total):
-                        progress(0.45 + 0.5 * compared / max(1, pair_total), f"比对图片 {compared}/{pair_total}")
+                    accepted = score >= self.settings.gallery_similarity_near_threshold and score > direct_score
+                if accepted:
+                    accepted_pairs.add(tuple(sorted((left_id, right_id))))
+                    candidates.append(AcquisitionSimilarityCandidate(
+                        workspace_id=workspace_id,
+                        scan_task_id=scan_task_id,
+                        scan_type=scan_type,
+                        scan_scope=scope,
+                        relation_type=relation_type,
+                        asset_id=left_id,
+                        other_asset_id=right_id,
+                        score=score,
+                    ))
+                if progress and (compared % 100 == 0 or compared == pair_total):
+                    progress(0.45 + 0.35 * compared / max(1, pair_total), f"比对图片 {compared}/{pair_total}")
+            if scan_type == "normal":
+                vector_ids = [asset.id for asset in comparable_assets if asset.id in asset_vectors]
+                if len(vector_ids) >= 2:
+                    matrix = np.stack([np.asarray(asset_vectors[item_id], dtype=np.float32) for item_id in vector_ids])
+                    norms = np.linalg.norm(matrix, axis=1)
+                    normalized = matrix / np.maximum(norms, 1e-12)[:, None]
+                    similarity = normalized @ normalized.T
+                    for left_index, left_id in enumerate(vector_ids):
+                        for right_index in range(left_index + 1, len(vector_ids)):
+                            right_id = vector_ids[right_index]
+                            pair = (left_id, right_id) if left_id < right_id else (right_id, left_id)
+                            if pair in accepted_pairs:
+                                continue
+                            score = float(similarity[left_index, right_index])
+                            if score < self.settings.gallery_similarity_scene_threshold:
+                                continue
+                            candidates.append(AcquisitionSimilarityCandidate(
+                                workspace_id=workspace_id,
+                                scan_task_id=scan_task_id,
+                                scan_type=scan_type,
+                                scan_scope=scope,
+                                relation_type="same_scene",
+                                asset_id=pair[0],
+                                other_asset_id=pair[1],
+                                score=score,
+                            ))
+                    del similarity, normalized, matrix
         else:
             gallery_photos = {
                 photo.id: photo
@@ -2379,28 +2414,40 @@ class AcquisitionService:
                 gallery_photos,
                 progress,
                 include_vectors=scan_type == "normal",
+                retain_vectors=False,
             )
-            hash_index = _HammingBKTree()
+            phash_index = HammingBKTree()
+            dhash_index = HammingBKTree()
             for photo_id, feature in gallery_features.items():
-                indexed_hash = feature.mirror_phash if scan_type == "mirror" else feature.phash
-                if indexed_hash:
-                    hash_index.add(indexed_hash, photo_id)
-            gallery_orb_cache: dict[tuple[int, bool], object] = {}
+                index_phash = feature.mirror_phash if scan_type == "mirror" else feature.phash
+                index_dhash = feature.mirror_dhash if scan_type == "mirror" else feature.dhash
+                if index_phash:
+                    phash_index.add(index_phash, photo_id)
+                if index_dhash:
+                    dhash_index.add(index_dhash, photo_id)
+            gallery_orb_cache: OrderedDict[tuple[int, bool], object] = OrderedDict()
 
             def gallery_orb(photo_id: int, *, mirrored: bool = False):
                 key = (photo_id, mirrored)
-                if key not in gallery_orb_cache:
-                    gallery_orb_cache[key] = compute_orb_features(
-                        self.storage.get_bytes(gallery_photos[photo_id].object_key),
-                        mirrored=mirrored,
-                    )
-                return gallery_orb_cache[key]
+                cached = gallery_orb_cache.get(key)
+                if cached is not None:
+                    gallery_orb_cache.move_to_end(key)
+                    return cached
+                feature = compute_orb_features(
+                    self.storage.get_bytes(gallery_photos[photo_id].object_key),
+                    mirrored=mirrored,
+                )
+                gallery_orb_cache[key] = feature
+                if len(gallery_orb_cache) > 256:
+                    gallery_orb_cache.popitem(last=False)
+                return feature
 
             valid_assets = [asset for asset in assets if asset.id in fingerprints]
             for index, asset in enumerate(valid_assets):
                 left = fingerprints[asset.id]
                 scored_gallery: dict[int, tuple[float, str]] = {}
-                for photo_id in hash_index.query(left.phash, 23):
+                photo_ids = phash_index.query(left.phash, HASH_CANDIDATE_RADIUS) | dhash_index.query(left.dhash, HASH_CANDIDATE_RADIUS)
+                for photo_id in photo_ids:
                     right = gallery_features[photo_id]
                     direct_base = perceptual_score(left, right.phash, right.dhash)
                     direct_score = promoted_near_score(
@@ -2421,7 +2468,7 @@ class AcquisitionService:
                             scored_gallery[photo_id] = (score, "near_duplicate")
                     elif direct_score >= self.settings.gallery_similarity_near_threshold:
                         scored_gallery[photo_id] = (direct_score, "near_duplicate")
-                if scan_type == "normal":
+                if scan_type == "normal" and asset.id in asset_vectors:
                     for photo_id, vector_score in self.similarity_scanner.vector_store.search_gallery_similarity(
                         workspace_id=workspace_id,
                         feature_version=self.settings.gallery_similarity_model_version,
@@ -2459,19 +2506,18 @@ class AcquisitionService:
         db.commit()
         return len(candidates)
 
-    def _encode_similarity_vectors(self, payloads: dict[object, bytes]) -> dict[object, np.ndarray]:
-        vectors: dict[object, np.ndarray] = {}
-        identifiers = list(payloads)
+    def _encode_similarity_vectors(self, items: list[tuple[str, str]]) -> dict[str, np.ndarray]:
+        vectors: dict[str, np.ndarray] = {}
         batch_size = max(1, self.settings.gallery_similarity_batch_size)
-        for offset in range(0, len(identifiers), batch_size):
-            batch_ids = identifiers[offset : offset + batch_size]
-            images = [open_normalized_image(payloads[identifier], max_edge=1024) for identifier in batch_ids]
+        for offset in range(0, len(items), batch_size):
+            batch = items[offset : offset + batch_size]
+            images = [open_normalized_image(self.storage.get_bytes(object_key), max_edge=1024) for _, object_key in batch]
             try:
                 batch_vectors = self.similarity_extractor.encode(images)
             finally:
                 for image in images:
                     image.close()
-            for identifier, vector in zip(batch_ids, batch_vectors, strict=True):
+            for (identifier, _), vector in zip(batch, batch_vectors, strict=True):
                 vectors[identifier] = vector
         return vectors
 

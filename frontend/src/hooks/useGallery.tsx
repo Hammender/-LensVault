@@ -41,6 +41,7 @@ import { filterTagMatches, resolveExistingTag } from "../lib/tagPicker";
 import { isTerminalTask } from "../lib/taskStatus";
 import type { GalleryPhotoDetail, GalleryPhotoListItem, Person, Tag, Task } from "../types";
 import { usePolling } from "./usePolling";
+import { useGalleryLightbox } from "./useGalleryLightbox";
 
 export const galleryPageSize = 20;
 const compactGalleryMediaQuery = "(max-width: 1600px)";
@@ -89,7 +90,6 @@ export function useGallery({
   const [galleryExportExcludePersonIds, setGalleryExportExcludePersonIds] = useState<number[]>([]);
   const [galleryExportExcludeTagIds, setGalleryExportExcludeTagIds] = useState<number[]>([]);
   const [galleryExportStartPhotoId, setGalleryExportStartPhotoId] = useState<number | null>(null);
-  const [lightboxPhotoId, setLightboxPhotoId] = useState<number | null>(null);
   const [selectedPersonIds, setSelectedPersonIds] = useState<number[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [excludePersonIds, setExcludePersonIds] = useState<number[]>([]);
@@ -244,6 +244,7 @@ export function useGallery({
     nextExcludePersonIds?: number[],
     nextExcludeTagIds?: number[],
   ) {
+    lightbox.cancelNavigation();
     const epIds = nextExcludePersonIds ?? excludePersonIds;
     const etIds = nextExcludeTagIds ?? excludeTagIds;
     const requestId = nextRequestId(galleryRequestIdRef);
@@ -524,14 +525,14 @@ export function useGallery({
     }
   }
 
-  function openGalleryLightbox(photoId: number) {
+  function openGalleryLightbox(photoId: number, visualOrder: readonly number[]) {
     closeGalleryDrawer(false);
     setGalleryDetailPinned(false);
-    setLightboxPhotoId(photoId);
+    lightbox.open(photoId, visualOrder);
   }
 
   function closeGalleryLightbox() {
-    setLightboxPhotoId(null);
+    lightbox.close();
     setLightboxEditMode(false);
   }
   async function openLightboxPhotoDetail() {
@@ -923,8 +924,8 @@ export function useGallery({
     });
   }
 
-  function handleGalleryCardClick(photoId: number, shiftKey: boolean, visualPageIds?: number[]) {
-    // Shift 范围按瀑布流视觉顺序；未传入时回退接口顺序。灯箱翻页仍用 galleryPhotos（接口序）。
+  function handleGalleryCardClick(photoId: number, shiftKey: boolean, visualPageIds?: number[], lightboxPageIds?: number[]) {
+    // Shift 保持列优先范围选择；灯箱使用另外采集的横向阅读顺序。
     const pageIds = visualPageIds ?? galleryPhotos.map((photo) => photo.id);
     if (shiftKey) {
       if (!gallerySelectionMode) {
@@ -943,7 +944,7 @@ export function useGallery({
       return;
     }
 
-    openGalleryLightbox(photoId);
+    openGalleryLightbox(photoId, lightboxPageIds ?? []);
   }
 
   function handleGalleryCheckboxClick(photoId: number, shiftKey: boolean, visualPageIds?: number[]) {
@@ -1079,28 +1080,46 @@ export function useGallery({
 
   const matchingTagsForPhoto = filterTagMatches(availableTagsForPhoto, manualTagSearch);
 
-  // 灯箱左右翻页仍跟随接口返回的 galleryPhotos 顺序，不跟随瀑布流装箱后的视觉顺序。
-  const lightboxIndex = lightboxPhotoId === null ? -1 : galleryPhotos.findIndex((photo) => photo.id === lightboxPhotoId);
-  const lightboxPhoto = lightboxIndex >= 0 ? galleryPhotos[lightboxIndex] : null;
+  const lightbox = useGalleryLightbox({
+    photos: galleryPhotos,
+    offset: galleryOffset,
+    total: galleryTotal,
+    pageSize: galleryPageSize,
+    contextKey: JSON.stringify([page, workspaceId, selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, activePhotoIdSearch]),
+    busy,
+    loadPage: async (offset) => {
+      const requestId = nextRequestId(galleryRequestIdRef);
+      const response = await listGalleryPhotosWithSearch(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, offset);
+      return isCurrentRequest(galleryRequestIdRef, requestId) ? response : null;
+    },
+    commitPage: (response) => {
+      setGalleryPhotos(response.items);
+      setGalleryTotal(response.total);
+      setGalleryOffset(response.offset);
+      setSelectedGalleryPhotoIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
+    },
+    onError: setError,
+  });
+  const {
+    photo: lightboxPhoto, index: lightboxIndex,
+    isFirstOfPage, isLastOfPage, hasPrevPage, hasNextPage, canGoPrev, canGoNext,
+    goPrevious: goPrevLightbox, goNext: goNextLightbox,
+    navigating: lightboxNavigating, layoutRequest: lightboxLayoutRequest, completeLayout: completeLightboxLayout,
+  } = lightbox;
 
   useEffect(() => {
     if (lightboxPhoto && lightboxPhoto.is_rich_text) {
       setLightboxRichTextDraft(lightboxPhoto.rich_text || "");
+    } else if (!lightboxPhoto) {
+      setLightboxEditMode(false);
     }
   }, [lightboxPhoto]);
-  const isFirstOfPage = lightboxIndex === 0;
-  const isLastOfPage = lightboxIndex === galleryPhotos.length - 1;
-  const hasPrevPage = galleryOffset > 0;
-  const hasNextPage = galleryOffset + galleryPageSize < galleryTotal;
-
-  const canGoPrev = lightboxIndex > 0 || hasPrevPage;
-  const canGoNext = lightboxIndex >= 0 && (!isLastOfPage || hasNextPage);
 
   const lightboxMeta = lightboxPhoto ? (
     <>
       <div className="lightbox-meta-head">
         <span className="lightbox-photo-id">#{lightboxPhoto.id}</span>
-        <strong>{lightboxIndex >= 0 ? `${galleryOffset + lightboxIndex + 1} / ${galleryTotal}` : "图片信息"}</strong>
+        <strong>{lightboxIndex >= 0 ? `${lightbox.offset + lightboxIndex + 1} / ${lightbox.total}` : "图片信息"}</strong>
       </div>
       <div className="lightbox-meta-section">
         <span>人物标签</span>
@@ -1130,58 +1149,13 @@ export function useGallery({
           )}
         </div>
       </div>
-      <button className="lightbox-detail-button" disabled={busy} onClick={() => void openLightboxPhotoDetail()}>
+      <button className="lightbox-detail-button" disabled={busy || lightboxNavigating} onClick={() => void openLightboxPhotoDetail()}>
         <Info size={16} aria-hidden="true" />
         查看详情
       </button>
     </>
   ) : null;
 
-  async function goPrevLightbox() {
-    if (lightboxIndex > 0) {
-      setLightboxPhotoId(galleryPhotos[lightboxIndex - 1].id);
-    } else if (hasPrevPage) {
-      const newOffset = Math.max(0, galleryOffset - galleryPageSize);
-      setBusy(true);
-      try {
-        const response = await listGalleryPhotosWithSearch(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, newOffset);
-        setGalleryPhotos(response.items);
-        setGalleryTotal(response.total);
-        setGalleryOffset(response.offset);
-        setSelectedGalleryPhotoIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
-        if (response.items.length > 0) {
-          setLightboxPhotoId(response.items[response.items.length - 1].id);
-        }
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "翻页失败");
-      } finally {
-        setBusy(false);
-      }
-    }
-  }
-
-  async function goNextLightbox() {
-    if (lightboxIndex >= 0 && lightboxIndex < galleryPhotos.length - 1) {
-      setLightboxPhotoId(galleryPhotos[lightboxIndex + 1].id);
-    } else if (hasNextPage) {
-      const newOffset = galleryOffset + galleryPageSize;
-      setBusy(true);
-      try {
-        const response = await listGalleryPhotosWithSearch(selectedPersonIds, selectedTagIds, excludePersonIds, excludeTagIds, newOffset);
-        setGalleryPhotos(response.items);
-        setGalleryTotal(response.total);
-        setGalleryOffset(response.offset);
-        setSelectedGalleryPhotoIds((current) => current.filter((id) => response.items.some((photo) => photo.id === id)));
-        if (response.items.length > 0) {
-          setLightboxPhotoId(response.items[0].id);
-        }
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "翻页失败");
-      } finally {
-        setBusy(false);
-      }
-    }
-  }
   return {
     error, setError, busy, canAddGallery, canDeleteGallery, canEditGallery,
     galleryPhotos, galleryTotal, galleryOffset, galleryPageSize, gallerySelectionMode, selectedGalleryPhotoIds,
@@ -1197,6 +1171,7 @@ export function useGallery({
     galleryExportFiltersDisabled, galleryExportDisabled, availablePersonsForPhoto, matchingPersonsForPhoto,
     selectedPhotoTags, availableTagsForPhoto, matchingTagsForPhoto, lightboxIndex, lightboxPhoto, isFirstOfPage,
     isLastOfPage, hasPrevPage, hasNextPage, canGoPrev, canGoNext, lightboxMeta,
+    lightboxNavigating, lightboxLayoutRequest, completeLightboxLayout,
     galleryExportModalOpen, galleryExportScope, galleryExportPersonIds, galleryExportTagIds,
     galleryExportExcludePersonIds, galleryExportExcludeTagIds, galleryExportStartPhotoId,
     persons, tags,

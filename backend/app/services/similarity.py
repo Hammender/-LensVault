@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
+import gc
 from io import BytesIO
 import math
 from pathlib import Path
@@ -32,6 +33,55 @@ from sqlalchemy.orm import Session
 
 
 _dino_encode_lock = Lock()
+HASH_CANDIDATE_RADIUS = 23
+
+
+class HammingBKTree:
+    """按汉明距离索引感知哈希，用来缩小近重复候选，而不是保存全部图片对。"""
+
+    def __init__(self) -> None:
+        self.root: tuple[int, list[Any], dict[int, object]] | None = None
+
+    @staticmethod
+    def _distance(left: int, right: int) -> int:
+        return (left ^ right).bit_count()
+
+    def add(self, hash_value: str, identifier: Any) -> None:
+        value = int(hash_value, 16)
+        if self.root is None:
+            self.root = (value, [identifier], {})
+            return
+        node = self.root
+        while True:
+            node_value, identifiers, children = node
+            distance = self._distance(value, node_value)
+            if distance == 0:
+                identifiers.append(identifier)
+                return
+            child = children.get(distance)
+            if child is None:
+                children[distance] = (value, [identifier], {})
+                return
+            node = child  # type: ignore[assignment]
+
+    def query(self, hash_value: str, max_distance: int) -> set[Any]:
+        if self.root is None:
+            return set()
+        value = int(hash_value, 16)
+        matches: set[int] = set()
+        pending = [self.root]
+        while pending:
+            node_value, identifiers, children = pending.pop()
+            distance = self._distance(value, node_value)
+            if distance <= max_distance:
+                matches.update(identifiers)
+            minimum = distance - max_distance
+            maximum = distance + max_distance
+            pending.extend(
+                child for edge_distance, child in children.items()
+                if minimum <= edge_distance <= maximum
+            )
+        return matches
 
 
 @dataclass(frozen=True)
@@ -476,6 +526,21 @@ class DinoV2FeatureExtractor:
                         current_size = max(1, current_size // 2)
         return output
 
+    def unload(self) -> None:
+        """丢掉已加载的 DINOv2，把显存和进程内存还给下一次真正需要它的扫描。"""
+        with _dino_encode_lock:
+            torch_module = self._torch
+            device = self._device
+            self._model = None
+            self._processor = None
+            self._torch = None
+            self._device = "cpu"
+        gc.collect()
+        if torch_module is not None and device == "cuda":
+            empty_cache = getattr(getattr(torch_module, "cuda", None), "empty_cache", None)
+            if callable(empty_cache):
+                empty_cache()
+
 
 def complete_link_clusters(
     member_ids: Iterable[int], candidates: Iterable[SimilarityCandidate], threshold: float
@@ -556,6 +621,7 @@ class GallerySimilarityScanner:
         progress: Any | None = None,
         *,
         include_vectors: bool = True,
+        retain_vectors: bool = True,
     ) -> tuple[dict[int, GallerySimilarityFeature], dict[int, np.ndarray]]:
         version = self.settings.gallery_similarity_model_version
         quality_version = self.settings.gallery_similarity_quality_version
@@ -565,10 +631,14 @@ class GallerySimilarityScanner:
                 select(GallerySimilarityFeature).where(GallerySimilarityFeature.gallery_photo_id.in_(photos))
             ).all()
         }
+        if db.in_transaction():
+            db.commit()
         features: dict[int, GallerySimilarityFeature] = {}
         vectors: dict[int, np.ndarray] = {}
         vector_ids: list[str] = []
         for photo_id, photo in photos.items():
+            if db.in_transaction():
+                db.commit()
             feature = cached.get(photo_id)
             base_changed = feature is None or feature.sha256 != photo.sha256 or feature.feature_version != version
             quality_changed = feature is None or feature.sha256 != photo.sha256 or feature.quality_version != quality_version
@@ -608,10 +678,12 @@ class GallerySimilarityScanner:
                     feature.vector_point_id = None
                     feature.vector_ready = False
                 db.add(feature)
+                db.commit()
             features[photo_id] = feature
             if include_vectors and feature.vector_ready and feature.vector_point_id:
                 vector_ids.append(feature.vector_point_id)
-        db.flush()
+        if db.in_transaction():
+            db.commit()
         if not include_vectors:
             return features, vectors
         if photos:
@@ -621,9 +693,11 @@ class GallerySimilarityScanner:
         for photo_id, photo in photos.items():
             feature = features[photo_id]
             if feature.vector_point_id and feature.vector_point_id in existing_vectors:
-                vectors[photo_id] = existing_vectors[feature.vector_point_id]
+                if retain_vectors:
+                    vectors[photo_id] = existing_vectors[feature.vector_point_id]
                 continue
             missing_ids.append(photo_id)
+        del existing_vectors
         if missing_ids:
             device = self.extractor.device
             if progress is not None:
@@ -655,12 +729,13 @@ class GallerySimilarityScanner:
                 feature = features[photo_id]
                 feature.vector_point_id = point_id
                 feature.vector_ready = True
-                vectors[photo_id] = vector
+                if retain_vectors:
+                    vectors[photo_id] = vector
                 db.add(feature)
                 processed += 1
+            db.commit()
             if progress is not None:
                 progress(0.1 + 0.45 * (processed / len(missing_ids)), f"正在生成视觉特征 {processed}/{len(missing_ids)}")
-        db.flush()
         return features, vectors
 
     def ensure_features(
@@ -670,9 +745,12 @@ class GallerySimilarityScanner:
         progress: Any | None = None,
         *,
         include_vectors: bool = True,
+        retain_vectors: bool = True,
     ) -> tuple[dict[int, GallerySimilarityFeature], dict[int, np.ndarray]]:
         """为其他受控工作流复用图库相似特征缓存和 Qdrant 向量。"""
-        return self._ensure_features(db, photos, progress, include_vectors=include_vectors)
+        return self._ensure_features(
+            db, photos, progress, include_vectors=include_vectors, retain_vectors=retain_vectors
+        )
 
     def _group_quality_scores(
         self,
@@ -731,7 +809,10 @@ class GallerySimilarityScanner:
         self,
         photos: dict[int, GalleryPhoto],
         people_by_photo: dict[int, set[int]],
+        features: dict[int, GallerySimilarityFeature],
         include_cross_type: bool,
+        *,
+        mirrored: bool = False,
     ) -> dict[int, set[tuple[int, int]]]:
         photos_by_person: dict[int, list[int]] = {}
         for photo_id, person_ids in people_by_photo.items():
@@ -739,14 +820,89 @@ class GallerySimilarityScanner:
                 photos_by_person.setdefault(person_id, []).append(photo_id)
         result: dict[int, set[tuple[int, int]]] = {}
         for person_id, photo_ids in photos_by_person.items():
+            grouped: dict[bool | None, list[int]] = {}
+            for photo_id in photo_ids:
+                group_key = None if include_cross_type else bool(photos[photo_id].is_rich_text)
+                grouped.setdefault(group_key, []).append(photo_id)
             pairs: set[tuple[int, int]] = set()
-            for left_index, left_id in enumerate(sorted(set(photo_ids))):
-                for right_id in sorted(set(photo_ids))[left_index + 1 :]:
-                    if not include_cross_type and photos[left_id].is_rich_text != photos[right_id].is_rich_text:
-                        continue
-                    pairs.add((left_id, right_id))
+            for grouped_ids in grouped.values():
+                pairs.update(self._hash_candidate_pairs(grouped_ids, features, mirrored=mirrored))
             result[person_id] = pairs
         return result
+
+    @staticmethod
+    def _hash_candidate_pairs(
+        photo_ids: list[int],
+        features: dict[int, GallerySimilarityFeature],
+        *,
+        mirrored: bool,
+    ) -> set[tuple[int, int]]:
+        phash_tree = HammingBKTree()
+        dhash_tree = HammingBKTree()
+        ordered = sorted(set(photo_ids))
+        hashes: dict[int, tuple[str, str]] = {}
+        for photo_id in ordered:
+            feature = features.get(photo_id)
+            if feature is None or not feature.phash or not feature.dhash:
+                continue
+            index_phash = feature.mirror_phash if mirrored else feature.phash
+            index_dhash = feature.mirror_dhash if mirrored else feature.dhash
+            if not index_phash or not index_dhash:
+                continue
+            hashes[photo_id] = (feature.phash, feature.dhash)
+            phash_tree.add(index_phash, photo_id)
+            dhash_tree.add(index_dhash, photo_id)
+        pairs: set[tuple[int, int]] = set()
+        for photo_id, (phash, dhash) in hashes.items():
+            found = phash_tree.query(phash, HASH_CANDIDATE_RADIUS) | dhash_tree.query(dhash, HASH_CANDIDATE_RADIUS)
+            found.discard(photo_id)
+            for other_id in found:
+                if other_id > photo_id:
+                    pairs.add((photo_id, other_id))
+        return pairs
+
+    def _scene_scores(
+        self,
+        photos: dict[int, GalleryPhoto],
+        people_by_photo: dict[int, set[int]],
+        vectors: dict[int, np.ndarray],
+        include_cross_type: bool,
+    ) -> tuple[dict[tuple[int, int], float], dict[int, set[tuple[int, int]]], int]:
+        photos_by_person: dict[int, list[int]] = {}
+        for photo_id, person_ids in people_by_photo.items():
+            if photo_id in vectors:
+                for person_id in person_ids:
+                    photos_by_person.setdefault(person_id, []).append(photo_id)
+        scores: dict[tuple[int, int], float] = {}
+        pairs_by_person: dict[int, set[tuple[int, int]]] = {}
+        compared = 0
+        threshold = self.settings.gallery_similarity_scene_threshold
+        for person_id, photo_ids in photos_by_person.items():
+            grouped: dict[bool | None, list[int]] = {}
+            for photo_id in dict.fromkeys(photo_ids):
+                group_key = None if include_cross_type else bool(photos[photo_id].is_rich_text)
+                grouped.setdefault(group_key, []).append(photo_id)
+            person_pairs: set[tuple[int, int]] = set()
+            for grouped_ids in grouped.values():
+                if len(grouped_ids) < 2:
+                    continue
+                matrix = np.stack([np.asarray(vectors[photo_id], dtype=np.float32) for photo_id in grouped_ids])
+                norms = np.linalg.norm(matrix, axis=1)
+                normalized = matrix / np.maximum(norms, 1e-12)[:, None]
+                similarity = normalized @ normalized.T
+                for left_index, left_id in enumerate(grouped_ids):
+                    for right_index in range(left_index + 1, len(grouped_ids)):
+                        compared += 1
+                        score = float(similarity[left_index, right_index])
+                        if score < threshold:
+                            continue
+                        pair = (left_id, grouped_ids[right_index]) if left_id < grouped_ids[right_index] else (grouped_ids[right_index], left_id)
+                        scores[pair] = score
+                        person_pairs.add(pair)
+                del similarity, normalized, matrix
+            if person_pairs:
+                pairs_by_person[person_id] = person_pairs
+        return scores, pairs_by_person, compared
 
     def _score_pairs(
         self,
@@ -756,6 +912,7 @@ class GallerySimilarityScanner:
         photos: dict[int, GalleryPhoto],
         progress: Any | None,
         scan_type: str = "normal",
+        include_scene: bool = True,
     ) -> tuple[dict[tuple[int, int], float], dict[tuple[int, int], float]]:
         unique_pairs = sorted(set().union(*pairs_by_person.values()) if pairs_by_person else set())
         near_scores: dict[tuple[int, int], float] = {}
@@ -800,7 +957,7 @@ class GallerySimilarityScanner:
                     near_scores[pair] = mirrored_score
             elif direct_score >= self.settings.gallery_similarity_near_threshold:
                 near_scores[pair] = direct_score
-            else:
+            elif include_scene and left_id in vectors and right_id in vectors:
                 scene_score = cosine_similarity(vectors[left_id], vectors[right_id])
                 if scene_score >= self.settings.gallery_similarity_scene_threshold:
                     scene_scores[pair] = scene_score
@@ -809,7 +966,15 @@ class GallerySimilarityScanner:
         return near_scores, scene_scores
 
     def run_scan(self, db: Session, scan: GallerySimilarityScan, progress: Any | None = None) -> None:
+        try:
+            self._run_scan(db, scan, progress)
+        finally:
+            self.extractor.unload()
+
+    def _run_scan(self, db: Session, scan: GallerySimilarityScan, progress: Any | None = None) -> None:
         photos, people_by_photo = self._load_scope(db, int(scan.workspace_id), scan.person_id)
+        if db.in_transaction():
+            db.commit()
         scan.photo_count = len(photos)
         if progress is not None:
             progress(0.05, f"找到 {len(photos)} 张带人物标签的图片")
@@ -819,23 +984,39 @@ class GallerySimilarityScanner:
             progress,
             include_vectors=scan.scan_type == "normal",
         )
-        pairs_by_person = self._candidate_pairs(photos, people_by_photo, scan.include_cross_type)
-        unique_pairs = set().union(*pairs_by_person.values()) if pairs_by_person else set()
-        scan.candidate_pair_count = len(unique_pairs)
-        near_scores, scene_scores = self._score_pairs(
-            pairs_by_person,
+        mirrored = scan.scan_type == "mirror"
+        near_pairs = self._candidate_pairs(
+            photos, people_by_photo, features, scan.include_cross_type, mirrored=mirrored
+        )
+        near_scores, _ = self._score_pairs(
+            near_pairs,
             features,
             vectors,
             photos,
             progress,
             scan.scan_type,
+            include_scene=False,
         )
+        if scan.scan_type == "normal":
+            scene_scores, scene_pairs, scene_compared = self._scene_scores(
+                photos, people_by_photo, vectors, scan.include_cross_type
+            )
+            for pair in list(scene_scores):
+                if pair in near_scores:
+                    scene_scores.pop(pair, None)
+                    for person_pairs in scene_pairs.values():
+                        person_pairs.discard(pair)
+        else:
+            scene_scores, scene_pairs, scene_compared = {}, {}, 0
+        vectors.clear()
+        unique_near = set().union(*near_pairs.values()) if near_pairs else set()
+        scan.candidate_pair_count = len(unique_near) + scene_compared
 
         group_specs: dict[tuple[str, tuple[int, ...]], tuple[SimilarityCluster, set[int]]] = {}
-        score_tiers = [("near_duplicate", near_scores, self.settings.gallery_similarity_near_threshold)]
+        score_tiers = [("near_duplicate", near_scores, near_pairs, self.settings.gallery_similarity_near_threshold)]
         if scan.scan_type == "normal":
-            score_tiers.append(("same_scene", scene_scores, self.settings.gallery_similarity_scene_threshold))
-        for tier, scores, threshold in score_tiers:
+            score_tiers.append(("same_scene", scene_scores, scene_pairs, self.settings.gallery_similarity_scene_threshold))
+        for tier, scores, pairs_by_person, threshold in score_tiers:
             for person_id, pairs in pairs_by_person.items():
                 candidates = [
                     SimilarityCandidate(left, right, scores[(left, right)])
@@ -855,8 +1036,17 @@ class GallerySimilarityScanner:
         if progress is not None:
             progress(0.91, f"正在发布 {len(group_specs)} 个相似组")
 
-        # 特征计算阶段可能耗时数分钟。发布前先结束此前的读取事务，再用很短的
-        # SQLite 写事务锁住“重新校验 -> 写入结果”窗口，避免已删除图片触发外键失败。
+        quality_by_key: dict[tuple[str, tuple[int, ...]], tuple[dict[int, float], dict[int, float | None], bool]] = {}
+        for (tier, member_ids), (_cluster, person_ids) in group_specs.items():
+            quality_by_key[(tier, member_ids)] = self._group_quality_scores(
+                db,
+                photos,
+                features,
+                member_ids,
+                sorted(person_ids),
+            )
+
+        # 质量分会下载原图。先提交，再打开很短的写事务，只做存在性校验和结果写入。
         if db.in_transaction():
             db.commit()
         if db.bind is not None and db.bind.dialect.name == "sqlite":
@@ -882,8 +1072,8 @@ class GallerySimilarityScanner:
         scan.photo_count = len(live_photo_ids)
         scan.candidate_pair_count = sum(
             left_id in live_photo_ids and right_id in live_photo_ids
-            for left_id, right_id in unique_pairs
-        )
+            for left_id, right_id in unique_near
+        ) + scene_compared
 
         old_scans = db.scalars(
             select(GallerySimilarityScan).where(
@@ -906,13 +1096,9 @@ class GallerySimilarityScanner:
             live_group_person_ids = sorted(person_id for person_id in person_ids if person_id in live_person_ids)
             if len(live_member_ids) < 2 or not live_group_person_ids:
                 continue
-            quality_scores, face_scores, face_quality_enabled = self._group_quality_scores(
-                db,
-                photos,
-                features,
-                live_member_ids,
-                live_group_person_ids,
-            )
+            full_quality_scores, full_face_scores, face_quality_enabled = quality_by_key[(tier, member_ids)]
+            quality_scores = {photo_id: full_quality_scores[photo_id] for photo_id in live_member_ids}
+            face_scores = {photo_id: full_face_scores[photo_id] for photo_id in live_member_ids}
             recommendation = choose_quality_recommendation(
                 quality_scores,
                 self.settings.gallery_similarity_quality_min_margin,
@@ -976,7 +1162,7 @@ class GallerySimilarityScanner:
             published_group_count += 1
         scan.group_count = published_group_count
         db.add(scan)
-        db.flush()
+        db.commit()
 
 
 def mark_similarity_scans_stale(db: Session, workspace_id: int, person_ids: set[int] | None = None) -> int:
