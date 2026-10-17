@@ -6,8 +6,10 @@ import {
   bindPersonTag,
   clearUnknownGalleryPersonTags,
   createPerson,
+  createTag,
   deletePerson,
   deletePersonSample,
+  deleteTag,
   downloadPersonExport,
   getTask,
   importPersonSamples,
@@ -15,10 +17,11 @@ import {
   listPersonTags,
   renamePerson,
   reRecognizeUnknownGalleryPhotos,
-  unbindPersonTag
+  unbindPersonTag,
+  updateTag
 } from "../api";
 import type { ConfirmDialogOptions } from "../components/ConfirmDialog";
-import { formatError } from "../lib/formatError";
+import { filterPeopleByTag } from "../lib/peopleTags";
 import { isSystemUnknownPerson } from "../lib/personPicker";
 import type { PageKey } from "../lib/routing";
 import { sortByPinyinName } from "../lib/sort";
@@ -26,7 +29,7 @@ import { isTerminalTask } from "../lib/taskStatus";
 import type { Person, SamplePhoto, Tag, Task } from "../types";
 import { usePolling } from "./usePolling";
 import type { PendingSampleUpload } from "./useUpload";
-import { filterPersonMatches } from "../lib/personPicker";
+import { matchesPersonSearch } from "../lib/personPicker";
 
 type UsePeopleOptions = {
   persons: Person[];
@@ -59,6 +62,26 @@ export function usePeople({
 }: UsePeopleOptions) {
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [peopleSearch, setPeopleSearch] = useState("");
+  const [tagView, setTagView] = useState<"people" | "tags">("people");
+  const [peopleTagFilter, setPeopleTagFilter] = useState("");
+  const [tagSearch, setTagSearch] = useState("");
+  const [newTagName, setNewTagName] = useState("");
+  const [selectedTagId, setSelectedTagId] = useState<number | null>(null);
+  const [tagRenameValue, setTagRenameValue] = useState("");
+  const selectedTag = tags.find((tag) => tag.id === selectedTagId) ?? null;
+  const filteredTags = useMemo(
+    () => sortByPinyinName(tags.filter((tag) => matchesPersonSearch(tag.name, tagSearch))),
+    [tags, tagSearch]
+  );
+  const tagPersonCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    persons.forEach((person) => person.tag_ids?.forEach((id) => counts.set(id, (counts.get(id) ?? 0) + 1)));
+    return counts;
+  }, [persons]);
+  const linkedTagPersons = useMemo(
+    () => selectedTagId === null ? [] : filterPeopleByTag(persons, "", String(selectedTagId)),
+    [persons, selectedTagId]
+  );
   const [peopleBatchDeleteMode, setPeopleBatchDeleteMode] = useState(false);
   const [selectedPersonDeleteIds, setSelectedPersonDeleteIds] = useState<number[]>([]);
   const [samples, setSamples] = useState<SamplePhoto[]>([]);
@@ -71,8 +94,8 @@ export function usePeople({
   const [recognitionNotice, setRecognitionNotice] = useState<{ id: number; message: string } | null>(null);
 
   const filteredPeopleInLibrary = useMemo(
-    () => filterPersonMatches(persons, peopleSearch),
-    [peopleSearch, persons]
+    () => filterPeopleByTag(persons, peopleSearch, peopleTagFilter),
+    [peopleSearch, persons, peopleTagFilter]
   );
   const unknownPersonCount = useMemo(() => persons.filter((person) => person.is_unknown).length, [persons]);
   const [error, setError] = useState<string | null>(null);
@@ -102,15 +125,47 @@ export function usePeople({
     }
     setPersonTags(sortByPinyinName(await listPersonTags(personId)));
   }
+  const [detailsLoading, setDetailsLoading] = useState(false);
   useEffect(() => {
-    void refreshSamples(selectedPerson?.id ?? null);
-    void refreshPersonTags(selectedPerson?.id ?? null);
+    let canceled = false;
+    setSamples([]);
+    setPersonTags([]);
+    setDetailsLoading(Boolean(selectedPerson));
     if (selectedPerson) {
       setRenameValue(selectedPerson.display_name);
       setPersonTagSelectId("");
       setPersonTagName("");
+      void Promise.all([listPersonSamples(selectedPerson.id), listPersonTags(selectedPerson.id)])
+        .then(([nextSamples, nextTags]) => {
+          if (!canceled) {
+            setSamples(nextSamples);
+            setPersonTags(sortByPinyinName(nextTags));
+          }
+        })
+        .catch((cause) => {
+          if (!canceled) setError(cause instanceof Error ? cause.message : "加载人物详情失败。");
+        })
+        .finally(() => {
+          if (!canceled) setDetailsLoading(false);
+        });
     }
+    return () => { canceled = true; };
   }, [selectedPerson]);
+
+  useEffect(() => {
+    if (selectedTagId !== null && !tags.some((tag) => tag.id === selectedTagId)) setSelectedTagId(null);
+    if (peopleTagFilter && !tags.some((tag) => String(tag.id) === peopleTagFilter)) setPeopleTagFilter("");
+  }, [tags, selectedTagId, peopleTagFilter]);
+
+  useEffect(() => {
+    setTagRenameValue(selectedTag?.name ?? "");
+  }, [selectedTag?.id, selectedTag?.name]);
+
+  useEffect(() => {
+    setSelectedTagId((current) => current !== null && !filteredTags.some((tag) => tag.id === current)
+      ? filteredTags[0]?.id ?? null
+      : current);
+  }, [filteredTags]);
 
   useEffect(() => {
     if (highlightedSampleId === null || !samples.some((sample) => sample.id === highlightedSampleId)) {
@@ -152,11 +207,16 @@ export function usePeople({
     try {
       const person = await createPerson(newPersonName.trim());
       setNewPersonName("");
+      setPeopleSearch("");
+      setPeopleTagFilter("");
       await refreshPeople();
       setSelectedPerson(person);
+      setTagView("people");
       onNavigate("people");
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "创建人物失败。");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -403,7 +463,7 @@ export function usePeople({
     pendingSampleUploads.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setPendingSampleUploads([]);
     setSelectedPerson(person);
-    if (window.matchMedia("(max-width: 1240px)").matches) {
+    if (window.matchMedia("(max-width: 1000px)").matches) {
       window.requestAnimationFrame(() => {
         peopleMainRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
@@ -419,14 +479,17 @@ export function usePeople({
     pendingSampleUploads.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setPendingSampleUploads([]);
     setSelectedPerson(person);
+    setTagView("people");
     setHighlightedSampleId(samplePhotoId);
+    setPeopleSearch("");
+    setPeopleTagFilter("");
     onNavigate("people");
     window.requestAnimationFrame(() => {
       peopleMainRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }
-  async function handleBindPersonTag() {
-    if (!selectedPerson || (!personTagSelectId && !personTagName.trim())) {
+  async function handleBindPersonTag(source: "existing" | "new" = "existing") {
+    if (!canEditSamples || !selectedPerson || (source === "existing" ? !personTagSelectId : !personTagName.trim())) {
       return;
     }
     if (selectedPersonIsSystemUnknown) {
@@ -438,12 +501,12 @@ export function usePeople({
     try {
       const next = await bindPersonTag(
         selectedPerson.id,
-        personTagSelectId ? { tagId: Number(personTagSelectId) } : { name: personTagName.trim() }
+        source === "existing" ? { tagId: Number(personTagSelectId) } : { name: personTagName.trim() }
       );
       setPersonTags(sortByPinyinName(next));
       setPersonTagSelectId("");
       setPersonTagName("");
-      await Promise.all([refreshTags(), refreshGallery()]);
+      await Promise.all([refreshPeople(), refreshTags(), refreshGallery()]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "人物标签绑定失败。");
     } finally {
@@ -452,7 +515,7 @@ export function usePeople({
   }
 
   async function handleUnbindPersonTag(tagId: number) {
-    if (!selectedPerson) {
+    if (!canDeleteSamples || !selectedPerson) {
       return;
     }
     if (selectedPersonIsSystemUnknown) {
@@ -464,6 +527,7 @@ export function usePeople({
     try {
       const next = await unbindPersonTag(selectedPerson.id, tagId);
       setPersonTags(sortByPinyinName(next));
+      await Promise.all([refreshPeople(), refreshGallery()]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "人物标签移除失败。");
     } finally {
@@ -475,21 +539,92 @@ export function usePeople({
     await onOpenGalleryPhoto(photoId);
   }
 
+  async function handleCreateTag() {
+    if (!canEditGallery || !newTagName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const tag = await createTag(newTagName.trim());
+      await refreshTags();
+      setNewTagName("");
+      setTagSearch("");
+      setSelectedTagId(tag.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "新建普通标签失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRenameTag() {
+    if (!canEditGallery || !selectedTag || selectedTag.is_system || !tagRenameValue.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateTag(selectedTag.id, tagRenameValue.trim());
+      await Promise.all([refreshTags(), refreshGallery(), refreshPersonTags(selectedPerson?.id ?? null)]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "修改普通标签失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteTag() {
+    if (!canEditGallery || !selectedTag || selectedTag.is_system) return;
+    if (!await confirm({
+      title: "删除普通标签",
+      message: `确认删除普通标签「${selectedTag.name}」吗？将移除所有人物和图库图片与此标签的关联，图片和人物会保留。`,
+      confirmLabel: "删除标签",
+      tone: "danger"
+    })) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteTag(selectedTag.id);
+      setSelectedTagId(null);
+      setPersonTags((current) => current.filter((tag) => tag.id !== selectedTag.id));
+      await Promise.all([refreshTags(), refreshPeople(), refreshGallery()]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除普通标签失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleViewTagPeople(tagId: number) {
+    setPeopleTagFilter(String(tagId));
+    setPeopleSearch("");
+    setTagView("people");
+  }
+
   useEffect(() => {
     setSelectedPerson((current) => {
-      if (!persons.length) {
+      if (!filteredPeopleInLibrary.length) {
         return null;
       }
       if (!current) {
-        return persons[0] ?? null;
+        return filteredPeopleInLibrary[0] ?? null;
       }
-      return persons.find((person) => person.id === current.id) ?? persons[0] ?? null;
+      return filteredPeopleInLibrary.find((person) => person.id === current.id) ?? filteredPeopleInLibrary[0] ?? null;
     });
+  }, [filteredPeopleInLibrary]);
+
+  useEffect(() => {
+    pendingSampleUploads.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    setPendingSampleUploads([]);
+  }, [selectedPerson?.id]);
+
+  useEffect(() => {
     setSelectedPersonDeleteIds((current) => current.filter((id) => persons.some((person) => person.id === id)));
   }, [persons]);
 
   return {
     error, setError, busy, canAddSamples, canDeleteSamples, canEditSamples, canEditGallery,
+    tagView, setTagView, peopleTagFilter, setPeopleTagFilter, tagSearch, setTagSearch,
+    newTagName, setNewTagName, selectedTag, setSelectedTagId, tagRenameValue, setTagRenameValue,
+    filteredTags, linkedTagPersons, tagPersonCounts, detailsLoading,
+    handleCreateTag, handleRenameTag, handleDeleteTag, handleViewTagPeople,
     persons, tags, selectedPerson, peopleSearch, peopleBatchDeleteMode, selectedPersonDeleteIds, samples, personTags,
     personTagSelectId, personTagName, newPersonName, renameValue, importFileRef, importTask,
     pendingSampleUploads, highlightedSampleId, peopleMainRef,

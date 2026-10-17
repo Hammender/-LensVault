@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api._helpers import get_workspace_object
 from app.core.timezones import shanghai_isoformat, shanghai_now
@@ -50,7 +50,7 @@ def list_persons(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> list[PersonRead]:
-    query = select(Person).where(Person.workspace_id == current.workspace_id).order_by(Person.is_unknown.asc(), Person.display_name.asc())
+    query = select(Person).options(selectinload(Person.labels)).where(Person.workspace_id == current.workspace_id).order_by(Person.is_unknown.asc(), Person.display_name.asc())
     if is_unknown is not None:
         query = query.where(Person.is_unknown.is_(is_unknown))
     return [person_to_read(db, person) for person in db.scalars(query).all()]

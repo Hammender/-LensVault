@@ -7,6 +7,7 @@ export type Person = {
   unknown_serial: number | null;
   sample_count: number;
   gallery_photo_count: number;
+  tag_ids?: number[];
   created_at: string;
 };
 

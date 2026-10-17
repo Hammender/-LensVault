@@ -32,7 +32,7 @@ const navItems = [
   { key: "gallery", label: "展示图库", Icon: GalleryHorizontalEnd },
   { key: "similarity", label: "相似整理", Icon: ScanSearch },
   { key: "acquisition", label: "采集中心", Icon: FolderSync },
-  { key: "people", label: "人物样本", Icon: UsersRound },
+  { key: "people", label: "图片标签", Icon: UsersRound },
   { key: "upload", label: "上传", Icon: UploadCloud },
   { key: "videos", label: "视频库", Icon: Clapperboard },
   { key: "statistics", label: "统计", Icon: BarChart3 }

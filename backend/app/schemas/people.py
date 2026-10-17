@@ -32,6 +32,7 @@ class PersonRead(BaseModel):
     unknown_serial: int | None
     sample_count: int = 0
     gallery_photo_count: int = 0
+    tag_ids: list[int] = Field(default_factory=list)
     created_at: datetime
 
     model_config = {"from_attributes": True}

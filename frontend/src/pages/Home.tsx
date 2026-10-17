@@ -30,9 +30,9 @@ const workstations = [
   },
   {
     page: "people",
-    title: "人物样本库",
-    tag: "特征基准",
-    description: "维护人物正脸及多角度样本，校准人脸特征向量，建立稳健的识别比对基础。",
+    title: "图片标签",
+    tag: "标签维护",
+    description: "统一维护人物标签、普通标签与人物样本，按普通标签查找关联人物。",
     Icon: UsersRound
   },
   {

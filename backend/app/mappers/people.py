@@ -46,5 +46,6 @@ def person_to_read(db: Session, person: Person) -> PersonRead:
         unknown_serial=person.unknown_serial,
         sample_count=sample_count,
         gallery_photo_count=gallery_count,
+        tag_ids=sorted(link.tag_id for link in person.labels),
         created_at=person.created_at,
     )

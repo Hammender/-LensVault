@@ -107,6 +107,20 @@ export async function createTag(name: string): Promise<Tag> {
   );
 }
 
+export async function updateTag(tagId: number, name: string): Promise<Tag> {
+  return parseResponse<Tag>(
+    await authFetch(`/api/tags/${tagId}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify({ name })
+    })
+  );
+}
+
+export async function deleteTag(tagId: number): Promise<void> {
+  await parseResponse<{ status: string }>(await authFetch(`/api/tags/${tagId}`, { method: "DELETE" }));
+}
+
 export async function downloadPersonExport(): Promise<{ blob: Blob; filename: string }> {
   return parseBlobResponse(
     await authFetch("/api/persons/export"),

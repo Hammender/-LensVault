@@ -4565,6 +4565,13 @@
             "title": "Sample Count",
             "type": "integer"
           },
+          "tag_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Tag Ids",
+            "type": "array"
+          },
           "unknown_serial": {
             "anyOf": [
               {
