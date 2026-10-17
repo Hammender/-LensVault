@@ -57,6 +57,8 @@ class RecordingPictureService:
         _workspace_id: int,
         *,
         recognition_plan: object | None,
+        actor_id: int | None = None,
+        actor_name: str | None = None,
     ) -> tuple[SimpleNamespace, SimpleNamespace]:
         with self.lock:
             self.recognitions_active_during_import.append(self.active_recognitions)

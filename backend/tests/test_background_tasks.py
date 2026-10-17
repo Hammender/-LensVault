@@ -29,6 +29,7 @@ class FakePictureService:
         _workspace_id: int,
         *,
         recognition_plan: object | None,
+        actor_id=None, actor_name=None,
     ) -> tuple[SimpleNamespace, SimpleNamespace]:
         return SimpleNamespace(id=1), SimpleNamespace(known_matches=0, unknown_faces=0, duplicated=0)
 
@@ -46,6 +47,7 @@ class FakeZipPictureService:
         _zip_bytes: bytes,
         _workspace_id: int,
         _progress_callback,
+        *, actor_id=None, actor_name=None,
     ) -> dict[str, int]:
         return {
             "added_photos": 2,

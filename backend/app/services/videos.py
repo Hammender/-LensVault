@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.provenance import attach_provenance, actor_snapshot
+
 from datetime import datetime
 import hashlib
 import json
@@ -72,7 +74,7 @@ class VideoService:
         self.storage = storage
         self.settings = settings or get_settings()
 
-    def create_upload_session(self, db: Session, payload: VideoUploadSessionCreate, workspace_id: int | None) -> VideoUploadSession:
+    def create_upload_session(self, db: Session, payload: VideoUploadSessionCreate, workspace_id: int | None, *, actor_id=None) -> VideoUploadSession:
         title = payload.title.strip()
         filename = Path(payload.filename).name.strip()
         content_type = self._normalize_upload_content_type(filename, payload.content_type)
@@ -83,7 +85,7 @@ class VideoService:
             existing_sha = db.scalar(
                 select(VideoItem).where(
                     VideoItem.workspace_id == workspace_id,
-                    VideoItem.sha256 == normalized_sha,
+                    ((VideoItem.sha256 == normalized_sha) | (VideoItem.content_sha256 == normalized_sha)),
                 )
             )
             if existing_sha is not None:
@@ -96,6 +98,7 @@ class VideoService:
 
         total_parts = (payload.size_bytes + part_size - 1) // part_size
         session = VideoUploadSession(
+            created_by=actor_id, actor_name=actor_snapshot(db, actor_id),
             id=uuid4().hex,
             workspace_id=workspace_id,
             filename=filename,
@@ -121,10 +124,10 @@ class VideoService:
         )
         return session
 
-    def import_acquisition_asset(self, db: Session, asset: AcquisitionAsset, workspace_id: int | None, caption: str | None) -> VideoItem:
+    def import_acquisition_asset(self, db: Session, asset: AcquisitionAsset, workspace_id: int | None, caption: str | None, *, actor_id=None, actor_name=None, provenance_snapshot=None) -> VideoItem:
         if asset.media_type != "video" or not asset.object_key:
             raise ValueError("采集资产不是可导入的视频")
-        existing = db.scalar(select(VideoItem).where(VideoItem.workspace_id == workspace_id, VideoItem.sha256 == asset.sha256))
+        existing = db.scalar(select(VideoItem).where(VideoItem.workspace_id == workspace_id, ((VideoItem.sha256 == asset.sha256) | (VideoItem.content_sha256 == asset.sha256))))
         if existing is not None:
             return existing
         object_key = self._build_video_object_key(workspace_id, asset.filename)
@@ -146,6 +149,7 @@ class VideoService:
                 width=asset.width,
                 height=asset.height,
             )
+            attach_provenance(db, video, source_type="acquisition", actor_id=actor_id, actor_name=actor_name, snapshot=provenance_snapshot)
             for run_item in db.scalars(select(AcquisitionRunItem).where(AcquisitionRunItem.asset_id == asset.id)).all():
                 run = db.get(AcquisitionRun, run_item.run_id)
                 if run is None:
@@ -182,7 +186,7 @@ class VideoService:
         actual_sha256 = self.hash_object(object_key)
         if expected_sha256 and actual_sha256 != expected_sha256.lower():
             raise ValueError("视频 SHA256 校验失败")
-        existing = db.scalar(select(VideoItem).where(VideoItem.workspace_id == workspace_id, VideoItem.sha256 == actual_sha256))
+        existing = db.scalar(select(VideoItem).where(VideoItem.workspace_id == workspace_id, ((VideoItem.sha256 == actual_sha256) | (VideoItem.content_sha256 == actual_sha256))))
         if existing is not None:
             raise DuplicateVideoError(f"已存在内容相同的视频（对应已有视频：《{existing.title}》），请勿重复上传")
         probe = self._probe_object(object_key, filename)
@@ -195,6 +199,7 @@ class VideoService:
             filename=filename,
             content_type=normalized_content_type,
             sha256=actual_sha256,
+            content_sha256=actual_sha256,
             object_key=object_key,
             size_bytes=size_bytes,
             duration_seconds=resolved_duration,
@@ -303,6 +308,7 @@ class VideoService:
                 expected_sha256=session.sha256,
                 video_type=payload.video_type,
             )
+            attach_provenance(db, video, actor_id=session.created_by, actor_name=session.actor_name)
             self.replace_video_tags(db, video, payload.category_tag_ids, payload.category_tag_names)
             self.replace_video_people(db, video, payload.person_ids)
             temp_keys = [part.object_key for part in parts]
@@ -475,6 +481,7 @@ class VideoService:
             video.faststart_applied = True
             video.content_type = "video/mp4"
             video.size_bytes = size_bytes
+            video.content_sha256 = sha256
             video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds or video.duration_seconds
             video.width = playback_info.width or original_info.width or video.width
             video.height = playback_info.height or original_info.height or video.height
@@ -583,6 +590,7 @@ class VideoService:
             video.faststart_applied = True
             video.content_type = "video/mp4"
             video.size_bytes = size_bytes
+            video.content_sha256 = sha256
             video.duration_seconds = playback_info.duration_seconds or original_info.duration_seconds or video.duration_seconds
             video.width = playback_info.width or original_info.width or video.width
             video.height = playback_info.height or original_info.height or video.height

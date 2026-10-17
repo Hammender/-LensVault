@@ -16,13 +16,17 @@ class VideoItem(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL", name="fk_video_items_created_by"), nullable=True, comment="入库操作人")
+    actor_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="操作人名称快照")
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(256), index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provenance: Mapped["MediaProvenance | None"] = relationship("MediaProvenance", uselist=False, lazy="selectin", cascade="all, delete-orphan")
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sha256: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     object_key: Mapped[str] = mapped_column(String(512), unique=True)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, comment="当前存储文件内容哈希")
     cover_object_key: Mapped[str | None] = mapped_column(String(512), unique=True, nullable=True)
     cover_content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -146,6 +150,8 @@ class VideoUploadSession(Base):
     __tablename__ = "video_upload_sessions"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL", name="fk_video_upload_sessions_created_by"), nullable=True, comment="入库操作人")
+    actor_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="操作人名称快照")
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     filename: Mapped[str] = mapped_column(String(512))
     title: Mapped[str] = mapped_column(String(256))

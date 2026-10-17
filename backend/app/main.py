@@ -9,6 +9,7 @@ import logging
 from app.application import create_app
 from app.api import videos as videos_api
 from app.api._helpers import get_workspace_object as _get_workspace_object
+from app.api.provenance import router as provenance_router
 from app.api.acquisition import router as acquisition_router
 from app.api.acquisition_plugins import router as acquisition_plugins_router
 from app.api.gallery import (
@@ -70,6 +71,7 @@ app.include_router(people_router)
 app.include_router(gallery_imports_router)
 app.include_router(subtitle_service_router)
 app.include_router(gallery_router)
+app.include_router(provenance_router)
 app.include_router(videos_router)
 
 

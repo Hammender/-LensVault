@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.provenance import export_source
+
 from contextvars import ContextVar
 from datetime import datetime
 from io import BytesIO
@@ -349,7 +351,7 @@ async def import_gallery_photos(
 ) -> TaskRead:
     metadata = _parse_gallery_metadata(metadata_json, len(files))
     _validate_gallery_person_ids(db, metadata, current.workspace_id)
-    task = create_task(db, "gallery_import", f"已排队 {len(files)} 张普通图片", current.workspace_id)
+    task = create_task(db, "gallery_import", f"已排队 {len(files)} 张普通图片", current.workspace_id, actor_id=current.user.id)
     uploads = [
         (file.filename, await spool_upload(request.app.state.settings, task.id, index, file), file.content_type)
         for index, file in enumerate(files)
@@ -379,7 +381,7 @@ async def import_gallery_rich_photos(
 ) -> TaskRead:
     metadata = _parse_gallery_metadata(metadata_json, len(files))
     _validate_gallery_person_ids(db, metadata, current.workspace_id)
-    task = create_task(db, "gallery_rich_import", f"已排队 {len(files)} 张图文图片", current.workspace_id)
+    task = create_task(db, "gallery_rich_import", f"已排队 {len(files)} 张图文图片", current.workspace_id, actor_id=current.user.id)
     uploads = [
         (file.filename, await spool_upload(request.app.state.settings, task.id, index, file), file.content_type)
         for index, file in enumerate(files)
@@ -486,6 +488,7 @@ def _build_gallery_export_response(
                 manifest_photos.append(
                     {
                         "id": photo.id,
+                        "provenance": export_source(photo),
                         "display_index": display_index,
                         "filename": photo.filename,
                         "sha256": photo.sha256,
@@ -506,7 +509,7 @@ def _build_gallery_export_response(
                 )
             archive.writestr(
                 "metadata.json",
-                json.dumps({"version": 2, "kind": "gallery_export", "scope": scope, "exported_at": shanghai_isoformat(shanghai_now()), "photos": manifest_photos}, ensure_ascii=False, indent=2),
+                json.dumps({"version": 3, "kind": "gallery_export", "scope": scope, "exported_at": shanghai_isoformat(shanghai_now()), "photos": manifest_photos}, ensure_ascii=False, indent=2),
             )
     except Exception:
         archive_path.unlink(missing_ok=True)
@@ -570,7 +573,7 @@ async def import_gallery_export_zip(
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
-    task = create_task(db, "gallery_zip_import", "已排队展示图 ZIP 导入", current.workspace_id)
+    task = create_task(db, "gallery_zip_import", "已排队展示图 ZIP 导入", current.workspace_id, actor_id=current.user.id)
     zip_path = await spool_upload(request.app.state.settings, task.id, 0, file)
     logger.info("Gallery zip import enqueued task_id=%s path=%s", task.id, zip_path.name)
     background_tasks.add_task(

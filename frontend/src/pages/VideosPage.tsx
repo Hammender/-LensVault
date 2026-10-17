@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import VideoTransfer from "../components/VideoTransfer";
+import { getSelectedWorkspaceId } from "../lib/apiClient";
 import { Edit3, Film, Sparkles, Trash2 } from "lucide-react";
 
 import VideoLightbox from "../components/VideoLightbox";
@@ -134,6 +137,9 @@ export default function VideosPage({ model }: { model: VideosModel }) {
     setEditingVideoId,
     error
   } = model;
+  const [exportIds, setExportIds] = useState<number[]>([]);
+  const workspaceId = getSelectedWorkspaceId();
+  useEffect(() => setExportIds([]), [workspaceId]);
   const shortVideos = videoItems.filter((v) => v.video_type === "short");
 
   return (
@@ -371,6 +377,7 @@ export default function VideosPage({ model }: { model: VideosModel }) {
             </div>
           </div>
 
+          <VideoTransfer key={workspaceId} canImport={canAddVideos} selectedIds={exportIds} categoryIds={selectedVideoCategoryIds} personIds={selectedVideoPersonIds} query={videoSearch} videoType={videoTypeFilter} onImported={() => { void refreshVideoList(); }} />
           <div className="bili-video-grid">
             {videoItems.map((video, idx) => (
               <article
@@ -385,6 +392,9 @@ export default function VideosPage({ model }: { model: VideosModel }) {
                   }
                 }}
               >
+                <label className="video-export-selection" onClick={(event) => event.stopPropagation()}>
+                  <input type="checkbox" checked={exportIds.includes(video.id)} onChange={(event) => setExportIds((ids) => event.target.checked ? [...ids, video.id] : ids.filter((id) => id !== video.id))} /> 选择导出
+                </label>
                 <div className="bili-video-cover">
                   {video.cover_url ? (
                     <img src={video.cover_url} alt={video.title} loading="lazy" />

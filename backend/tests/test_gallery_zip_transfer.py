@@ -235,7 +235,7 @@ def test_duplicate_zip_photo_is_exactly_replaced_from_manifest(db_session: Sessi
     assert restored.faces == []
 
 
-def test_export_v2_uses_the_same_stable_display_order(db_session: Session) -> None:
+def test_export_v3_uses_the_same_stable_display_order(db_session: Session) -> None:
     storage = MemoryStorage()
     photos = [
         GalleryPhoto(
@@ -289,7 +289,7 @@ def test_export_v2_uses_the_same_stable_display_order(db_session: Session) -> No
 
     with ZipFile(BytesIO(asyncio.run(read_response()))) as archive:
         manifest = json.loads(archive.read("metadata.json"))
-    assert manifest["version"] == 2
+    assert manifest["version"] == 3
     assert [item["filename"] for item in manifest["photos"]] == [
         "new-first.jpg",
         "new-second.jpg",

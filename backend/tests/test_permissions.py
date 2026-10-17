@@ -23,6 +23,7 @@ PERMISSION_CASES = (
     ("can_edit_gallery", "DELETE", "/api/gallery/photos/1/faces/2/person", "/api/gallery/photos/{photo_id}/faces/{face_id}/person"),
     ("can_delete_samples", "DELETE", "/api/persons/1/samples/1", "/api/persons/{person_id}/samples/{sample_photo_id}"),
     ("can_edit_samples", "PATCH", "/api/persons/1", "/api/persons/{person_id}"),
+    ("can_add_videos", "POST", "/api/videos/import-zip", "/api/videos/import-zip"),
     ("can_add_videos", "POST", "/api/videos/upload-sessions", "/api/videos/upload-sessions"),
     ("can_delete_videos", "DELETE", "/api/videos/1", "/api/videos/{video_id}"),
     ("can_edit_videos", "PATCH", "/api/videos/1", "/api/videos/{video_id}"),

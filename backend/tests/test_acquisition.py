@@ -1581,6 +1581,7 @@ class AcquisitionWorkflowTests(unittest.TestCase):
                 source_object_key: str,
                 ingest_source: str = "manual_upload",
                 is_rich_text: bool = False,
+                actor_id=None, actor_name=None, provenance_snapshot=None,
             ) -> tuple[GalleryPhoto, SimpleNamespace]:
                 test_case.assertEqual(ingest_source, "acquisition")
                 test_case.assertFalse(is_rich_text)

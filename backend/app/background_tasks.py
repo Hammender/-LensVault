@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.models import Task
+
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -175,6 +177,8 @@ def process_gallery_import_task(
                 metadata.get("rich_text"),
                 workspace_id,
                 recognition_plan=recognition_results.get(index - 1),
+                actor_id=db.get(Task, task_id).created_by,
+                actor_name=db.get(Task, task_id).actor_name,
             )
             for person_id in metadata.get("person_ids", []):
                 if not isinstance(person_id, int):
@@ -328,7 +332,8 @@ def process_gallery_zip_import_task(
                 message=f"正在还原展示图 {processed}/{total}",
             )
 
-        result = picture_service.import_gallery_from_zip(db, zip_source, workspace_id, progress_callback)
+        task = db.get(Task, task_id)
+        result = picture_service.import_gallery_from_zip(db, zip_source, workspace_id, progress_callback, actor_id=task.created_by, actor_name=task.actor_name)
         if result["added_photos"] or result["updated_existing"] or result["persons_added"]:
             mark_similarity_scans_stale(db, workspace_id)
             db.commit()

@@ -63,6 +63,7 @@ class GalleryFacePersonBindRequest(BaseModel):
 
 
 class GalleryPhotoListItem(BaseModel):
+    source_summary: dict = Field(default_factory=dict)
     id: int
     filename: str
     size_bytes: int | None

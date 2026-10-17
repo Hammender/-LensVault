@@ -1,0 +1,16 @@
+.media-source { margin: 12px 0; min-width: 0; font-size: 13px; }
+.media-source-toggle { display: flex; gap: 8px; align-items: baseline; width: 100%; text-align: left; padding: 10px 0; border: 0; border-bottom: 1px solid #b9ad9838; background: transparent; color: inherit; }
+.media-source-toggle strong { flex: 1; overflow-wrap: anywhere; font-weight: 500; }
+.media-source-toggle > span:first-child { opacity: .65; white-space: nowrap; }
+.media-source-detail { padding: 8px 0; max-height: 55vh; overflow: auto; }
+.media-source-fields { margin: 8px 0 16px; }
+.media-source-fields > div { margin-bottom: 9px; }
+.media-source-fields dt { opacity: .6; font-size: 11px; }
+.media-source-fields dd { margin: 2px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.media-source details { margin: 12px 0; }
+.media-source summary { cursor: pointer; font-weight: 500; }
+.media-source pre { font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.video-transfer { margin: 12px 0; padding: 14px; border: 1px solid #b9ad9844; border-radius: 10px; }
+.video-transfer-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.video-transfer-jobs { max-height: 260px; overflow: auto; font-size: 13px; }
+.video-transfer-jobs > div { padding: 8px 0; border-bottom: 1px solid #b9ad9833; }

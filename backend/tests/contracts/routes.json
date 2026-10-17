@@ -846,6 +846,54 @@
     ]
   },
   {
+    "path": "/api/gallery/photos/{photo_id}/source",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/{video_id}/source",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/exports",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/exports",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/exports/{job_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/exports/{job_id}/download",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/videos/import-zip",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/videos/imports",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/video-category-tags",
     "methods": [
       "GET"

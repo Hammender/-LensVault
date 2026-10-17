@@ -53,3 +53,26 @@
 不建议删除的资产：`data/face-migration/pre-migration-20260908/app-before.db`、`pre-tag-reconcile-20260909/app-before.db` 及对应快照；当前 AdaFace Qdrant 旧集合和活动集合；AdaFace 模型文件。它们分别用于回滚、标签恢复、结果审计和重新部署。数据库备份和模型文件不应提交到 Git。
 
 删除或重建 Qdrant 集合前，必须确认 `.env` 中的活动集合名称、备份可读且已经完成核验。任何带 `--apply`、`--replace` 或清理语义的工具，都应先执行 dry-run 并保留输出。
+
+## 历史素材来源回填
+
+`backfill_media_provenance.py` 在来源结构迁移完成后使用。默认只读试跑，不写业务数据：
+
+```powershell
+$env:PYTHONPATH='backend'
+python -m app.tools.backfill_media_provenance --photo-user-id 1 --report data/reports/来源回填试跑.json
+```
+
+本机指定 `user_id=1`（Hamender）作为旧图片及图文的缺失入库人，包括其他工作区的旧图片。此归属是用户指定的历史回填，不表示已恢复当时的真实操作记录。公共迁移不写死该用户。旧视频仅在所在工作区存在唯一系统管理员时补入库人，否则列入待确认。
+
+旧图片有 `ingest_source` 可区分上传、ZIP 导入和采集；旧视频没有相同字段。仅在已核实无采集关联的旧视频均为手动上传时，试跑可额外使用 `--assume-untracked-videos-manual`，将这类视频标为推断的手动上传。
+
+报告列出素材标识、来源证据、未知来源、推断来源、操作人和冲突。先审核报告，再显式执行：
+
+```powershell
+python -m app.tools.backfill_media_provenance --apply-report data/reports/来源回填试跑.json
+```
+
+写入前核对素材工作区、哈希和创建时间；发现变化停止并要求重新试跑。只补缺失来源或入库人，不覆盖已有记录；同一报告重复执行不会重复写入。报告包含私人来源信息，应存放在本机 `data/reports/`，不提交到 Git。
+
+已经完成回填的历史未知视频，可运行 `python -m app.tools.reclassify_legacy_videos --user-id 1 --expected-count 数量` 更正。工具核对数量、工作区及历史回填标记，在一次事务中更新；重复执行时数量检查会阻止再次改写。

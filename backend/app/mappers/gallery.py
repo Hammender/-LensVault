@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.provenance import source_summary
+
 from app.models import FaceRecord, GalleryPhoto
 from app.schemas import FaceRead, GalleryPersonTagRead, GalleryPhotoDetail, GalleryPhotoListItem, GalleryTagRead
 
@@ -32,6 +34,7 @@ def gallery_photo_to_list_item(photo: GalleryPhoto) -> GalleryPhotoListItem:
         for item in sorted(photo.tags, key=lambda link: link.tag.name.lower())
     ]
     return GalleryPhotoListItem(
+        source_summary=source_summary(photo),
         id=photo.id,
         filename=photo.filename,
         size_bytes=photo.size_bytes,

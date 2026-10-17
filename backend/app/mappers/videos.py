@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.provenance import source_summary
+
 from app.models import VideoCategoryTag, VideoItem, VideoPerson, VideoSubtitleTrack, VideoUploadSession
 from app.schemas import (
     VideoCategoryTagRead,
@@ -69,6 +71,7 @@ def video_to_list_item(video: VideoItem) -> VideoItemListItem:
     people = sorted((link.person for link in video.person_links), key=lambda item: item.name.lower())
     subtitle_tracks = sorted(video.subtitle_tracks, key=lambda item: item.created_at)
     return VideoItemListItem(
+        source_summary=source_summary(video),
         id=video.id,
         title=video.title,
         description=video.description,

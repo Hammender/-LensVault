@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.provenance import actor_snapshot
+
 from collections.abc import Callable
 from datetime import datetime
 import time
@@ -17,8 +19,8 @@ _last_progress_at: dict[str, float] = {}
 _PROGRESS_INTERVAL_SECONDS = 1.0
 
 
-def create_task(db: Session, kind: str, message: str | None = None, workspace_id: int | None = None) -> Task:
-    task = Task(id=uuid4().hex, workspace_id=workspace_id, kind=kind, status="pending", message=message, progress=0.0)
+def create_task(db: Session, kind: str, message: str | None = None, workspace_id: int | None = None, *, actor_id: int | None = None) -> Task:
+    task = Task(created_by=actor_id, actor_name=actor_snapshot(db, actor_id), id=uuid4().hex, workspace_id=workspace_id, kind=kind, status="pending", message=message, progress=0.0)
     db.add(task)
     db.commit()
     db.refresh(task)

@@ -21,7 +21,10 @@ class GalleryPhoto(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL", name="fk_gallery_photos_created_by"), nullable=True, comment="入库操作人")
+    actor_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="操作人名称快照")
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
+    provenance: Mapped["MediaProvenance | None"] = relationship("MediaProvenance", uselist=False, lazy="selectin", cascade="all, delete-orphan")
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64), index=True)

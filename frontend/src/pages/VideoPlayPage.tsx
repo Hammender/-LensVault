@@ -1,3 +1,4 @@
+import MediaSource from "../components/MediaSource";
 import { Download, Edit3 } from "lucide-react";
 
 import BiliVideoPlayer from "../components/BiliVideoPlayer";
@@ -74,6 +75,7 @@ export default function VideoPlayPage({
           <div className="detail-copy">
             <div className="video-play-info">
               <h1>{selectedVideo.title}</h1>
+              <MediaSource mediaType="video" mediaId={selectedVideo.id} summary={selectedVideo.source_summary} />
               <div className="micro-row wrap compact-actions video-detail-actions">
                 {canEditVideos && (
                   <button className="compact-button" onClick={onEditVideo}>

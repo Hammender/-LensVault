@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
 
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import MetaData, Table, create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import Base
@@ -46,6 +47,7 @@ def test_incremental_upgrade_preserves_existing_gallery_faces(tmp_path) -> None:
 
     command.upgrade(config, "19a44fe179ff")
 
+    old_photos = Table("gallery_photos", MetaData(), autoload_with=engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
     with SessionLocal() as db:
         workspace = Workspace(name="迁移测试空间", kind="private")
@@ -60,8 +62,15 @@ def test_incremental_upgrade_preserves_existing_gallery_faces(tmp_path) -> None:
             )
             for index in range(1, 5)
         ]
-        db.add_all([workspace, unknown, known, *photos])
+        db.add_all([workspace, unknown, known])
         db.flush()
+        # 使用迁移当时的表结构插入样例，不让新版ORM列提前进入旧数据库。
+        for photo in photos:
+            inserted = db.execute(old_photos.insert().values(workspace_id=workspace.id,
+                filename=photo.filename, sha256=photo.sha256, object_key=photo.object_key,
+                is_rich_text=False, ingest_source="legacy_unclassified", display_batch_at=datetime(2026, 1, 1),
+                display_index=0, created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1)))
+            photo.id = inserted.inserted_primary_key[0]
         unknown.workspace_id = workspace.id
         known.workspace_id = workspace.id
         for photo in photos:

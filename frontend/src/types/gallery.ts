@@ -1,3 +1,4 @@
+import type { SourceSummary } from "./provenance";
 export type Tag = {
   id: number;
   name: string;
@@ -55,6 +56,7 @@ export type Face = {
 };
 
 export type GalleryPhotoListItem = {
+  source_summary?: SourceSummary;
   id: number;
   filename: string;
   size_bytes: number | null;

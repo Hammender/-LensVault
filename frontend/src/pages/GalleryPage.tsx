@@ -1,3 +1,4 @@
+import MediaSource from "../components/MediaSource";
 import { Info, Pin, PinOff, Search, SlidersHorizontal, X } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -929,6 +930,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                   </span>
                 </a>
                 <div className="detail-copy">
+                  <MediaSource mediaType="photo" mediaId={selectedPhoto.id} summary={selectedPhoto.source_summary} />
                   <p>{formatPhotoDate(selectedPhoto.taken_at, selectedPhoto.created_at)}</p>
                   <p className="detail-photo-id">图片编号 #{selectedPhoto.id}</p>
                   <p>

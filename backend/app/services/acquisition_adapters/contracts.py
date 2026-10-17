@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.provenance import public_metadata
+
 import hashlib
 import logging
 from datetime import datetime
@@ -122,6 +124,7 @@ def remote_item_from_plugin(raw: object) -> RemoteItem:
         abort_on_access_block=abort,
         media_type=media_type,
         plugin_data=plugin_data,
+        public_metadata=public_metadata(raw.get("public_metadata")),
         caption=_optional_text(raw.get("caption"), "caption"),
         hashtags=_string_tuple(raw.get("hashtags"), "hashtags"),
         published_at=normalize_plugin_published_at(raw.get("published_at"), external_key),
@@ -200,6 +203,7 @@ class RemoteItem:
     referer_url: str | None = None
     abort_on_access_block: bool = False
     media_type: Literal["image", "video"] = "image"
+    public_metadata: dict[str, object] | None = None
     plugin_data: dict[str, object] | None = None
     caption: str | None = None
     hashtags: tuple[str, ...] = ()

@@ -1,3 +1,4 @@
+import type { SourceSummary } from "./provenance";
 export type VideoCategoryTag = {
   id: number;
   name: string;
@@ -31,6 +32,7 @@ export type VideoSubtitleTrack = {
 };
 
 export type VideoItem = {
+  source_summary?: SourceSummary;
   id: number;
   title: string;
   description: string | null;

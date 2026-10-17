@@ -24,6 +24,7 @@ INCOMPLETE_TASK_TYPES = (
     "gallery_import",
     "gallery_rich_import",
     "gallery_zip_import",
+    "video_zip_import",
     "person_import",
     "video_subtitle_generation",
     "gallery_similarity_scan",
@@ -152,6 +153,8 @@ def initialize_runtime(
         )
         reconciled_items = acquisition.reconcile_run_metrics(db) if acquisition is not None else 0
         expired_exports = acquisition.cleanup_expired_exports(db) if acquisition is not None else 0
+        from app.services.video_transfer import recover_exports
+        recover_exports(db, services.storage)
         if (
             interrupted_runs
             or expired_exports

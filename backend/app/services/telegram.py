@@ -982,9 +982,22 @@ class TelegramService:
                         inherit_root_caption=comments_only,
                     )
 
+            topic_titles: dict[int, str | None] = {}
+
             async def emit_records(batch: list[dict[str, object]]) -> None:
                 if not batch:
                     return
+                for record in batch:
+                    topic = record.get("topic_id")
+                    if topic and not record.get("is_comment"):
+                        topic = int(topic)
+                        if topic not in topic_titles:
+                            try:
+                                topics = await client(functions.messages.GetForumTopicsByIDRequest(peer=channel, topics=[topic]))
+                                topic_titles[topic] = next((str(t.title) for t in topics.topics if t.id == topic), None)
+                            except Exception:
+                                topic_titles[topic] = None
+                        record["topic_title"] = topic_titles[topic]
                 if on_records is not None:
                     on_records(batch)
                 records.extend(batch)
@@ -1049,6 +1062,12 @@ class TelegramService:
                     record["hashtags"] = extract_hashtags(record["caption"])
                 record["is_comment"] = True
                 record["root_channel_message_id"] = int(root_message.id)
+                record["root_channel_id"] = str(channel.id)
+                record["root_channel_username"] = getattr(channel, "username", None)
+                root_path = getattr(channel, "username", None) or f"c/{channel.id}"
+                record["source_url"] = f"https://t.me/{root_path}/{root_message.id}?comment={comment.id}"
+                record["topic_id"] = None
+                record["topic_title"] = None
                 record["reply_to_message_id"] = getattr(getattr(comment, "reply_to", None), "reply_to_msg_id", None)
                 record["external_key"] = f"{record['channel_id']}:{comment.id}:1"
             if batch:
@@ -1401,6 +1420,18 @@ class TelegramService:
     ) -> dict[str, object]:
         username = getattr(channel, "username", None)
         channel_id = str(getattr(channel, "id", ""))
+        channel_title = getattr(channel, "title", None)
+        actual_peer = getattr(getattr(message, "peer_id", None), "channel_id", None)
+        if actual_peer is not None and str(actual_peer) != channel_id:
+            channel_id = str(actual_peer)
+            username = None
+            channel_title = None
+        reply = getattr(message, "reply_to", None)
+        topic_id = None
+        if bool(getattr(reply, "forum_topic", False)):
+            topic_id = getattr(reply, "reply_to_top_id", None) or getattr(reply, "reply_to_msg_id", None)
+        elif bool(getattr(channel, "forum", False)):
+            topic_id = 1
         duration, width, height = video_metadata(message) if media_type == "video" else (None, None, None)
         document = getattr(message, "document", None)
         media_file = getattr(message, "file", None)
@@ -1410,15 +1441,17 @@ class TelegramService:
         )
         return {
             "external_key": f"{channel_id}:{message.id}:{1 if getattr(message, 'is_comment', False) else 0}",
-            "source_url": f"https://t.me/{username}/{message.id}" if username else f"tg://resolve?domain={channel_id}&post={message.id}",
+            "source_url": f"https://t.me/{username}/{message.id}" if username else f"https://t.me/c/{channel_id}/{message.id}",
             "filename": path.name if path else f"telegram-{channel_id}-{message.id}",
             "path": path,
             "channel_id": channel_id,
-            "channel_title": getattr(channel, "title", None),
+            "channel_title": channel_title,
             "channel_username": username,
             "message_id": message.id,
             "grouped_id": str(message.grouped_id) if message.grouped_id else None,
             "media_type": media_type,
+            "transport_type": "photo" if getattr(message, "photo", None) else "document",
+            "original_filename": getattr(media_file, "name", None) or _document_filename(document),
             "content_type": content_type,
             "duration_seconds": duration,
             "width": width,
@@ -1429,12 +1462,12 @@ class TelegramService:
             "hashtags": tags,
             "protected_content": protected,
             "peer_id": channel_id,
-            "entity_type": "group" if bool(getattr(channel, "megagroup", False)) else "channel",
+            "entity_type": "group" if bool(getattr(channel, "megagroup", False)) or (actual_peer is not None and str(actual_peer) != str(getattr(channel, "id", ""))) else "channel",
             "sender_id": getattr(getattr(message, "sender", None), "id", None),
             "sender_username": getattr(getattr(message, "sender", None), "username", None),
             "sender_is_bot": bool(getattr(getattr(message, "sender", None), "bot", False)),
             "reply_to_message_id": getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
-            "topic_id": getattr(getattr(message, "reply_to", None), "reply_to_top_id", None),
+            "topic_id": topic_id,
             "is_comment": bool(getattr(message, "is_comment", False)),
             "root_channel_message_id": None,
         }

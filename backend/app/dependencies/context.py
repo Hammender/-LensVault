@@ -90,6 +90,7 @@ ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
     ("POST", "/api/video-people"): "can_edit_videos",
     ("PATCH", "/api/video-people/{person_id}"): "can_edit_videos",
     ("DELETE", "/api/video-people/{person_id}"): "can_edit_videos",
+    ("POST", "/api/videos/import-zip"): "can_add_videos",
     ("POST", "/api/videos/upload-sessions"): "can_add_videos",
     ("PUT", "/api/videos/upload-sessions/{session_id}/parts/{part_index}"): "can_add_videos",
     ("POST", "/api/videos/upload-sessions/{session_id}/complete"): "can_add_videos",

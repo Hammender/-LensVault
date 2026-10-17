@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from app.services.provenance import attach_provenance, imported_snapshot
+from app.services.media_archives import read_json_entry, safe_entry
+
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime
@@ -804,6 +807,9 @@ class PictureService:
         source_object_key: str | None = None,
         *,
         ingest_source: str = "manual_upload",
+        actor_id: int | None = None,
+        actor_name: str | None = None,
+        provenance_snapshot: dict | None = None,
         recognition_plan: list[tuple[DetectedFace, PersonMatch]] | None | object = _RECOGNITION_NOT_PRECOMPUTED,
         prepared_image: tuple[int, int, datetime | None, np.ndarray] | None = None,
     ) -> tuple[GalleryPhoto, GalleryImportSummary]:
@@ -882,6 +888,8 @@ class PictureService:
         )
         db.add(photo)
         db.flush()
+
+        attach_provenance(db, photo, source_type=(provenance_snapshot or {}).get("source_type", "manual_upload"), actor_id=actor_id, actor_name=actor_name, snapshot=provenance_snapshot)
 
         if is_rich_text:
             rich_tag = self.find_or_create_tag(db, self.rich_text_tag_name, workspace_id)
@@ -1896,7 +1904,7 @@ class PictureService:
         )
         return result
 
-    def import_gallery_from_zip(self, db: Session, zip_source: bytes | Path, workspace_id: int | None, progress_callback=None) -> dict:
+    def import_gallery_from_zip(self, db: Session, zip_source: bytes | Path, workspace_id: int | None, progress_callback=None, *, actor_id=None, actor_name=None) -> dict:
         logger.info("Start gallery import from zip source=%s", type(zip_source).__name__)
         result = {
             "added_photos": 0,
@@ -1908,7 +1916,7 @@ class PictureService:
 
         with _open_zip(zip_source) as zf:
             try:
-                manifest = json.loads(zf.read("metadata.json"))
+                manifest = read_json_entry(zf)
             except KeyError as exc:
                 raise ValueError("ZIP 中缺少 metadata.json") from exc
             if not isinstance(manifest, dict) or manifest.get("kind") not in (None, "gallery_export"):
@@ -1918,9 +1926,9 @@ class PictureService:
                 raise ValueError("metadata.json 格式不正确")
 
             version = manifest.get("version", 1)
-            if version not in (1, 2):
+            if version not in (1, 2, 3):
                 raise ValueError(f"不支持的展示图导出版本：{version}")
-            if version == 2:
+            if version in (2, 3):
                 indexes = [item.get("display_index") if isinstance(item, dict) else None for item in photos]
                 if (
                     any(not isinstance(value, int) or isinstance(value, bool) for value in indexes)
@@ -1944,9 +1952,9 @@ class PictureService:
                 payload = None
                 for zip_path in zip_paths:
                     try:
-                        payload = zf.read(str(zip_path))
+                        payload = zf.read(safe_entry(zf, str(zip_path), 128 * 1024 * 1024))
                         break
-                    except KeyError:
+                    except (KeyError, ValueError):
                         continue
                 if payload is None:
                     logger.warning("Gallery zip import skipped missing file photo=%s", photo_data.get("filename"))
@@ -1992,6 +2000,11 @@ class PictureService:
                     if str(name).strip() and str(name).strip() != self.rich_text_tag_name
                 ]
 
+                try:
+                    provenance = imported_snapshot(photo_data.get("provenance"))
+                except ValueError:
+                    result["skipped_photos"] += 1
+                    continue
                 if photo is None:
                     filename = str(photo_data.get("filename") or Path(str(zip_paths[0])).name)
                     object_key = self._build_object_key(workspace_id, "gallery", filename)
@@ -2010,6 +2023,7 @@ class PictureService:
                     )
                     db.add(photo)
                     db.flush()
+                    attach_provenance(db, photo, source_type="import", actor_id=actor_id, actor_name=actor_name, snapshot=provenance)
                     result["added_photos"] += 1
                 else:
                     result["updated_existing"] += 1

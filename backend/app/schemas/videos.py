@@ -75,6 +75,7 @@ class VideoSubtitleTrackUpdate(BaseModel):
 
 
 class VideoItemListItem(BaseModel):
+    source_summary: dict = Field(default_factory=dict)
     id: int
     title: str
     description: str | None

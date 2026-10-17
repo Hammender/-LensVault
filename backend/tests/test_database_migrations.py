@@ -14,6 +14,31 @@ ALEMBIC_CONFIG = Path(__file__).resolve().parents[2] / "alembic.ini"
 ALEMBIC_HEAD = ScriptDirectory.from_config(Config(str(ALEMBIC_CONFIG))).get_current_head()
 
 
+def test_provenance_migration_preserves_existing_media_and_constraints(tmp_path):
+    """新增外键需要SQLite重建表，验证已有素材及原索引不丢失。"""
+    from datetime import datetime
+    from sqlalchemy import MetaData, Table
+    url = f"sqlite:///{(tmp_path / 'provenance-upgrade.db').as_posix()}"
+    config = _alembic_config(url)
+    command.upgrade(config, "0014b0f63f70")
+    engine = create_engine(url)
+    metadata = MetaData()
+    table = Table("gallery_photos", metadata, autoload_with=engine)
+    now = datetime(2026, 1, 1)
+    with engine.begin() as connection:
+        connection.execute(table.insert().values(id=41, filename="keep.jpg", sha256="keep", object_key="keep",
+            is_rich_text=False, ingest_source="manual_upload", display_batch_at=now, display_index=3,
+            created_at=now, updated_at=now))
+    before_indexes = {row["name"] for row in inspect(engine).get_indexes("gallery_photos")}
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT filename, display_index, created_by FROM gallery_photos WHERE id=41")).one() == ("keep.jpg", 3, None)
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    assert before_indexes <= {row["name"] for row in inspect(engine).get_indexes("gallery_photos")}
+    assert any(fk["name"] == "fk_gallery_photos_created_by" for fk in inspect(engine).get_foreign_keys("gallery_photos"))
+    engine.dispose()
+
+
 def _table_names(engine) -> set[str]:
     return set(inspect(engine).get_table_names())
 

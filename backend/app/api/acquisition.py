@@ -1353,6 +1353,7 @@ def import_assets(
             current.workspace_id,
             payload.asset_ids,
             is_rich_text=payload.is_rich_text,
+            actor_id=current.user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

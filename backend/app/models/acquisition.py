@@ -225,6 +225,7 @@ class AcquisitionAsset(Base):
 
 
 class AcquisitionRunItem(Base):
+    source_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True, comment="采集时冻结的公开来源快照")
     __tablename__ = "acquisition_run_items"
     __table_args__ = (UniqueConstraint("run_id", "source_item_id", name="uq_acquisition_run_source_item"),)
 
@@ -304,6 +305,8 @@ class AcquisitionImportBatch(Base):
     __tablename__ = "acquisition_import_batches"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL", name="fk_acquisition_import_batches_created_by"), nullable=True, comment="入库操作人")
+    actor_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="操作人名称快照")
     workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False, index=True)
     is_rich_text: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

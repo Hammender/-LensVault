@@ -228,6 +228,8 @@ CREATE INDEX ix_acquisition_export_jobs_workspace_id ON acquisition_export_jobs 
 -- 表说明：审核通过的采集资产入库批次
 -- 字段说明：
 --   id：主键标识
+--   created_by：入库操作人
+--   actor_name：操作人名称快照
 --   workspace_id：所属工作区标识；为空表示历史全局数据
 --   status：导入批次状态：queued、running、completed、completed_with_errors 或 failed
 --   is_rich_text：目标图片类型；0 表示普通图片，1 表示图文图片
@@ -243,6 +245,8 @@ CREATE INDEX ix_acquisition_export_jobs_workspace_id ON acquisition_export_jobs 
 --   updated_at：记录最后更新时间（上海时区无时区值）
 CREATE TABLE acquisition_import_batches (
 	id VARCHAR(64) NOT NULL, 
+	created_by INTEGER, 
+	actor_name VARCHAR(128), 
 	workspace_id INTEGER, 
 	status VARCHAR(32) NOT NULL, 
 	is_rich_text BOOLEAN NOT NULL, 
@@ -257,6 +261,7 @@ CREATE TABLE acquisition_import_batches (
 	created_at DATETIME NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
+	CONSTRAINT fk_acquisition_import_batches_created_by FOREIGN KEY(created_by) REFERENCES users (id) ON DELETE SET NULL, 
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
 );
 CREATE INDEX ix_acquisition_import_batches_created_at ON acquisition_import_batches (created_at);
@@ -332,6 +337,8 @@ CREATE INDEX ix_acquisition_sources_workspace_id ON acquisition_sources (workspa
 -- 表说明：展示图库图片及其展示顺序
 -- 字段说明：
 --   id：主键标识
+--   created_by：入库操作人
+--   actor_name：操作人名称快照
 --   workspace_id：所属工作区标识；为空表示历史全局数据
 --   filename：原始文件名
 --   content_type：文件 MIME 类型
@@ -351,6 +358,8 @@ CREATE INDEX ix_acquisition_sources_workspace_id ON acquisition_sources (workspa
 --   updated_at：记录最后更新时间（上海时区无时区值）
 CREATE TABLE gallery_photos (
 	id INTEGER NOT NULL, 
+	created_by INTEGER, 
+	actor_name VARCHAR(128), 
 	workspace_id INTEGER, 
 	filename VARCHAR(512) NOT NULL, 
 	content_type VARCHAR(128), 
@@ -370,6 +379,7 @@ CREATE TABLE gallery_photos (
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_gallery_photos_workspace_sha256_rich_text UNIQUE (workspace_id, sha256, is_rich_text), 
+	CONSTRAINT fk_gallery_photos_created_by FOREIGN KEY(created_by) REFERENCES users (id) ON DELETE SET NULL, 
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
 	UNIQUE (object_key)
 );
@@ -438,7 +448,10 @@ CREATE INDEX ix_tags_workspace_id ON tags (workspace_id);
 -- 表说明：后台异步任务进度记录
 -- 字段说明：
 --   id：主键标识
+--   created_by：入库操作人
+--   actor_name：操作人名称快照
 --   workspace_id：所属工作区标识；为空表示历史全局数据
+--   result_json：后台任务逐项结果报告
 --   kind：任务类型，由发起任务的业务模块定义
 --   status：任务状态：pending、running、completed、failed 或 canceled
 --   message：任务进度或结果说明
@@ -447,7 +460,10 @@ CREATE INDEX ix_tags_workspace_id ON tags (workspace_id);
 --   updated_at：记录最后更新时间（上海时区无时区值）
 CREATE TABLE tasks (
 	id VARCHAR(64) NOT NULL, 
+	created_by INTEGER, 
+	actor_name VARCHAR(128), 
 	workspace_id INTEGER, 
+	result_json TEXT, 
 	kind VARCHAR(64) NOT NULL, 
 	status VARCHAR(32) NOT NULL, 
 	message TEXT, 
@@ -455,6 +471,7 @@ CREATE TABLE tasks (
 	created_at DATETIME NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
+	CONSTRAINT fk_tasks_created_by FOREIGN KEY(created_by) REFERENCES users (id) ON DELETE SET NULL, 
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
 );
 CREATE INDEX ix_tasks_workspace_id ON tasks (workspace_id);
@@ -540,10 +557,39 @@ CREATE TABLE video_category_tags (
 CREATE INDEX ix_video_category_tags_name ON video_category_tags (name);
 CREATE INDEX ix_video_category_tags_workspace_id ON video_category_tags (workspace_id);
 
+-- 表名：video_export_jobs
+-- 表说明：视频后台导出任务
+-- 字段说明：
+--   id：导出任务编号
+--   workspace_id：所属工作区
+--   status：排队、执行、完成、失败或过期
+--   selection_json：请求时冻结的视频编号
+--   result_json：成功数量及逐项错误报告
+--   object_key：导出包对象存储键
+--   filename：下载文件名
+--   created_at：创建时间
+--   expires_at：导出文件过期时间
+CREATE TABLE video_export_jobs (
+	id VARCHAR(64) NOT NULL, 
+	workspace_id INTEGER NOT NULL, 
+	status VARCHAR(32) NOT NULL, 
+	selection_json TEXT NOT NULL, 
+	result_json TEXT, 
+	object_key VARCHAR(512), 
+	filename VARCHAR(128), 
+	created_at DATETIME NOT NULL, 
+	expires_at DATETIME, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
+);
+CREATE INDEX ix_video_export_jobs_workspace_id ON video_export_jobs (workspace_id);
+
 -- 表名：video_items
 -- 表说明：视频库中的视频文件及处理状态
 -- 字段说明：
 --   id：主键标识
+--   created_by：入库操作人
+--   actor_name：操作人名称快照
 --   workspace_id：所属工作区标识；为空表示历史全局数据
 --   title：标题
 --   description：文字说明
@@ -551,6 +597,7 @@ CREATE INDEX ix_video_category_tags_workspace_id ON video_category_tags (workspa
 --   content_type：文件 MIME 类型
 --   sha256：文件内容 SHA-256 摘要
 --   object_key：对象存储中的文件键
+--   content_sha256：当前存储文件内容哈希
 --   cover_object_key：对象存储中的视频封面文件键
 --   cover_content_type：视频封面文件 MIME 类型
 --   size_bytes：文件大小，单位为字节
@@ -573,6 +620,8 @@ CREATE INDEX ix_video_category_tags_workspace_id ON video_category_tags (workspa
 --   updated_at：记录最后更新时间（上海时区无时区值）
 CREATE TABLE video_items (
 	id INTEGER NOT NULL, 
+	created_by INTEGER, 
+	actor_name VARCHAR(128), 
 	workspace_id INTEGER, 
 	title VARCHAR(256) NOT NULL, 
 	description TEXT, 
@@ -580,6 +629,7 @@ CREATE TABLE video_items (
 	content_type VARCHAR(128), 
 	sha256 VARCHAR(64), 
 	object_key VARCHAR(512) NOT NULL, 
+	content_sha256 VARCHAR(64), 
 	cover_object_key VARCHAR(512), 
 	cover_content_type VARCHAR(128), 
 	size_bytes BIGINT NOT NULL, 
@@ -602,10 +652,12 @@ CREATE TABLE video_items (
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_video_items_workspace_sha256 UNIQUE (workspace_id, sha256), 
+	CONSTRAINT fk_video_items_created_by FOREIGN KEY(created_by) REFERENCES users (id) ON DELETE SET NULL, 
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
 	UNIQUE (object_key), 
 	UNIQUE (cover_object_key)
 );
+CREATE INDEX ix_video_items_content_sha256 ON video_items (content_sha256);
 CREATE INDEX ix_video_items_created_at ON video_items (created_at);
 CREATE INDEX ix_video_items_sha256 ON video_items (sha256);
 CREATE INDEX ix_video_items_status ON video_items (status);
@@ -645,6 +697,8 @@ CREATE INDEX ix_video_people_workspace_id ON video_people (workspace_id);
 -- 表说明：视频分片上传会话
 -- 字段说明：
 --   id：主键标识
+--   created_by：入库操作人
+--   actor_name：操作人名称快照
 --   workspace_id：所属工作区标识；为空表示历史全局数据
 --   filename：原始文件名
 --   title：标题
@@ -659,6 +713,8 @@ CREATE INDEX ix_video_people_workspace_id ON video_people (workspace_id);
 --   updated_at：记录最后更新时间（上海时区无时区值）
 CREATE TABLE video_upload_sessions (
 	id VARCHAR(64) NOT NULL, 
+	created_by INTEGER, 
+	actor_name VARCHAR(128), 
 	workspace_id INTEGER, 
 	filename VARCHAR(512) NOT NULL, 
 	title VARCHAR(256) NOT NULL, 
@@ -672,6 +728,7 @@ CREATE TABLE video_upload_sessions (
 	created_at DATETIME NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id), 
+	CONSTRAINT fk_video_upload_sessions_created_by FOREIGN KEY(created_by) REFERENCES users (id) ON DELETE SET NULL, 
 	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
 );
 CREATE INDEX ix_video_upload_sessions_status ON video_upload_sessions (status);
@@ -1118,6 +1175,42 @@ CREATE INDEX ix_gallery_similarity_scans_status ON gallery_similarity_scans (sta
 CREATE INDEX ix_gallery_similarity_scans_task_id ON gallery_similarity_scans (task_id);
 CREATE INDEX ix_gallery_similarity_scans_workspace_id ON gallery_similarity_scans (workspace_id);
 
+-- 表名：media_provenance
+-- 表说明：正式素材首次入库来源
+-- 字段说明：
+--   id：来源编号
+--   workspace_id：所属工作区
+--   photo_id：所属图片，与视频互斥
+--   video_id：所属视频，与图片互斥
+--   source_type：上传、导入、采集、截图或历史未知
+--   actor_name：入库人名称快照
+--   site_name：站点名称快照
+--   category_path：分类路径快照
+--   record_method：实时记录或历史回填
+--   imported_at：本次正式入库时间
+--   snapshot_json：已校验脱敏的来源详情及原始上游快照
+CREATE TABLE media_provenance (
+	id INTEGER NOT NULL, 
+	workspace_id INTEGER, 
+	photo_id INTEGER, 
+	video_id INTEGER, 
+	source_type VARCHAR(32) NOT NULL, 
+	actor_name VARCHAR(128), 
+	site_name VARCHAR(128), 
+	category_path VARCHAR(1024), 
+	record_method VARCHAR(32) NOT NULL, 
+	imported_at DATETIME NOT NULL, 
+	snapshot_json TEXT NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ck_provenance_one_media CHECK ((photo_id IS NOT NULL AND video_id IS NULL) OR (photo_id IS NULL AND video_id IS NOT NULL)), 
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
+	UNIQUE (photo_id), 
+	FOREIGN KEY(photo_id) REFERENCES gallery_photos (id) ON DELETE CASCADE, 
+	UNIQUE (video_id), 
+	FOREIGN KEY(video_id) REFERENCES video_items (id) ON DELETE CASCADE
+);
+CREATE INDEX ix_media_provenance_workspace_id ON media_provenance (workspace_id);
+
 -- 表名：person_tags
 -- 表说明：人物与标签的关联关系
 -- 字段说明：
@@ -1545,6 +1638,21 @@ CREATE INDEX ix_gallery_similarity_groups_review_status ON gallery_similarity_gr
 CREATE INDEX ix_gallery_similarity_groups_scan_id ON gallery_similarity_groups (scan_id);
 CREATE INDEX ix_gallery_similarity_groups_tier ON gallery_similarity_groups (tier);
 
+-- 表名：telegram_provenance
+-- 表说明：Telegram来源快照
+-- 字段说明：
+--   id：平台快照编号
+--   provenance_id：所属正式来源
+--   snapshot_json：会话、话题、消息、发送形式、标签及文案摘要
+CREATE TABLE telegram_provenance (
+	id INTEGER NOT NULL, 
+	provenance_id INTEGER NOT NULL, 
+	snapshot_json TEXT NOT NULL, 
+	PRIMARY KEY (id), 
+	UNIQUE (provenance_id), 
+	FOREIGN KEY(provenance_id) REFERENCES media_provenance (id) ON DELETE CASCADE
+);
+
 -- 表名：acquisition_imported_photos
 -- 表说明：采集资产入图库后的图片映射
 -- 字段说明：
@@ -1612,6 +1720,7 @@ CREATE INDEX ix_acquisition_imported_videos_video_id ON acquisition_imported_vid
 -- 表名：acquisition_run_items
 -- 表说明：采集运行与候选图片资产的处理明细
 -- 字段说明：
+--   source_snapshot_json：采集时冻结的公开来源快照
 --   id：主键标识
 --   run_id：关联采集运行标识
 --   source_item_id：关联远端采集条目标识
@@ -1624,6 +1733,7 @@ CREATE INDEX ix_acquisition_imported_videos_video_id ON acquisition_imported_vid
 --   created_at：记录创建时间（上海时区无时区值）
 --   updated_at：记录最后更新时间（上海时区无时区值）
 CREATE TABLE acquisition_run_items (
+	source_snapshot_json TEXT, 
 	id INTEGER NOT NULL, 
 	run_id VARCHAR(64) NOT NULL, 
 	source_item_id INTEGER NOT NULL, 

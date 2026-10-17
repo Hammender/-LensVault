@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.provenance import acquisition_snapshot, actor_snapshot, asset_source, attach_provenance
+
 import hashlib
 import json
 import logging
@@ -1146,6 +1148,8 @@ class AcquisitionService:
         category: AcquisitionCategory,
         record: dict[str, object],
     ) -> None:
+        if not record.get("topic_title") and record.get("topic_id") == category.telegram_topic_id:
+            record["topic_title"] = category.telegram_topic_title
         external_key = str(record["external_key"])
         scoped_key = _stable_key(f"{category.id}:{run.script_key}:{external_key}")
         source_item = db.scalar(select(AcquisitionSourceItem).where(
@@ -1159,7 +1163,7 @@ class AcquisitionService:
             )
             db.add(source_item)
             db.flush()
-        run_item = AcquisitionRunItem(run_id=run.id, source_item_id=source_item.id)
+        run_item = AcquisitionRunItem(run_id=run.id, source_item_id=source_item.id, source_snapshot_json=json.dumps(acquisition_snapshot(db, run, category, url=str(record["source_url"]), telegram=record, published_at=record.get("published_at")), ensure_ascii=False))
         db.add(run_item)
         run.total_count += 1
         metadata = db.scalar(select(AcquisitionTelegramMessage).where(AcquisitionTelegramMessage.source_item_id == source_item.id))
@@ -1350,7 +1354,7 @@ class AcquisitionService:
             db.commit()
             return None
         run.total_count += 1
-        run_item = AcquisitionRunItem(run_id=run.id, source_item_id=item.id)
+        run_item = AcquisitionRunItem(run_id=run.id, source_item_id=item.id, source_snapshot_json=json.dumps(acquisition_snapshot(db, run, category, url=remote.source_url, public_data=remote.public_metadata, published_at=remote.published_at), ensure_ascii=False))
         db.add(run_item)
         # 先保存运行条目检查点，使后续下载失败也能可靠回滚并记录原因。
         db.commit()
@@ -1636,6 +1640,7 @@ class AcquisitionService:
         asset_ids: list[str],
         *,
         is_rich_text: bool = False,
+        actor_id: int | None = None,
     ) -> AcquisitionImportBatch:
         ordered_ids = list(dict.fromkeys(asset_ids))
         if len(ordered_ids) != len(asset_ids):
@@ -1657,6 +1662,7 @@ class AcquisitionService:
         if unavailable:
             raise ValueError(f"有 {len(unavailable)} 张图片已不在可入库状态，请刷新后重试")
         batch = AcquisitionImportBatch(
+            created_by=actor_id, actor_name=actor_snapshot(db, actor_id),
             id=uuid4().hex,
             workspace_id=workspace_id,
             status="queued",
@@ -1710,7 +1716,7 @@ class AcquisitionService:
                     existing_video = db.scalar(
                         select(VideoItem).where(
                             VideoItem.workspace_id == batch.workspace_id,
-                            VideoItem.sha256 == asset.sha256,
+                            ((VideoItem.sha256 == asset.sha256) | (VideoItem.content_sha256 == asset.sha256)),
                         )
                     )
                     if existing_video is not None:
@@ -1720,13 +1726,16 @@ class AcquisitionService:
                         db.commit()
                         self._cleanup_asset_object(db, asset)
                         continue
+                    item.promotion_intent = "new"
+                    db.commit()
                     metadata = db.scalar(select(AcquisitionTelegramMessage).join(
                         AcquisitionSourceItem, AcquisitionTelegramMessage.source_item_id == AcquisitionSourceItem.id
                     ).join(AcquisitionRunItem, AcquisitionRunItem.source_item_id == AcquisitionSourceItem.id).where(
                         AcquisitionRunItem.asset_id == asset.id
                     ))
                     video = self.video_service.import_acquisition_asset(
-                        db, asset, batch.workspace_id, metadata.caption if metadata else None
+                        db, asset, batch.workspace_id, metadata.caption if metadata else None,
+                        actor_id=batch.created_by, actor_name=batch.actor_name, provenance_snapshot=asset_source(db, asset)
                     )
                     item.video_id = video.id
                     item.status = "imported"
@@ -1796,6 +1805,8 @@ class AcquisitionService:
                     workspace_id=workspace_id,
                     source_object_key=source_key,
                     ingest_source="acquisition",
+                    actor_id=batch.created_by, actor_name=batch.actor_name,
+                    provenance_snapshot=asset_source(db, asset),
                     is_rich_text=rich_text,
                     **import_options,
                 )
@@ -1888,7 +1899,7 @@ class AcquisitionService:
             return db.scalar(
                 select(VideoItem).where(
                     VideoItem.workspace_id == workspace_id,
-                    VideoItem.sha256 == sha256,
+                    ((VideoItem.sha256 == sha256) | (VideoItem.content_sha256 == sha256)),
                 )
             )
         return db.scalar(
@@ -1988,6 +1999,9 @@ class AcquisitionService:
         asset: AcquisitionAsset,
         photo: GalleryPhoto,
     ) -> None:
+        batch = db.get(AcquisitionImportBatch, item.batch_id) if item else None
+        snapshot = asset_source(db, asset)
+        attach_provenance(db, photo, source_type=snapshot.get("source_type", "acquisition"), actor_id=batch.created_by if batch else None, actor_name=batch.actor_name if batch else None, snapshot=snapshot)
         self._record_import_provenance(db, asset, photo)
         asset.status = "imported"
         asset.error_message = None
@@ -2061,7 +2075,7 @@ class AcquisitionService:
             suffix = "_sRGB" if color_conversion else ""
             filename = f"{Path(video.filename).stem[:400]}_截图_{milliseconds // 60000:02d}-{milliseconds // 1000 % 60:02d}-{milliseconds % 1000:03d}{suffix}.png"
             key = self._asset_key(video.workspace_id, asset_id, filename)
-            metadata = {**source_metadata, "video_asset_id": video.id, "video_filename": video.filename,
+            metadata = {**source_metadata, "provenance": asset_source(db, video), "video_asset_id": video.id, "video_filename": video.filename,
                         "video_sha256": video.sha256, "frame_index": frame["frame_index"],
                         "time_seconds": frame["time_seconds"]}
             if color_conversion:
@@ -2662,6 +2676,26 @@ class AcquisitionService:
             ).all()
             for item in items:
                 asset = db.get(AcquisitionAsset, item.asset_id)
+                if item.target_type == "video":
+                    video = db.get(VideoItem, item.video_id) if item.video_id else None
+                    if video is not None and video.workspace_id == batch.workspace_id and asset is not None:
+                        if item.promotion_intent == "gallery_duplicate":
+                            self._finish_video_duplicate(db, item, asset, video)
+                        else:
+                            snapshot = asset_source(db, asset)
+                            attach_provenance(db, video, source_type="acquisition", actor_id=batch.created_by,
+                                              actor_name=batch.actor_name, snapshot=snapshot)
+                            item.status = asset.status = "imported"
+                            self._set_linked_item_statuses(db, asset, "imported")
+                        recovered += 1
+                    else:
+                        item.status = "failed"
+                        item.error_message = "服务重启前视频入库未完成，可重新提交"
+                        if asset is not None:
+                            asset.status = "import_failed"
+                            self._set_linked_item_statuses(db, asset, "import_failed")
+                        failed += 1
+                    continue
                 photo = self._gallery_photo_by_sha(
                     db,
                     batch.workspace_id,

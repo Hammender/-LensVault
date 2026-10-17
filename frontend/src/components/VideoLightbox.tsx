@@ -1,3 +1,4 @@
+import MediaSource from "./MediaSource";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Edit3,
@@ -491,6 +492,7 @@ export default function VideoLightbox({
 
         {/* Video Info Rail matching PictureShow style */}
         <aside className="video-lightbox-info-rail">
+          <MediaSource mediaType="video" mediaId={currentVideo.id} summary={currentVideo.source_summary} />
           <div className="vlb-info-head">
             <h2 className="vlb-title" title={currentVideo.title}>
               {currentVideo.title}

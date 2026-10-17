@@ -333,7 +333,7 @@ def create_video_upload_session(
     current: CurrentContext = Depends(require_context),
 ) -> VideoUploadSessionRead:
     try:
-        session = video_service.create_upload_session(db, payload, current.workspace_id)
+        session = video_service.create_upload_session(db, payload, current.workspace_id, actor_id=current.user.id)
         return _video_session_to_read(session)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -1,3 +1,4 @@
+import MediaSource from "../components/MediaSource";
 import { Info } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -1117,6 +1118,7 @@ export function useGallery({
 
   const lightboxMeta = lightboxPhoto ? (
     <>
+      <MediaSource mediaType="photo" mediaId={lightboxPhoto.id} summary={lightboxPhoto.source_summary} />
       <div className="lightbox-meta-head">
         <span className="lightbox-photo-id">#{lightboxPhoto.id}</span>
         <strong>{lightboxIndex >= 0 ? `${lightbox.offset + lightboxIndex + 1} / ${lightbox.total}` : "图片信息"}</strong>
