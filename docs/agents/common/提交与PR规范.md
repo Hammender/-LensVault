@@ -6,5 +6,5 @@
 - 不提交 `.env` 中的真实密钥；新增配置同步维护 `.env.example`。
 - 不提交生成数据、模型下载文件或 `data/` 中的本地数据库改动。
 - 前端改动提交前必须通过 `npm run build`（Windows 为 `cmd /c npm.cmd run build`）。
-- 改动接口时同步更新契约快照（见 `docs/agents/后端/后端规范.md`）。
+- 改动接口时同步更新契约快照（见 `docs/agents/backend/后端规范.md`）。
 - 合并请求包含简短说明；若 `.env`、MinIO 行为或数据库结构有变化，写明配置或迁移步骤，以及已执行和未执行的验证。

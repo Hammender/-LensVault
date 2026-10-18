@@ -172,6 +172,8 @@ python -m app.tools.evaluate_face_recognition --output ../data/face-evaluation
 
 ## 常用开发命令
 
+开发环境和完整命令见 [开发环境与命令](docs/开发环境与命令.md)；功能与接口说明见 [模块说明索引](docs/modules/README.md)，业务术语见 [名词解释](docs/名词解释.md)。
+
 ```powershell
 # 前端类型检查与生产构建
 cd frontend
