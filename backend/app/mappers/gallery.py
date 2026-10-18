@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.services.provenance import source_summary
+from app.services.face_case_snapshots import face_revision, recognition_key
 
 from app.models import FaceRecord, GalleryPhoto
 from app.schemas import FaceRead, GalleryPersonTagRead, GalleryPhotoDetail, GalleryPhotoListItem, GalleryTagRead
@@ -70,6 +71,8 @@ def gallery_photo_to_detail(
     faces = [
         FaceRead(
             id=face.id,
+            face_revision=face_revision(face),
+            recognition_case_id=getattr(photo, "_recognition_cases", {}).get(recognition_key(face)),
             face_index=index,
             bbox_left=face.bbox_left,
             bbox_top=face.bbox_top,

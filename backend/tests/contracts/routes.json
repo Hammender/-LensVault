@@ -846,6 +846,54 @@
     ]
   },
   {
+    "path": "/api/face-recognition-cases",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/face-recognition-cases",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/face-recognition-cases/export",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/face-recognition-cases/{case_id}",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/face-recognition-cases/{case_id}",
+    "methods": [
+      "PATCH"
+    ]
+  },
+  {
+    "path": "/api/face-recognition-cases/{case_id}",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/face-recognition-cases/{case_id}/original",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/face-recognition-cases/{case_id}/thumbnail",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/gallery/photos/{photo_id}/source",
     "methods": [
       "GET"

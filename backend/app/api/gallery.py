@@ -989,6 +989,11 @@ def get_gallery_photo(
         tag.person
     for tag_link in photo.tags:
         tag_link.tag
+    from app.models import FaceRecognitionCase
+    photo._recognition_cases = dict(db.execute(select(
+        FaceRecognitionCase.recognition_key, FaceRecognitionCase.id,
+    ).where(FaceRecognitionCase.workspace_id == current.workspace_id,
+            FaceRecognitionCase.source_photo_id == photo.id)).all())
     display_size: tuple[int, int] | None = None
     try:
         with Image.open(BytesIO(storage.get_bytes(photo.object_key))) as source:
@@ -1204,25 +1209,8 @@ def bind_gallery_face_person(
     face = db.scalar(select(FaceRecord).where(FaceRecord.id == face_id, FaceRecord.gallery_photo_id == photo.id))
     if face is None:
         raise HTTPException(status_code=404, detail="指定人脸不存在")
-    if db.scalar(select(SamplePhoto).where(SamplePhoto.source_gallery_face_id == face.id, SamplePhoto.status == "ready")) is not None:
-        raise HTTPException(status_code=409, detail="该人脸已经加入样本库，请先撤销样本后再更换绑定")
-    previous_person_id = face.matched_person_id
-    picture_service.move_gallery_face_to_known(db, face, person)
-    if previous_person_id and previous_person_id != person.id:
-        previous_link = db.scalar(select(GalleryPhotoPersonTag).where(
-            GalleryPhotoPersonTag.gallery_photo_id == photo.id,
-            GalleryPhotoPersonTag.person_id == previous_person_id,
-        ))
-        still_bound = db.scalar(select(func.count(FaceRecord.id)).where(
-            FaceRecord.gallery_photo_id == photo.id,
-            FaceRecord.matched_person_id == previous_person_id,
-            FaceRecord.id != face.id,
-        )) or 0
-        if previous_link is not None and previous_link.source in {"auto", "unknown", "face_manual"} and not still_bound:
-            db.delete(previous_link)
-    picture_service.ensure_gallery_person_tag(db, photo.id, person.id, "face_manual")
-    picture_service.sync_inherited_gallery_tags(db, photo.id)
-    mark_similarity_scans_stale(db, current.workspace_id, {person.id})
+    from app.services.gallery_face_binding import bind_face_person
+    bind_face_person(db, picture_service, photo, face, person)
     db.commit()
     return get_gallery_photo(photo_id, db, current)
 

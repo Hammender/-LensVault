@@ -22,6 +22,8 @@ export type GalleryTag = {
 
 export type Face = {
   id: number;
+  face_revision: string;
+  recognition_case_id: string | null;
   face_index: number;
   bbox_left: number;
   bbox_top: number;

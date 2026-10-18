@@ -31,6 +31,9 @@ NO_PERMISSIONS = {field: False for field in PERMISSION_FIELDS}
 
 # 以 FastAPI 路由模板为键，避免权限判断依赖字符串前缀或动态参数值。
 ROUTE_PERMISSION_MATRIX: dict[tuple[str, str], str] = {
+    ("POST", "/api/face-recognition-cases"): "can_edit_gallery",
+    ("PATCH", "/api/face-recognition-cases/{case_id}"): "can_edit_gallery",
+    ("DELETE", "/api/face-recognition-cases/{case_id}"): "can_delete_gallery",
     ("POST", "/api/acquisition/telegram/account/login/start"): "can_edit_gallery",
     ("POST", "/api/acquisition/telegram/account/login/verify"): "can_edit_gallery",
     ("POST", "/api/acquisition/telegram/account/test"): "can_edit_gallery",

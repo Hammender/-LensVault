@@ -33,6 +33,7 @@ LensVault（代码内名称 PictureShow）是本地优先的私人媒体库，�
 | 写或运行后端/前端测试 | `docs/agents/backend/测试规范.md` |
 | 修改图库列表、筛选、搜索、详情、灯箱、导入导出 | `docs/agents/modules/图库.md` |
 | 修改人物、样本库、人脸识别、未知人物 | `docs/agents/modules/人物与样本库.md` |
+| 修改识别异常案例、独立存档与案例导出 | `docs/agents/modules/人物与样本库.md`；业务说明见 `docs/modules/识别异常案例.md` |
 | 修改采集中心、采集插件、Telegram 采集 | `docs/agents/modules/采集中心.md` |
 | 修改相似图扫描与整理 | `docs/agents/modules/相似图整理.md` |
 | 修改视频上传、播放、字幕 | `docs/agents/modules/视频与字幕.md` |

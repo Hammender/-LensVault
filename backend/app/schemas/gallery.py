@@ -21,6 +21,8 @@ class GalleryTagRead(BaseModel):
 
 class FaceRead(BaseModel):
     id: int
+    face_revision: str = ""
+    recognition_case_id: str | None = None
     face_index: int
     bbox_left: float
     bbox_top: float

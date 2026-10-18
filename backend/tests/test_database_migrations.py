@@ -14,6 +14,42 @@ ALEMBIC_CONFIG = Path(__file__).resolve().parents[2] / "alembic.ini"
 ALEMBIC_HEAD = ScriptDirectory.from_config(Config(str(ALEMBIC_CONFIG))).get_current_head()
 
 
+def test_face_case_answer_migration_preserves_legacy_snapshots(tmp_path):
+    """案例表新增排除人物外键会重建表，旧快照、索引及去重约束必须保留。"""
+    from datetime import datetime
+    from sqlalchemy import MetaData, Table
+    url = f"sqlite:///{(tmp_path / 'case-answer-upgrade.db').as_posix()}"
+    config = _alembic_config(url)
+    command.upgrade(config, "28c813befca7")
+    engine = create_engine(url)
+    try:
+        metadata = MetaData()
+        cases = Table("face_recognition_cases", metadata, autoload_with=engine)
+        workspaces = Table("workspaces", metadata, autoload_with=engine)
+        now = datetime(2026, 10, 18)
+        snapshot = '{"schema_version":1,"correct_person":{"id":77,"name":"旧人物"}}'
+        with engine.begin() as connection:
+            connection.execute(workspaces.insert().values(id=1, name="旧工作区", kind="private", created_at=now, updated_at=now))
+            connection.execute(cases.insert().values(id="legacy", workspace_id=1, source_face_id=42,
+                correct_person_name="旧人物", issue_type="unknown", notes="原备注", recognition_key="keep",
+                object_key="keep/original", snapshot_json=snapshot, actor_name="原记录人",
+                created_at=now, updated_at=now, status="active"))
+        before_indexes = {row["name"] for row in inspect(engine).get_indexes(cases.name)}
+        before_unique = {(row["name"], tuple(row["column_names"])) for row in inspect(engine).get_unique_constraints(cases.name)}
+        command.upgrade(config, "head")
+        command.check(config)
+        with engine.connect() as connection:
+            row = connection.execute(text("SELECT answer_type, excluded_person_id, excluded_person_name, "
+                "correct_person_name, snapshot_json, object_key FROM face_recognition_cases WHERE id='legacy'")).one()
+            assert row == ("known_person", None, None, "旧人物", snapshot, "keep/original")
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+        assert before_indexes <= {row["name"] for row in inspect(engine).get_indexes(cases.name)}
+        assert before_unique == {(row["name"], tuple(row["column_names"])) for row in inspect(engine).get_unique_constraints(cases.name)}
+        assert any(fk["name"] == "fk_face_cases_excluded_person" for fk in inspect(engine).get_foreign_keys(cases.name))
+    finally:
+        engine.dispose()
+
+
 def test_provenance_migration_preserves_existing_media_and_constraints(tmp_path):
     """新增外键需要SQLite重建表，验证已有素材及原索引不丢失。"""
     from datetime import datetime

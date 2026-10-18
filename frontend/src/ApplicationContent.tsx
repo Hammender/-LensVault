@@ -12,6 +12,7 @@ import { useUpload } from "./hooks/useUpload";
 import { useVideos } from "./hooks/useVideos";
 import { hasPermission } from "./lib/permissions";
 import GalleryPage from "./pages/GalleryPage";
+import FaceRecognitionCases from "./pages/FaceRecognitionCases";
 import PeoplePage from "./pages/PeoplePage";
 import UploadPage from "./pages/UploadPage";
 import VideoPlayPage from "./pages/VideoPlayPage";
@@ -225,7 +226,8 @@ export function ApplicationContent({ authSession, onLogout, onSessionChange }: M
         />
       )}
       {page === "home" && <Home />}
-      {page === "gallery" && <GalleryPage model={gallery} />}
+      {page === "gallery" && <GalleryPage key={authSession.workspace.id} model={gallery} />}
+      {page === "face-recognition-cases" && <FaceRecognitionCases key={authSession.workspace.id} canEdit={canEditGallery} canDelete={canDeleteGallery} onBack={() => onNavigate("gallery")} onOpenPhoto={(id) => { onNavigate("gallery"); void gallery.openGalleryPhoto(id); }} />}
       {page === "similarity" && (
         <SimilarityReview persons={catalog.persons} canEdit={canEditGallery} canDelete={canDeleteGallery} />
       )}

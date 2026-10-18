@@ -20,6 +20,7 @@ from app.api.gallery import (
     update_gallery_similarity_group,
 )
 from app.api.people import create_person, router as people_router
+from app.api.face_cases import router as face_cases_router
 from app.api.statistics import router as statistics_router
 from app.api.subtitles import router as subtitle_service_router
 from app.api.system import router as system_router
@@ -71,6 +72,7 @@ app.include_router(people_router)
 app.include_router(gallery_imports_router)
 app.include_router(subtitle_service_router)
 app.include_router(gallery_router)
+app.include_router(face_cases_router)
 app.include_router(provenance_router)
 app.include_router(videos_router)
 

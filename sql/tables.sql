@@ -985,6 +985,69 @@ CREATE INDEX ix_acquisition_source_scripts_enabled ON acquisition_source_scripts
 CREATE INDEX ix_acquisition_source_scripts_script_key ON acquisition_source_scripts (script_key);
 CREATE INDEX ix_acquisition_source_scripts_source_id ON acquisition_source_scripts (source_id);
 
+-- 表名：face_recognition_cases
+-- 表说明：人工标注的人脸识别异常案例与独立素材快照
+-- 字段说明：
+--   id：案例编号
+--   workspace_id：所属工作区
+--   source_photo_id：仍存在的源图库图片编号，删除图片后置空
+--   source_face_id：原人脸编号快照，不随重识别删除
+--   correct_person_id：仍存在的正确人物编号，删除人物后置空
+--   correct_person_name：正确人物名称快照
+--   answer_type：人工结论类型：库中人物、库外人物或仅排除指定人物
+--   excluded_person_id：明确排除的人物编号，删除人物后置空
+--   excluded_person_name：明确排除的人物名称快照
+--   issue_type：人工选择的异常类型
+--   notes：人工备注
+--   recognition_key：识别事件指纹，同工作区内唯一
+--   embedding_version：原识别向量版本
+--   object_key：案例独立存档原图对象键
+--   snapshot_json：版本化的图片、人脸、人物及记录时样本清单快照
+--   created_by：记录人编号，删除用户后置空
+--   actor_name：记录人名称快照
+--   status：案例状态，active 为正常，deleting 为待重试清理
+--   cleanup_error：素材清理失败原因
+--   created_at：案例记录时间
+--   updated_at：备注或清理状态更新时间
+CREATE TABLE face_recognition_cases (
+	id VARCHAR(32) NOT NULL, 
+	workspace_id INTEGER NOT NULL, 
+	source_photo_id INTEGER, 
+	source_face_id INTEGER NOT NULL, 
+	correct_person_id INTEGER, 
+	correct_person_name VARCHAR(256) NOT NULL, 
+	answer_type VARCHAR(32) DEFAULT 'known_person' NOT NULL, 
+	excluded_person_id INTEGER, 
+	excluded_person_name VARCHAR(256), 
+	issue_type VARCHAR(32) NOT NULL, 
+	notes TEXT NOT NULL, 
+	recognition_key VARCHAR(64) NOT NULL, 
+	embedding_version VARCHAR(64), 
+	object_key VARCHAR(512) NOT NULL, 
+	snapshot_json TEXT NOT NULL, 
+	created_by INTEGER, 
+	actor_name VARCHAR(128) NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	cleanup_error TEXT, 
+	created_at DATETIME NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_face_case_recognition UNIQUE (workspace_id, recognition_key), 
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
+	FOREIGN KEY(source_photo_id) REFERENCES gallery_photos (id) ON DELETE SET NULL, 
+	FOREIGN KEY(correct_person_id) REFERENCES persons (id) ON DELETE SET NULL, 
+	CONSTRAINT fk_face_cases_excluded_person FOREIGN KEY(excluded_person_id) REFERENCES persons (id) ON DELETE SET NULL, 
+	UNIQUE (object_key), 
+	FOREIGN KEY(created_by) REFERENCES users (id) ON DELETE SET NULL
+);
+CREATE INDEX ix_face_recognition_cases_answer_type ON face_recognition_cases (answer_type);
+CREATE INDEX ix_face_recognition_cases_correct_person_id ON face_recognition_cases (correct_person_id);
+CREATE INDEX ix_face_recognition_cases_created_at ON face_recognition_cases (created_at);
+CREATE INDEX ix_face_recognition_cases_embedding_version ON face_recognition_cases (embedding_version);
+CREATE INDEX ix_face_recognition_cases_issue_type ON face_recognition_cases (issue_type);
+CREATE INDEX ix_face_recognition_cases_source_photo_id ON face_recognition_cases (source_photo_id);
+CREATE INDEX ix_face_recognition_cases_workspace_id ON face_recognition_cases (workspace_id);
+
 -- 表名：face_recognition_corrections
 -- 表说明：人工纠正人脸识别结果的训练反馈记录
 -- 字段说明：

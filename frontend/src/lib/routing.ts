@@ -1,7 +1,8 @@
-export type PageKey = "home" | "gallery" | "similarity" | "acquisition" | "people" | "upload" | "videos" | "statistics" | "video-play";
+export type PageKey = "home" | "gallery" | "face-recognition-cases" | "similarity" | "acquisition" | "people" | "upload" | "videos" | "statistics" | "video-play";
 
 export function pageFromHash(hash: string): PageKey {
   const value = hash.replace(/^#\/?/, "");
+  if (value.split("?")[0] === "face-recognition-cases") return "face-recognition-cases";
   if (value.startsWith("video-play/")) {
     return "video-play";
   }

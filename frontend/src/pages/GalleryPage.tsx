@@ -1,4 +1,7 @@
 import MediaSource from "../components/MediaSource";
+import FaceCaseDialog from "../components/FaceCaseDialog";
+import { casePath } from "../lib/faceCases";
+import type { Face, GalleryPhotoDetail } from "../types/gallery";
 import { Info, Pin, PinOff, Search, SlidersHorizontal, X } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -186,6 +189,9 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
     photoIdSearchHint,
     handleClearPhotoIdSearch
   } = model;
+
+  const [caseTarget, setCaseTarget] = useState<{ photo: GalleryPhotoDetail; face: Face } | null>(null);
+  const [caseNotice, setCaseNotice] = useState<string | null>(null);
 
   const galleryGridRef = useRef<HTMLDivElement | null>(null);
   const [galleryColumnCount, setGalleryColumnCount] = useState(4);
@@ -651,6 +657,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                 <h2>写真浏览</h2>
               </div>
               <div className="micro-row section-actions">
+                <button type="button" className="ghost-button" onClick={() => { window.location.hash = casePath(); }}>识别异常</button>
                 <span>{galleryTotal} 张结果</span>
                 {gallerySelectionMode ? (
                   <>
@@ -1203,6 +1210,11 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
                         )}
                       </div>
                       <div className="face-card-actions" onClick={(event) => event.stopPropagation()}>
+                        {face.recognition_case_id ? (
+                          <button type="button" className="ghost-button" onClick={() => { window.location.hash = casePath(face.recognition_case_id!); }}>已记录异常 · 查看</button>
+                        ) : canEditGallery && (
+                          <button type="button" className="ghost-button" disabled={busy || !face.face_revision} onClick={() => { setCaseNotice(null); setCaseTarget({ photo: selectedPhoto, face }); }}>记录识别异常</button>
+                        )}
                         <SearchableSelect
                           id={`face-person-picker-${face.id}`}
                           value={selectedFaceId === face.id && !face.matched_person_is_unknown ? String(face.matched_person_id ?? "") : ""}
@@ -1469,6 +1481,12 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
           <i aria-hidden="true" />
         </div>
       )}
+      {caseNotice && <div className="face-case-saved" role="status"><span>异常案例已保存</span><button type="button" onClick={() => { window.location.hash = casePath(caseNotice); }}>查看案例</button><button type="button" className="ghost-button" onClick={() => setCaseNotice(null)}>关闭</button></div>}
+      {caseTarget && <FaceCaseDialog photo={caseTarget.photo} face={caseTarget.face} persons={persons} onClose={() => setCaseTarget(null)} onSaved={(item) => {
+        setCaseTarget(null); setCaseNotice(item.id);
+        if (selectedPhoto?.id === caseTarget.photo.id) void openGalleryPhoto(caseTarget.photo.id);
+        if (item.snapshot.bind_person_requested) void refreshGallery();
+      }} />}
     </>
   );
 }
