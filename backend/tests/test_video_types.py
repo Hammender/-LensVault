@@ -333,6 +333,47 @@ def test_process_video_reraises_after_marking_failed(db_session: Session, monkey
     assert updated.processing_error == "模拟优化失败"
 
 
+def test_upload_optimization_failure_does_not_skip_subtitles(db_session: Session, monkeypatch, caplog) -> None:
+    import asyncio
+    from fastapi import BackgroundTasks
+    from app.api import videos as api
+    from app.models import VideoUploadSession, Workspace
+    from app.schemas.videos import VideoUploadCompleteRequest
+    from app.services.subtitles import SubtitleService
+
+    workspace = Workspace(name="上传字幕测试")
+    db_session.add(workspace)
+    db_session.flush()
+    video = VideoItem(workspace_id=workspace.id, title="视频", filename="clip.mp4",
+                      sha256="abc", object_key="clip.mp4", size_bytes=12, status="uploaded")
+    session = VideoUploadSession(id="upload", workspace_id=workspace.id, filename="clip.mp4",
+                                 title="视频", size_bytes=12, part_size=12, total_parts=1)
+    db_session.add_all([video, session])
+    db_session.commit()
+    service, storage, _ = _playback_service(db_session, monkeypatch, video, b"raw-video")
+    monkeypatch.setattr(service, "complete_upload", lambda *_: video)
+    def fail_download(*_):
+        raise RuntimeError("模拟优化失败")
+    monkeypatch.setattr(service, "_download_object_to_file", fail_download)
+    monkeypatch.setattr(api, "video_service", service)
+    subtitles = SubtitleService(storage=storage, settings=service.settings)
+    generated = []
+    monkeypatch.setattr(subtitles, "generate_for_video", lambda *args: generated.append(args))
+    monkeypatch.setattr(api, "subtitle_service", subtitles)
+    queue = BackgroundTasks()
+    api.complete_video_upload(session.id, VideoUploadCompleteRequest(generate_zh_subtitles=True),
+                              queue, db_session, SimpleNamespace(workspace_id=workspace.id))
+
+    asyncio.run(queue())
+
+    db_session.expire_all()
+    assert db_session.get(VideoItem, video.id).status == "processing_failed"
+    assert db_session.get(VideoItem, video.id).processing_error == "模拟优化失败"
+    assert len(generated) == 1 and generated[0][0] == video.id
+    assert generated[0][1]
+    assert "继续后续后台任务" in caplog.text
+
+
 def test_acquisition_video_import_runs_upload_processing(db_session: Session, monkeypatch) -> None:
     from app.models import AcquisitionAsset, AcquisitionImportBatchItem, Workspace
     from app.services.acquisition import AcquisitionService

@@ -23,7 +23,7 @@ SNAPSHOT_LIMIT = 65536
 PUBLIC_METADATA_LIMIT = 16384
 SECRET = re.compile(
     r"token|secret|password|passwd|cookie|authorization|credential|session|access[_-]?hash"
-    r"|api[_-]?key|(?:^|[_-])(?:auth|apikey|sig|sigv\d|signature|hmac|nonce|jwt|key)(?:$|[_-])",
+    r"|(?:api|private|access)[_-]?key|(?:^|[_-])(?:auth|apikey|sig|sigv\d|signature|hmac|nonce|jwt|key)(?:$|[_-])",
     re.I,
 )
 # 这些名字含 key 但不是凭据，避免脱敏误伤。
@@ -47,8 +47,10 @@ CAPTURE_FIELDS = {"video_asset_id", "video_filename", "video_sha256", "frame_ind
 
 
 def _is_secret_key(name: object) -> bool:
-    text = str(name)
-    if text.lower() in SAFE_SECRET_KEYS:
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", str(name))
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    if text in SAFE_SECRET_KEYS:
         return False
     return SECRET.search(text) is not None
 
@@ -277,13 +279,13 @@ def asset_source(db: Session, asset: AcquisitionAsset, _allow_capture_upstream: 
         data = normalize_snapshot(base)
         data.update(source_type="video_capture", capture={k: capture[k] for k in CAPTURE_FIELDS if k in capture})
         return normalize_snapshot(data)
+    # 素材侧已冻结的首次来源优先，避免原分类删除后被其他采集关联替换。
+    if asset.source_snapshot_json:
+        return normalize_snapshot(json.loads(asset.source_snapshot_json))
     item = db.scalar(select(AcquisitionRunItem).join(AcquisitionRun).where(
         AcquisitionRunItem.asset_id == asset.id, AcquisitionRun.workspace_id == asset.workspace_id,
     ).order_by(AcquisitionRunItem.created_at, AcquisitionRunItem.id).limit(1))
     if item is None:
-        # 分类或站点被删除后 run_items 会级联消失，此时使用素材侧冻结的首个快照。
-        if asset.source_snapshot_json:
-            return normalize_snapshot(json.loads(asset.source_snapshot_json))
         return {"source_type": "acquisition"}
     if item.source_snapshot_json:
         return normalize_snapshot(json.loads(item.source_snapshot_json))

@@ -18,6 +18,22 @@ from app.tools.backfill_media_provenance import apply_report, build_report
 from app.tools.reclassify_legacy_videos import reclassify
 
 
+@pytest.mark.parametrize("words", [
+    ("private", "key"), ("access", "key"), ("secret", "key"), ("api", "key"),
+    ("session", "id"), ("auth", "token"), ("access", "token"),
+])
+def test_public_metadata_redacts_key_spelling_variants(words):
+    from app.services.provenance import public_url
+    first, second = words
+    keys = [first + second.title(), first.title() + second.title(), first + second,
+            (first + second).upper(), f"{first}_{second}", f"{first}-{second}", f"{first}_{second}".upper()]
+    for key in keys:
+        assert public_metadata({"nested": [{key: "hidden", "title": "公开"}], "pluginKey": "demo"}) == {
+            "nested": [{"title": "公开"}], "pluginKey": "demo",
+        }
+        assert public_url(f"https://example.test/post?id=1&{key}=hidden") == "https://example.test/post?id=1"
+
+
 def seed(db):
     db.add_all([User(id=1, username="Hamender", display_name="Hamender", password_hash="test", is_admin=True),
                 User(id=2, username="member", display_name="成员", password_hash="test")])

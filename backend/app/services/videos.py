@@ -524,6 +524,14 @@ class VideoService:
         finally:
             db.close()
 
+    def optimize_uploaded_video(self, video_id: int) -> None:
+        """上传的后台优化失败后，继续执行队列中的字幕任务。"""
+        try:
+            self.optimize_video_faststart(video_id)
+        except Exception:
+            # 底层已记录 processing_failed 和错误；上传队列不能中断后续任务。
+            logger.exception("上传视频播放优化失败，继续后续后台任务：video_id=%s", video_id)
+
     def optimize_video_faststart(self, video_id: int, *, keep_existing_cover: bool = False) -> None:
         self.process_video_for_playback(video_id, keep_existing_cover=keep_existing_cover)
 

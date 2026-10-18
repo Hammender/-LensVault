@@ -37,6 +37,8 @@
 | `export_schema_sql.py` | 从 ORM 元数据导出全量表设计 SQL。 | 写 `sql/tables.sql` 等文件，不改数据库 |
 | `generate_migration.py` | 基于临时空库生成 Alembic 迁移脚本。 | 写迁移文件，不改真实数据库 |
 | `migrate_catchpics_history.py` | 将 catchPics 旧资源复制到采集待审核区。 | 写目标资源，不修改旧目录 |
+| `backfill_pending_asset_sources.py` | 补齐升级前待审核素材的来源快照。 | 默认试跑，`--apply-report` 写 SQLite |
+| `upgrade_plugin_public_metadata.py` | 给本机三种常用插件生成带公开元数据的新版本包。 | 写新的 ZIP，不改原包或数据库 |
 
 ## 本轮算法改进
 
@@ -76,3 +78,30 @@ python -m app.tools.backfill_media_provenance --apply-report data/reports/来源
 写入前核对素材工作区、哈希和创建时间；发现变化停止并要求重新试跑。只补缺失来源或入库人，不覆盖已有记录；同一报告重复执行不会重复写入。报告包含私人来源信息，应存放在本机 `data/reports/`，不提交到 Git。
 
 已经完成回填的历史未知视频，可运行 `python -m app.tools.reclassify_legacy_videos --user-id 1 --expected-count 数量` 更正。工具核对数量、工作区及历史回填标记，在一次事务中更新；重复执行时数量检查会阻止再次改写。
+
+## 升级前待审核素材来源回填
+
+先完成现有数据库结构迁移，在删除站点、分类前备份数据库，再试跑。此工具不依赖指定入库人，不更改正式图库或素材状态：
+
+```powershell
+$env:PYTHONPATH='backend'
+python -m app.tools.backfill_pending_asset_sources --report data/reports/待审核来源试跑.json
+python -m app.tools.backfill_pending_asset_sources --apply-report data/reports/待审核来源试跑.json
+```
+
+第一条命令只生成报告，第二条应在审核报告后手工执行。报告中的 `items` 为可恢复项，`unresolved` 为原采集记录缺失、无法还原的素材。来源包含站点名、分类路径及原记录可提供的频道、话题、标签、50 字文案摘要等；没有证据的字段保持缺失。报告路径必须尚不存在，避免覆盖已审核的报告。
+
+仅回填 `pending_review`、`import_failed` 且没有素材快照的记录。写入前核对工作区、哈希、创建时间；素材不匹配则整批回滚。试跑后已有快照或已离开待审核区的记录跳过，同一报告可重复执行。真实数据库写入需用户明确授权；报告含私人来源数据，放本机 `data/reports/`，不要提交。
+
+## 常用插件公开元数据升级
+
+以下命令读取本机旧包，增加明确的公开字段并将修订版本号加一，输出新包；原包保持不变。已有同名输出或已升级的桥接代码会报错。
+
+```powershell
+$env:PYTHONPATH='backend'
+python -m app.tools.upgrade_plugin_public_metadata acquisition-plugin-packages/idolxxx-gallery-1.1.2.zip --out acquisition-plugin-packages/idolxxx-gallery-1.1.3.zip
+python -m app.tools.upgrade_plugin_public_metadata acquisition-plugin-packages/raindrop-ftxsri-workers-dev.zip --out acquisition-plugin-packages/raindrop-ftxsri-workers-dev-1.0.4.zip
+python -m app.tools.upgrade_plugin_public_metadata acquisition-plugin-packages/shfwzwz-raindrop-page.zip --out acquisition-plugin-packages/shfwzwz-raindrop-page-1.2.2.zip
+```
+
+三者仅公开原帖标题，Workers 插件额外公开原接口作品编号；不存在的作者、栏目不伪造。`plugin_data` 保持仅供内部工作流使用。管理员手工上传新包、准备并启用，之后新采集才使用这些字段；旧待审核素材仍须执行上面的来源回填。

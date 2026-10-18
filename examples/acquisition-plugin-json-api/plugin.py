@@ -37,6 +37,12 @@ def enumerate_pages(crawl_url: str, parameters: dict[str, object], credentials: 
                 "source_url": str(record["url"]),
                 "title": str(record.get("title") or ""),
                 "media_type": "video" if record.get("type") == "video" else "image",
+                "public_metadata": {
+                    "work_id": external_key,
+                    **{key: record[key] for key in ("author", "column")
+                       if isinstance(record.get(key), str)},
+                    "original_title": str(record.get("title") or ""),
+                },
             })
         end = not records or not payload.get("has_more")
         yield {"page_number": number, "items": items,

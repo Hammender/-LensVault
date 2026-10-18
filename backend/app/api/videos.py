@@ -388,7 +388,7 @@ def complete_video_upload(
         raise HTTPException(status_code=404, detail="Video upload session not found")
     try:
         video = video_service.complete_upload(db, session, payload)
-        background_tasks.add_task(video_service.optimize_video_faststart, video.id)
+        background_tasks.add_task(video_service.optimize_uploaded_video, video.id)
         logger.info("视频后台优化已入队：video_id=%s filename=%s trigger=upload", video.id, video.filename)
         if payload.generate_zh_subtitles:
             task = create_task(db, "video_subtitle_generation", "已排队生成中文字幕", current.workspace_id)
