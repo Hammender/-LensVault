@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 import math
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -18,7 +19,16 @@ from app.models import (
 )
 
 SOURCE_TYPES = {"manual_upload", "import", "acquisition", "video_capture", "unknown"}
-SECRET = re.compile(r"token|secret|password|passwd|cookie|authorization|credential|api[_-]?key|session|signature|access[_-]?hash", re.I)
+SNAPSHOT_LIMIT = 65536
+PUBLIC_METADATA_LIMIT = 16384
+SECRET = re.compile(
+    r"token|secret|password|passwd|cookie|authorization|credential|session|access[_-]?hash"
+    r"|api[_-]?key|(?:^|[_-])(?:auth|apikey|sig|sigv\d|signature|hmac|nonce|jwt|key)(?:$|[_-])",
+    re.I,
+)
+# 这些名字含 key 但不是凭据，避免脱敏误伤。
+SAFE_SECRET_KEYS = {"plugin_key"}
+LOGGER = logging.getLogger(__name__)
 TEXT_FIELDS = {
     "site_name": 128, "category_path": 1024, "run_id": 64, "plugin_key": 128,
     "plugin_version": 64, "original_url": 2048, "published_at": 64,
@@ -27,12 +37,20 @@ TEXT_FIELDS = {
 }
 TG_FIELDS = {
     "channel_id", "channel_title", "channel_username", "peer_id", "entity_type",
-    "message_id", "topic_id", "topic_title", "is_comment", "root_channel_message_id",
-    "root_channel_id", "root_channel_username", "reply_to_message_id", "grouped_id",
+    "discussion_peer_id", "message_id", "topic_id", "topic_title", "is_comment",
+    "root_channel_message_id", "root_channel_id", "root_channel_title", "root_channel_username",
+    "reply_to_message_id", "grouped_id",
     "media_type", "transport_type", "original_filename", "message_url", "hashtags",
     "caption_excerpt", "caption_truncated",
 }
 CAPTURE_FIELDS = {"video_asset_id", "video_filename", "video_sha256", "frame_index", "time_seconds", "color_conversion"}
+
+
+def _is_secret_key(name: object) -> bool:
+    text = str(name)
+    if text.lower() in SAFE_SECRET_KEYS:
+        return False
+    return SECRET.search(text) is not None
 
 
 def public_url(value: str | None) -> str | None:
@@ -43,7 +61,7 @@ def public_url(value: str | None) -> str | None:
         if parts.scheme not in {"http", "https", "tg"}:
             return None
         host = parts.netloc.rsplit("@", 1)[-1]
-        query = urlencode([(k, v) for k, v in parse_qsl(parts.query) if not SECRET.search(k)])
+        query = urlencode([(k, v) for k, v in parse_qsl(parts.query) if not _is_secret_key(k)])
         return urlunsplit((parts.scheme, host, parts.path, query, ""))[:2048]
     except ValueError:
         return None
@@ -53,13 +71,13 @@ def _public(value, depth=0):
     if depth > 4:
         return None
     if isinstance(value, dict):
-        return {str(k)[:128]: _public(v, depth + 1) for k, v in list(value.items())[:100] if not SECRET.search(str(k))}
+        return {str(k)[:128]: _public(v, depth + 1) for k, v in list(value.items())[:100] if not _is_secret_key(k)}
     if isinstance(value, (list, tuple)):
         return [_public(v, depth + 1) for v in value[:100]]
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, str):
-        if re.search(r"(?:Bearer\s+|(?:password|token|secret|cookie)\s*[:=])", value, re.I):
+        if re.search(r"(?:Bearer\s+|(?:password|token|secret|cookie|signature|api[_-]?key|auth)\s*[:=])", value, re.I):
             return "[已脱敏]"
         return public_url(value) if value.startswith(("http://", "https://", "tg://")) else value[:2048]
     if isinstance(value, float) and not math.isfinite(value):
@@ -73,11 +91,39 @@ def public_metadata(value) -> dict:
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise ValueError("公开来源元数据必须是对象")
+        # 插件传错类型时只丢弃该字段，不让整条采集条目失败。
+        LOGGER.warning("公开来源元数据不是对象，已忽略")
+        return {}
     cleaned = _public(value)
-    if len(json.dumps(cleaned, ensure_ascii=False).encode("utf-8")) > 16384:
+    if len(json.dumps(cleaned, ensure_ascii=False).encode("utf-8")) > PUBLIC_METADATA_LIMIT:
         return {"metadata_truncated": True}
     return cleaned
+
+
+def _snapshot_size(data: dict) -> int:
+    return len(json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def _fit_snapshot(result: dict) -> dict:
+    """超过 64 KiB 时按固定顺序裁剪并标记，避免单条采集或入库失败。"""
+    if _snapshot_size(result) <= SNAPSHOT_LIMIT:
+        return result
+    if result.get("public_metadata"):
+        result["public_metadata"] = {"metadata_truncated": True}
+    if "upstream" in result:
+        result.pop("upstream", None)
+        result["upstream_truncated"] = True
+    telegram = result.get("telegram")
+    if isinstance(telegram, dict):
+        hashtags = telegram.get("hashtags")
+        if isinstance(hashtags, list):
+            telegram["hashtags"] = [str(tag)[:64] for tag in hashtags[:32]]
+    if _snapshot_size(result) <= SNAPSHOT_LIMIT:
+        return result
+    for key, value in list(result.items()):
+        if isinstance(value, str):
+            result[key] = value[:512]
+    return result
 
 
 def normalize_snapshot(value: dict | None, *, imported=False) -> dict:
@@ -85,8 +131,6 @@ def normalize_snapshot(value: dict | None, *, imported=False) -> dict:
         return {"version": 1, "source_type": "unknown"}
     if not isinstance(value, dict) or value.get("version", 1) != 1:
         raise ValueError("来源快照格式或版本不支持")
-    if len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")) > 65536:
-        raise ValueError("来源快照超过64 KiB")
     kind = value.get("source_type", "unknown")
     if kind not in SOURCE_TYPES:
         raise ValueError("来源类型无效")
@@ -121,7 +165,7 @@ def normalize_snapshot(value: dict | None, *, imported=False) -> dict:
         result["upstream"] = normalize_snapshot(upstream)
     if imported:
         result["record_method"] = "imported_package"
-    return result
+    return _fit_snapshot(result)
 
 
 def actor_snapshot(db: Session, user_id: int | None, actor_name: str | None = None) -> str | None:
@@ -215,10 +259,21 @@ def acquisition_snapshot(db: Session, run: AcquisitionRun, category: Acquisition
     return normalize_snapshot(data)
 
 
-def asset_source(db: Session, asset: AcquisitionAsset) -> dict:
+def asset_source(db: Session, asset: AcquisitionAsset, _allow_capture_upstream: bool = True) -> dict:
     if asset.capture_metadata_json:
         capture = json.loads(asset.capture_metadata_json)
-        base = capture.get("provenance") or {"source_type": "video_capture", "original_url": capture.get("source_message_url")}
+        base = capture.get("provenance")
+        if not base:
+            # 旧截图没有自带来源：沿原视频素材回溯一层站点与分类。
+            base = {"source_type": "video_capture", "original_url": capture.get("source_message_url")}
+            video_asset_id = capture.get("video_asset_id")
+            video_asset = db.get(AcquisitionAsset, video_asset_id) if isinstance(video_asset_id, str) else None
+            if video_asset is not None and video_asset.id != asset.id and _allow_capture_upstream:
+                inherited = asset_source(db, video_asset, _allow_capture_upstream=False)
+                inherited.pop("capture", None)
+                inherited.update(source_type="video_capture",
+                                 original_url=base.get("original_url") or inherited.get("original_url"))
+                base = inherited
         data = normalize_snapshot(base)
         data.update(source_type="video_capture", capture={k: capture[k] for k in CAPTURE_FIELDS if k in capture})
         return normalize_snapshot(data)
@@ -226,6 +281,9 @@ def asset_source(db: Session, asset: AcquisitionAsset) -> dict:
         AcquisitionRunItem.asset_id == asset.id, AcquisitionRun.workspace_id == asset.workspace_id,
     ).order_by(AcquisitionRunItem.created_at, AcquisitionRunItem.id).limit(1))
     if item is None:
+        # 分类或站点被删除后 run_items 会级联消失，此时使用素材侧冻结的首个快照。
+        if asset.source_snapshot_json:
+            return normalize_snapshot(json.loads(asset.source_snapshot_json))
         return {"source_type": "acquisition"}
     if item.source_snapshot_json:
         return normalize_snapshot(json.loads(item.source_snapshot_json))

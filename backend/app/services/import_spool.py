@@ -13,14 +13,18 @@ def import_directory(settings: Settings, task_id: str) -> Path:
     return directory
 
 
-async def spool_upload(settings: Settings, task_id: str, index: int, upload) -> Path:
+async def spool_upload(settings: Settings, task_id: str, index: int, upload, max_bytes: int | None = None) -> Path:
     filename = Path(upload.filename or "upload").name or "upload"
     target = import_directory(settings, task_id) / f"{index:04d}_{filename}"
+    written = 0
     with target.open("wb") as handle:
         while True:
             chunk = await upload.read(1024 * 1024)
             if not chunk:
                 break
+            written += len(chunk)
+            if max_bytes is not None and written > max_bytes:
+                raise ValueError("上传文件超过大小上限")
             handle.write(chunk)
     return target
 

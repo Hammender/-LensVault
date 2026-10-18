@@ -354,7 +354,7 @@ class VideoService:
                 self.storage.remove_object(final_key)
             raise
 
-    def process_video_for_playback(self, video_id: int) -> None:
+    def process_video_for_playback(self, video_id: int, *, keep_existing_cover: bool = False) -> None:
         db = SessionLocal()
         previous_seek_optimized = False
         previous_seek_optimized_at = None
@@ -367,6 +367,7 @@ class VideoService:
             previous_seek_optimized = video.seek_optimized
             previous_seek_optimized_at = video.seek_optimized_at
             previous_seek_keyframe_interval_seconds = video.seek_keyframe_interval_seconds
+            existing_cover_key = video.cover_object_key if keep_existing_cover else None
             video.status = "processing"
             video.processing_error = None
             db.commit()
@@ -410,23 +411,26 @@ class VideoService:
                 video.audio_codec = original_info.audio_codec or video.audio_codec
                 db.commit()
 
-                self._extract_cover(input_path, cover_path, original_info.duration_seconds)
-                cover_key: str | None = None
-                old_cover_key: str | None = None
-                if cover_path.exists() and cover_path.stat().st_size > 0:
-                    cover_key = self._build_cover_object_key(video.workspace_id, video_id)
-                    with cover_path.open("rb") as stream:
-                        self.storage.put_stream(cover_key, stream, cover_path.stat().st_size, "image/jpeg")
-                    video = db.get(VideoItem, video_id)
-                    if video is None:
-                        return
-                    old_cover_key = video.cover_object_key
-                    video.cover_object_key = cover_key
-                    video.cover_content_type = "image/jpeg"
-                    db.commit()
-                    logger.info("视频封面已生成：video_id=%s cover_key=%s", video_id, cover_key)
-                    if old_cover_key and old_cover_key != cover_key:
-                        self.storage.remove_object(old_cover_key)
+                if existing_cover_key:
+                    logger.info("视频播放优化保留已有封面：video_id=%s cover_key=%s", video_id, existing_cover_key)
+                else:
+                    self._extract_cover(input_path, cover_path, original_info.duration_seconds)
+                    cover_key: str | None = None
+                    old_cover_key: str | None = None
+                    if cover_path.exists() and cover_path.stat().st_size > 0:
+                        cover_key = self._build_cover_object_key(video.workspace_id, video_id)
+                        with cover_path.open("rb") as stream:
+                            self.storage.put_stream(cover_key, stream, cover_path.stat().st_size, "image/jpeg")
+                        video = db.get(VideoItem, video_id)
+                        if video is None:
+                            return
+                        old_cover_key = video.cover_object_key
+                        video.cover_object_key = cover_key
+                        video.cover_content_type = "image/jpeg"
+                        db.commit()
+                        logger.info("视频封面已生成：video_id=%s cover_key=%s", video_id, cover_key)
+                        if old_cover_key and old_cover_key != cover_key:
+                            self.storage.remove_object(old_cover_key)
 
                 if not self.settings.video_faststart_enabled:
                     video = db.get(VideoItem, video_id)
@@ -516,11 +520,12 @@ class VideoService:
                 video.processed_at = shanghai_now()
                 video.processing_error = str(exc)[:2000]
                 db.commit()
+            raise
         finally:
             db.close()
 
-    def optimize_video_faststart(self, video_id: int) -> None:
-        self.process_video_for_playback(video_id)
+    def optimize_video_faststart(self, video_id: int, *, keep_existing_cover: bool = False) -> None:
+        self.process_video_for_playback(video_id, keep_existing_cover=keep_existing_cover)
 
     def optimize_video_for_seek(self, video_id: int) -> None:
         db = SessionLocal()
@@ -1271,6 +1276,21 @@ class VideoService:
         if info.video_codec not in self.browser_video_codecs:
             return False
         return info.audio_codec is None or info.audio_codec in self.browser_audio_codecs
+
+    def playback_optimization_needed(self, path: Path, filename: str) -> bool:
+        """探测导入的视频是否已适合当前环境播放；需要转码或 faststart 时返回 True。"""
+        if not self.settings.video_faststart_enabled:
+            return False
+        try:
+            info = self._probe_video(path)
+        except Exception:
+            logger.warning("导入视频探测失败，交由播放优化流程处理：filename=%s", filename, exc_info=True)
+            return True
+        if self.settings.video_transcode_non_browser_friendly and not self._is_browser_friendly(info):
+            return True
+        if self._has_faststart_moov(path) is not True:
+            return True
+        return self._should_optimize_for_seek(path, info)
 
     def _build_cover_object_key(self, workspace_id: int | None, video_id: int) -> str:
         prefix = f"workspaces/{workspace_id}/" if workspace_id is not None else ""

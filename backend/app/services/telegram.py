@@ -233,6 +233,19 @@ def message_media_type(message: Any) -> str | None:
     return None
 
 
+def message_transport_type(message: Any) -> str | None:
+    # Telegram 动图同时带 Animated 和 Video 属性，必须先判 gif。
+    if getattr(message, "photo", None):
+        return "photo"
+    if getattr(message, "gif", None):
+        return "animation"
+    if getattr(message, "video", None):
+        return "video"
+    if getattr(message, "document", None):
+        return "document"
+    return None
+
+
 def _document_filename(document: Any) -> str | None:
     for attribute in getattr(document, "attributes", None) or []:
         filename = getattr(attribute, "file_name", None)
@@ -1063,6 +1076,7 @@ class TelegramService:
                 record["is_comment"] = True
                 record["root_channel_message_id"] = int(root_message.id)
                 record["root_channel_id"] = str(channel.id)
+                record["root_channel_title"] = getattr(channel, "title", None)
                 record["root_channel_username"] = getattr(channel, "username", None)
                 root_path = getattr(channel, "username", None) or f"c/{channel.id}"
                 record["source_url"] = f"https://t.me/{root_path}/{root_message.id}?comment={comment.id}"
@@ -1422,10 +1436,10 @@ class TelegramService:
         channel_id = str(getattr(channel, "id", ""))
         channel_title = getattr(channel, "title", None)
         actual_peer = getattr(getattr(message, "peer_id", None), "channel_id", None)
-        if actual_peer is not None and str(actual_peer) != channel_id:
-            channel_id = str(actual_peer)
-            username = None
-            channel_title = None
+        # 评论消息实际属于讨论组，但来源键必须继续用频道 id，保持增量采集兼容旧数据。
+        discussion_peer_id = (
+            str(actual_peer) if actual_peer is not None and str(actual_peer) != channel_id else None
+        )
         reply = getattr(message, "reply_to", None)
         topic_id = None
         if bool(getattr(reply, "forum_topic", False)):
@@ -1450,7 +1464,7 @@ class TelegramService:
             "message_id": message.id,
             "grouped_id": str(message.grouped_id) if message.grouped_id else None,
             "media_type": media_type,
-            "transport_type": "photo" if getattr(message, "photo", None) else "document",
+            "transport_type": message_transport_type(message),
             "original_filename": getattr(media_file, "name", None) or _document_filename(document),
             "content_type": content_type,
             "duration_seconds": duration,
@@ -1461,8 +1475,9 @@ class TelegramService:
             "caption": caption or None,
             "hashtags": tags,
             "protected_content": protected,
-            "peer_id": channel_id,
-            "entity_type": "group" if bool(getattr(channel, "megagroup", False)) or (actual_peer is not None and str(actual_peer) != str(getattr(channel, "id", ""))) else "channel",
+            "peer_id": discussion_peer_id or channel_id,
+            "discussion_peer_id": discussion_peer_id,
+            "entity_type": "group" if bool(getattr(channel, "megagroup", False)) or discussion_peer_id else "channel",
             "sender_id": getattr(getattr(message, "sender", None), "id", None),
             "sender_username": getattr(getattr(message, "sender", None), "username", None),
             "sender_is_bot": bool(getattr(getattr(message, "sender", None), "bot", False)),

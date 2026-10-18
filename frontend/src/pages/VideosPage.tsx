@@ -392,10 +392,10 @@ export default function VideosPage({ model }: { model: VideosModel }) {
                   }
                 }}
               >
-                <label className="video-export-selection" onClick={(event) => event.stopPropagation()}>
-                  <input type="checkbox" checked={exportIds.includes(video.id)} onChange={(event) => setExportIds((ids) => event.target.checked ? [...ids, video.id] : ids.filter((id) => id !== video.id))} /> 选择导出
-                </label>
                 <div className="bili-video-cover">
+                  <label className="video-export-selection" onClick={(event) => event.stopPropagation()}>
+                    <input type="checkbox" checked={exportIds.includes(video.id)} onChange={(event) => setExportIds((ids) => event.target.checked ? [...ids, video.id] : ids.filter((id) => id !== video.id))} /> 选择导出
+                  </label>
                   {video.cover_url ? (
                     <img src={video.cover_url} alt={video.title} loading="lazy" />
                   ) : (

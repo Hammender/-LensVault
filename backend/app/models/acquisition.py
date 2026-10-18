@@ -218,6 +218,9 @@ class AcquisitionAsset(Base):
     capture_metadata_json: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="视频截图来源快照：原视频、帧时间及采集来源；普通素材为空"
     )
+    source_snapshot_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="首次采集来源快照；分类或站点删除后仍可追溯"
+    )
     status: Mapped[str] = mapped_column(String(32), default="pending_review", nullable=False, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=shanghai_now, nullable=False)

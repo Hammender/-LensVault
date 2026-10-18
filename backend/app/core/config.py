@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     video_transcode_fallback_to_cpu: bool = True
     video_seek_transcode_crf: int = 21
     video_seek_transcode_preset: str = "veryfast"
+    # 视频素材包导入限额：单文件、单包引用总量、单条目压缩比、上传包大小
+    video_package_max_file_bytes: int = 16 * 1024 * 1024 * 1024
+    video_package_max_total_bytes: int = 128 * 1024 * 1024 * 1024
+    video_package_max_compression_ratio: int = 200
+    video_package_upload_max_bytes: int = 128 * 1024 * 1024 * 1024
     subtitle_asr_model_path: Path = Path("E:/AI-MODELS/ASR/faster-whisper-medium")
     subtitle_asr_device: str = "cpu"
     subtitle_asr_compute_type: str = "int8"

@@ -137,6 +137,7 @@ CREATE INDEX ix_workspaces_owner_user_id ON workspaces (owner_user_id);
 --   primary_face_dominant：是否检测到面积优势明确的主脸
 --   quality_warnings：图片质量告警，JSON 或文本
 --   capture_metadata_json：视频截图来源快照：原视频、帧时间及采集来源；普通素材为空
+--   source_snapshot_json：首次采集来源快照；分类或站点删除后仍可追溯
 --   status：采集图片状态：pending_review、import_queued、importing、imported、import_failed、gallery_duplicate 或 rejected
 --   error_message：失败或异常原因
 --   created_at：记录创建时间（上海时区无时区值）
@@ -168,6 +169,7 @@ CREATE TABLE acquisition_assets (
 	primary_face_dominant BOOLEAN DEFAULT '0' NOT NULL, 
 	quality_warnings TEXT, 
 	capture_metadata_json TEXT, 
+	source_snapshot_json TEXT, 
 	status VARCHAR(32) NOT NULL, 
 	error_message TEXT, 
 	created_at DATETIME NOT NULL, 

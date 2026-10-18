@@ -39,6 +39,33 @@ def test_provenance_migration_preserves_existing_media_and_constraints(tmp_path)
     engine.dispose()
 
 
+def test_asset_source_snapshot_migration_preserves_constraints(tmp_path):
+    """新增素材来源快照列需要重建 acquisition_assets，验证索引、约束和已有行都不丢。"""
+    from datetime import datetime
+    from sqlalchemy import MetaData, Table
+    url = f"sqlite:///{(tmp_path / 'asset-source.db').as_posix()}"
+    config = _alembic_config(url)
+    command.upgrade(config, "6c4d9140f96b")
+    engine = create_engine(url)
+    table = Table("acquisition_assets", MetaData(), autoload_with=engine)
+    now = datetime(2026, 1, 1)
+    with engine.begin() as connection:
+        connection.execute(table.insert().values(id="a", sha256="keep", filename="keep.jpg", media_type="image",
+            size_bytes=3, status="pending_review", created_at=now, updated_at=now))
+    before_indexes = {row["name"] for row in inspect(engine).get_indexes("acquisition_assets")}
+    before_unique = {row["name"] for row in inspect(engine).get_unique_constraints("acquisition_assets")}
+    before_foreign = {row["name"] for row in inspect(engine).get_foreign_keys("acquisition_assets")}
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT id, source_snapshot_json FROM acquisition_assets")).all() == [("a", None)]
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    assert "source_snapshot_json" in {column["name"] for column in inspect(engine).get_columns("acquisition_assets")}
+    assert before_indexes <= {row["name"] for row in inspect(engine).get_indexes("acquisition_assets")}
+    assert before_unique <= {row["name"] for row in inspect(engine).get_unique_constraints("acquisition_assets")}
+    assert before_foreign <= {row["name"] for row in inspect(engine).get_foreign_keys("acquisition_assets")}
+    engine.dispose()
+
+
 def _table_names(engine) -> set[str]:
     return set(inspect(engine).get_table_names())
 

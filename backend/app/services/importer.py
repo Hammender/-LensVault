@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.services.provenance import attach_provenance, imported_snapshot
-from app.services.media_archives import read_json_entry, safe_entry
+from app.services.media_archives import MAX_IMAGE_FILE, read_json_entry, safe_entry
 
 import hashlib
 from dataclasses import dataclass
@@ -1952,7 +1952,7 @@ class PictureService:
                 payload = None
                 for zip_path in zip_paths:
                     try:
-                        payload = zf.read(safe_entry(zf, str(zip_path), 128 * 1024 * 1024))
+                        payload = zf.read(safe_entry(zf, str(zip_path), MAX_IMAGE_FILE))
                         break
                     except (KeyError, ValueError):
                         continue

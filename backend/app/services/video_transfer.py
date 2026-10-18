@@ -5,6 +5,7 @@ from datetime import timedelta
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 from uuid import uuid4
 from zipfile import ZipFile, ZIP_STORED
@@ -17,7 +18,7 @@ from app.services.import_spool import cleanup_import
 from app.services.provenance import attach_provenance, export_source, imported_snapshot
 from app.services.tasks import update_task
 
-from app.services.media_archives import CHUNK, MAX_TOTAL, read_json_entry, safe_entry
+from app.services.media_archives import CHUNK, read_json_entry, safe_entry
 
 
 def _write_object(storage, archive, key: str, name: str) -> tuple[str, int]:
@@ -41,14 +42,14 @@ def export_video_package(db, service, job: VideoExportJob) -> None:
     job.status = "running"
     db.commit()
     try:
-        with tempfile.TemporaryDirectory(prefix="lensvault-video-export-") as folder:
+        with tempfile.TemporaryDirectory(prefix="lensvault-video-export-", dir=package_temp_root(service.settings)) as folder:
             target = Path(folder) / "videos.zip"
             entries = []
             with ZipFile(target, "w", ZIP_STORED, allowZip64=True) as archive:
                 for video_id in ids:
                     video = db.scalar(select(VideoItem).where(VideoItem.id == video_id, VideoItem.workspace_id == job.workspace_id))
                     try:
-                        if video is None or video.status == "processing":
+                        if video is None or video.status in {"processing", "processing_failed"}:
                             raise ValueError("视频不存在或正在处理，请稍后重试")
                         suffix = Path(video.filename).suffix or ".mp4"
                         name = f"videos/{video.id}{suffix}"
@@ -101,9 +102,11 @@ def export_video_package(db, service, job: VideoExportJob) -> None:
     db.commit()
 
 
-def cleanup_exports(db, storage):
-    jobs = db.scalars(select(VideoExportJob).where(VideoExportJob.status == "ready", VideoExportJob.expires_at < shanghai_now())).all()
-    for job in jobs:
+def cleanup_exports(db, storage, workspace_id=None):
+    query = select(VideoExportJob).where(VideoExportJob.status == "ready", VideoExportJob.expires_at < shanghai_now())
+    if workspace_id is not None:
+        query = query.where(VideoExportJob.workspace_id == workspace_id)
+    for job in db.scalars(query):
         if job.object_key:
             storage.remove_object(job.object_key)
         job.object_key = None
@@ -126,6 +129,21 @@ def run_export(session_factory, service, job_id):
             export_video_package(db, service, job)
 
 
+def package_temp_root(settings) -> Path:
+    """素材包解压与导出的临时根目录；与图库导出一致放在 data_dir 下。"""
+    root = Path(settings.data_dir) / "tmp" / "exports"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def ensure_free_space(root: Path, required_bytes: int) -> None:
+    if required_bytes <= 0:
+        return
+    free = shutil.disk_usage(root).free
+    if free < required_bytes:
+        raise ValueError(f"磁盘剩余空间不足：需要 {required_bytes} 字节，仅剩 {free} 字节")
+
+
 def _strings(value, maximum):
     if not isinstance(value, list) or len(value) > 100:
         raise ValueError("分类或人物列表格式无效")
@@ -140,6 +158,54 @@ def _small_file(archive, item, maximum):
     if hashlib.sha256(payload).hexdigest() != item.get("sha256"):
         raise ValueError("附件哈希校验失败")
     return payload
+
+
+def _declared_entries(entry):
+    """清单中显式引用的压缩包路径（视频、封面、字幕）。"""
+    if not isinstance(entry, dict):
+        return []
+    names = [entry.get("path")]
+    cover = entry.get("cover")
+    if isinstance(cover, dict):
+        names.append(cover.get("path"))
+    subtitles = entry.get("subtitles")
+    if isinstance(subtitles, list):
+        names.extend(track.get("path") for track in subtitles if isinstance(track, dict))
+    return [name for name in names if isinstance(name, str) and name]
+
+
+def scan_package(archive, entries, settings) -> int:
+    """解压前校验清单引用的文件：路径、重复引用、大小上限与总占用；返回声明总字节数。"""
+    maximum = settings.video_package_max_file_bytes
+    used: set[str] = set()
+    total = 0
+    for entry in entries:
+        for name in _declared_entries(entry):
+            try:
+                info = safe_entry(archive, name, maximum)
+            except ValueError:
+                # 无效或缺失的引用交给逐条导入报错，不让单个坏条目阻断整包。
+                continue
+            if info.filename in used:
+                raise ValueError("素材包清单重复引用同一文件")
+            used.add(info.filename)
+            total += info.file_size
+    if total > settings.video_package_max_total_bytes:
+        raise ValueError("素材包解压总大小超过上限")
+    return total
+
+
+def _check_entry(archive, entry, settings):
+    """解压前校验单个视频条目：大小与清单一致，且压缩比不异常。"""
+    info = safe_entry(archive, entry["path"], settings.video_package_max_file_bytes)
+    declared = entry.get("size_bytes")
+    if not isinstance(declared, int) or isinstance(declared, bool) or declared < 0:
+        raise ValueError("视频清单缺少有效大小")
+    if info.file_size != declared:
+        raise ValueError("视频文件大小与清单不一致")
+    if info.compress_size <= 0 or info.file_size / info.compress_size > settings.video_package_max_compression_ratio:
+        raise ValueError("素材包压缩比异常")
+    return info
 
 
 def _existing_content(db, service, workspace_id, digest, size):
@@ -160,16 +226,19 @@ def _existing_content(db, service, workspace_id, digest, size):
 
 def import_video_package(db, service, path, workspace_id, actor_id=None, actor_name=None, progress=None):
     result = {"total": 0, "processed": 0, "imported": 0, "duplicates": 0, "errors": [], "warnings": []}
-    with ZipFile(path) as archive, tempfile.TemporaryDirectory(prefix="lensvault-video-import-") as folder:
+    settings = service.settings
+    root = package_temp_root(settings)
+    with ZipFile(path) as archive, tempfile.TemporaryDirectory(prefix="lensvault-video-import-", dir=root) as folder:
         infos = archive.infolist()
-        if len(infos) > 100000 or len({i.filename for i in infos}) != len(infos) or sum(i.file_size for i in infos) > MAX_TOTAL:
-            raise ValueError("素材包文件数量、总大小或重复路径不支持")
+        if len(infos) > 100000 or len({i.filename for i in infos}) != len(infos):
+            raise ValueError("素材包文件数量或重复路径不支持")
         manifest = read_json_entry(archive)
         if not isinstance(manifest, dict) or manifest.get("kind") != "video_export" or manifest.get("version") != 1:
             raise ValueError("不是支持的视频素材包；图片ZIP请在图库导入")
         entries = manifest.get("videos")
         if not isinstance(entries, list) or len(entries) > 10000:
             raise ValueError("视频清单格式无效")
+        ensure_free_space(root, scan_package(archive, entries, settings))
         result["total"] = len(entries)
         for index, entry in enumerate(entries):
             object_key = None
@@ -187,7 +256,7 @@ def import_video_package(db, service, path, workspace_id, actor_id=None, actor_n
                     raise ValueError("视频文件名或标题无效")
                 if entry.get("video_type") not in {"short", "long"}:
                     raise ValueError("视频类型无效")
-                info = safe_entry(archive, entry["path"])
+                info = _check_entry(archive, entry, settings)
                 digest = hashlib.sha256()
                 temporary = Path(folder) / f"{index}{Path(filename).suffix}"
                 try:
@@ -247,10 +316,24 @@ def import_video_package(db, service, path, workspace_id, actor_id=None, actor_n
                                 provider="import", status="ready", content_vtt=content))
                         except Exception:
                             result["warnings"].append({"index": index, "message": "字幕缺失或无效，已跳过"})
-                    # 导出的文件已是库中的可用版本；无需自动重转码或覆盖导入封面。
-                    video.status = "ready"
                     db.commit()
                     video_id = video.id
+                    if service.playback_optimization_needed(temporary, filename):
+                        try:
+                            service.optimize_video_faststart(video.id, keep_existing_cover=True)
+                        except Exception as exc:
+                            db.rollback()
+                            failed = db.get(VideoItem, video.id)
+                            if failed is not None and failed.status in {"uploaded", "processing"}:
+                                failed.status = "processing_failed"
+                                failed.processing_error = str(exc)[:2000]
+                                failed.processed_at = shanghai_now()
+                                db.commit()
+                            result["warnings"].append({"index": index, "message": f"播放优化失败：{str(exc)[:200]}"})
+                    else:
+                        video.status = "ready"
+                        video.faststart_applied = service._has_faststart_moov(temporary) is True
+                        db.commit()
                     result["imported"] += 1
                 finally:
                     temporary.unlink(missing_ok=True)

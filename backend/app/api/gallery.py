@@ -19,7 +19,7 @@ from sqlalchemy import func
 from fastapi.responses import StreamingResponse
 from PIL import Image, ImageOps
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, undefer
 
 from app.api._helpers import get_workspace_object
 from app.core.timezones import shanghai_isoformat, shanghai_now
@@ -29,7 +29,7 @@ from app.dependencies.context import CurrentContext, require_context, require_pe
 from app.http.media import stream_storage_object
 from app.mappers.gallery import gallery_photo_to_detail as _gallery_photo_to_detail, gallery_photo_to_list_item as _gallery_photo_to_list_item
 from app.mappers.people import person_to_read
-from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityFeature, GallerySimilarityGroup, GallerySimilarityGroupMember, GallerySimilarityGroupPair, GallerySimilarityScan, Person, SamplePhoto, Tag, Task
+from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, GallerySimilarityFeature, GallerySimilarityGroup, GallerySimilarityGroupMember, GallerySimilarityGroupPair, GallerySimilarityScan, MediaProvenance, Person, SamplePhoto, Tag, Task
 from app.schemas import (
     GallerySimilarityAutoDeleteExecuteRequest,
     GallerySimilarityAutoDeleteResponse,
@@ -408,6 +408,8 @@ def _resolve_gallery_export_photos(
     base_query = (
         select(GalleryPhoto)
         .where(GalleryPhoto.workspace_id == workspace_id)
+        .options(selectinload(GalleryPhoto.provenance).undefer(MediaProvenance.snapshot_json)
+                 .selectinload(MediaProvenance.telegram))
         .order_by(*_gallery_display_order())
     )
     if payload.scope == "all":

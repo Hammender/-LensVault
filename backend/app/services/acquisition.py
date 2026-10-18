@@ -1270,6 +1270,7 @@ class AcquisitionService:
             run.content_duplicate_count += 1
             run_item.collection_outcome = "content_duplicate"
             run_item.asset_id = asset.id
+            self._freeze_asset_source(asset, run_item)
             run_item.status = asset.status
             source_item.status = asset.status
             db.commit()
@@ -1278,10 +1279,17 @@ class AcquisitionService:
             run.content_duplicate_count += 1
             run_item.collection_outcome = "content_duplicate"
         run_item.asset_id = asset.id
+        self._freeze_asset_source(asset, run_item)
         run_item.status = "pending_review"
         source_item.status = "pending_review"
         source_item.last_error = None
         db.commit()
+
+    @staticmethod
+    def _freeze_asset_source(asset: AcquisitionAsset, run_item: AcquisitionRunItem) -> None:
+        """把最早一条采集来源冻结到素材上；分类或站点删除后仍能追溯。"""
+        if not asset.source_snapshot_json and run_item.source_snapshot_json:
+            asset.source_snapshot_json = run_item.source_snapshot_json
 
     def _probe_video_file(self, path: Path) -> tuple[float | None, int | None, int | None]:
         duration, width, height, _has_video = self._probe_video_details(path)
@@ -1499,6 +1507,7 @@ class AcquisitionService:
                     )
                     if incoming_rank <= existing_rank:
                         run_item.asset_id = variant.id
+                        self._freeze_asset_source(variant, run_item)
                         run_item.status = "pending_review"
                         run_item.collection_outcome = "resolution_duplicate"
                         item.status = "pending_review"
@@ -1525,6 +1534,7 @@ class AcquisitionService:
                 run_item.collection_outcome = "candidate"
             elif asset.status in {"rejected", "imported", "gallery_duplicate"} or not asset.object_key:
                 run_item.asset_id = asset.id
+                self._freeze_asset_source(asset, run_item)
                 run_item.status = asset.status
                 run_item.collection_outcome = "content_duplicate"
                 item.status = asset.status
@@ -1535,6 +1545,7 @@ class AcquisitionService:
                 run.content_duplicate_count += 1
                 run_item.collection_outcome = "content_duplicate"
             run_item.asset_id = asset.id
+            self._freeze_asset_source(asset, run_item)
             run_item.status = "pending_review"
             item.status = "pending_review"
             item.last_error = None

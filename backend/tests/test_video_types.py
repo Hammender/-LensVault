@@ -264,6 +264,75 @@ def test_process_video_preserves_original_sha256_and_updates_size(db_session: Se
     assert storage.files[updated.cover_object_key] == b"generated-cover"
 
 
+def _playback_service(db_session: Session, monkeypatch, video: VideoItem, raw_bytes: bytes):
+    from sqlalchemy.orm import sessionmaker
+    from app.services.video_processing import VideoProbeInfo
+    from app.services.videos import VideoService
+
+    storage = _FakeStorage()
+    storage.put_bytes(video.object_key, raw_bytes)
+    if video.cover_object_key:
+        storage.put_bytes(video.cover_object_key, b"package-cover")
+    service = VideoService(storage=storage)
+    monkeypatch.setattr("app.services.videos.SessionLocal", sessionmaker(
+        bind=db_session.bind, autoflush=False, autocommit=False, expire_on_commit=False))
+    monkeypatch.setattr(service, "_download_object_to_file", lambda key, path: path.write_bytes(raw_bytes))
+    monkeypatch.setattr(service, "_probe_video", lambda path: VideoProbeInfo(
+        duration_seconds=5.0, width=1280, height=720, video_codec="h264", audio_codec="aac"))
+    monkeypatch.setattr(service, "_estimate_keyframe_interval", lambda path: 1.0)
+    monkeypatch.setattr(service, "_should_optimize_for_seek", lambda *args, **kwargs: False)
+    extracted = []
+    monkeypatch.setattr(service, "_extract_cover", lambda in_p, out_p, dur: extracted.append(out_p) or out_p.write_bytes(b"generated-cover"))
+    monkeypatch.setattr(service, "_run_faststart", lambda in_p, out_p: out_p.write_bytes(b"optimized-playback-bytes"))
+    return service, storage, extracted
+
+
+def test_process_video_keeps_existing_cover_when_requested(db_session: Session, monkeypatch) -> None:
+    from app.models import Workspace
+
+    ws = Workspace(name="保留封面测试")
+    db_session.add(ws)
+    db_session.commit()
+    video = VideoItem(
+        workspace_id=ws.id, title="有封面视频", filename="clip.mp4",
+        sha256="abc", object_key="workspaces/test/clip.mp4", size_bytes=12,
+        status="uploaded", cover_object_key="existing-cover", cover_content_type="image/png",
+    )
+    db_session.add(video)
+    db_session.commit()
+    service, storage, extracted = _playback_service(db_session, monkeypatch, video, b"raw-video")
+    service.process_video_for_playback(video.id, keep_existing_cover=True)
+    db_session.expire_all()
+    updated = db_session.get(VideoItem, video.id)
+    assert extracted == []
+    assert updated.cover_object_key == "existing-cover"
+    assert updated.cover_content_type == "image/png"
+    assert storage.files["existing-cover"] == b"package-cover"
+    assert updated.status == "ready"
+
+
+def test_process_video_reraises_after_marking_failed(db_session: Session, monkeypatch) -> None:
+    from app.models import Workspace
+
+    ws = Workspace(name="优化失败测试")
+    db_session.add(ws)
+    db_session.commit()
+    video = VideoItem(
+        workspace_id=ws.id, title="失败视频", filename="clip.mp4",
+        sha256="abc", object_key="workspaces/test/fail.mp4", size_bytes=12, status="uploaded",
+    )
+    db_session.add(video)
+    db_session.commit()
+    service, _, _ = _playback_service(db_session, monkeypatch, video, b"raw-video")
+    monkeypatch.setattr(service, "_download_object_to_file", lambda *_: (_ for _ in ()).throw(RuntimeError("模拟优化失败")))
+    with pytest.raises(RuntimeError, match="模拟优化失败"):
+        service.process_video_for_playback(video.id)
+    db_session.expire_all()
+    updated = db_session.get(VideoItem, video.id)
+    assert updated.status == "processing_failed"
+    assert updated.processing_error == "模拟优化失败"
+
+
 def test_acquisition_video_import_runs_upload_processing(db_session: Session, monkeypatch) -> None:
     from app.models import AcquisitionAsset, AcquisitionImportBatchItem, Workspace
     from app.services.acquisition import AcquisitionService

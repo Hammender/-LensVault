@@ -155,6 +155,36 @@ def test_first_capture_snapshot_survives_upstream_deletion(db_session):
     assert export_source(result)["original_url"] == "https://example.test/1"
 
 
+def test_asset_source_survives_category_deletion(db_session):
+    """待审核期间删掉分类后，素材仍能取到首次采集的站点与分类。"""
+    from app.services.acquisition import AcquisitionService
+    seed(db_session)
+    db = db_session
+    source = AcquisitionSource(workspace_id=1, name="站点")
+    db.add(source); db.flush()
+    category = AcquisitionCategory(source_id=source.id, name="分类", path="甲/乙", crawl_url="https://example.test")
+    db.add(category); db.flush()
+    run = AcquisitionRun(id="run", workspace_id=1, source_id=source.id, category_id=category.id,
+                         source_name_snapshot="站点快照", category_name_snapshot="分类")
+    item = AcquisitionSourceItem(source_id=source.id, category_id=category.id, external_key="1", source_url="https://example.test/1")
+    db.add_all([run, item]); db.flush()
+    asset = AcquisitionAsset(id="asset", workspace_id=1, sha256="hash", filename="a.jpg")
+    db.add(asset)
+    data = acquisition_snapshot(db, run, category, url=item.source_url)
+    run_item = AcquisitionRunItem(run_id=run.id, source_item_id=item.id, asset_id=asset.id,
+                                  source_snapshot_json=json.dumps(data))
+    db.add(run_item); db.flush()
+    AcquisitionService._freeze_asset_source(asset, run_item)
+    db.commit()
+    assert asset.source_snapshot_json
+    db.delete(category); db.commit()
+    assert db.scalar(select(AcquisitionRunItem)) is None
+    result = asset_source(db, asset)
+    assert result["source_type"] == "acquisition"
+    assert result["site_name"] == "站点快照" and result["category_path"] == "甲/乙"
+    assert result["original_url"] == "https://example.test/1"
+
+
 def test_screenshot_source_does_not_need_video_or_run(db_session):
     seed(db_session)
     asset = AcquisitionAsset(id="frame", workspace_id=1, sha256="frame", filename="frame.png",
@@ -256,3 +286,67 @@ def test_reclassifying_legacy_unknown_video_preserves_other_sources(db_session):
     assert video.provenance.record_method == "backfilled"
     assert image.provenance.source_type == "unknown"
     assert reclassify(db_session, user_id=1, expected_count=0) == 0
+
+
+def _tg_message(**overrides):
+    base = dict(id=12, grouped_id=None, date=datetime(2026, 1, 1), edit_date=None,
+                photo=None, video=None, gif=None, document=None, file=None,
+                peer_id=SimpleNamespace(channel_id=99), is_comment=False,
+                reply_to=None, sender=None, message="", protected=False)
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_transport_type_uses_message_form_not_mime():
+    from app.services.telegram import TelegramService
+    channel = SimpleNamespace(id=99, username="chan", title="频道", forum=False)
+    document = SimpleNamespace(attributes=[SimpleNamespace(file_name="clip.mp4")], mime_type="video/mp4")
+    assert TelegramService._record(_tg_message(photo=object()), channel, "image", "", [], None, False)["transport_type"] == "photo"
+    assert TelegramService._record(_tg_message(video=document, document=document), channel, "video", "", [], None, False)["transport_type"] == "video"
+    assert TelegramService._record(_tg_message(gif=document, document=document), channel, "video", "", [], None, False)["transport_type"] == "animation"
+    assert TelegramService._record(_tg_message(video=document, gif=document, document=document), channel, "video", "", [], None, False)["transport_type"] == "animation"
+    assert TelegramService._record(_tg_message(document=document), channel, "video", "", [], None, False)["transport_type"] == "document"
+
+
+def test_comment_keeps_channel_key_and_records_discussion_peer():
+    from app.services.telegram import TelegramService
+    channel = SimpleNamespace(id=99, username="chan", title="频道", forum=False)
+    message = _tg_message(id=7, peer_id=SimpleNamespace(channel_id=555), is_comment=True, photo=object())
+    record = TelegramService._record(message, channel, "image", "", [], None, False)
+    assert record["external_key"] == "99:7:1"
+    assert record["channel_id"] == "99" and record["channel_title"] == "频道"
+    assert record["discussion_peer_id"] == "555" and record["peer_id"] == "555"
+    normal = TelegramService._record(_tg_message(photo=object()), channel, "image", "", [], None, False)
+    assert normal["discussion_peer_id"] is None and normal["peer_id"] == "99"
+
+
+def test_oversized_snapshot_is_trimmed_instead_of_failing():
+    snapshot = {"source_type": "acquisition", "site_name": "站点",
+                "telegram": {"hashtags": ["#标签" * 200 for _ in range(100)], "channel_title": "深" * 2000},
+                "public_metadata": {str(i): "值" * 500 for i in range(30)}}
+    data = normalize_snapshot(snapshot)
+    assert len(json.dumps(data, ensure_ascii=False).encode("utf-8")) <= 65536
+    assert data["public_metadata"] == {"metadata_truncated": True}
+    assert len(data["telegram"]["hashtags"]) <= 32
+    nested = normalize_snapshot({"source_type": "import", "upstream": snapshot})
+    assert len(json.dumps(nested, ensure_ascii=False).encode("utf-8")) <= 65536
+
+
+def test_invalid_public_metadata_is_dropped_instead_of_failing():
+    assert public_metadata("不是对象") == {}
+    assert public_metadata(["列表"]) == {}
+    data = normalize_snapshot({"source_type": "acquisition", "public_metadata": ["列表"]})
+    assert data["public_metadata"] == {}
+
+
+def test_legacy_screenshot_inherits_video_asset_source(db_session):
+    seed(db_session)
+    video = AcquisitionAsset(id="video-asset", workspace_id=1, sha256="v", filename="clip.mp4",
+        source_snapshot_json=json.dumps({"version": 1, "source_type": "acquisition", "site_name": "站点", "category_path": "分类"}))
+    frame = AcquisitionAsset(id="frame-asset", workspace_id=1, sha256="f", filename="frame.png",
+        capture_metadata_json=json.dumps({"video_asset_id": "video-asset", "video_filename": "clip.mp4", "time_seconds": 3.0}))
+    db_session.add_all([video, frame]); db_session.commit()
+    data = asset_source(db_session, frame)
+    assert data["source_type"] == "video_capture"
+    assert data["site_name"] == "站点" and data["category_path"] == "分类"
+    assert data["capture"]["time_seconds"] == 3.0
