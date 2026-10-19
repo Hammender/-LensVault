@@ -2420,6 +2420,21 @@
             "format": "binary",
             "title": "File",
             "type": "string"
+          },
+          "person_tags": {
+            "default": "all",
+            "title": "Person Tags",
+            "type": "string"
+          },
+          "recognize": {
+            "default": false,
+            "title": "Recognize",
+            "type": "boolean"
+          },
+          "unknown_tag_source": {
+            "default": "import_unknown",
+            "title": "Unknown Tag Source",
+            "type": "string"
           }
         },
         "required": [

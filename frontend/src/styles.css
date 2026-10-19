@@ -569,6 +569,53 @@ input:focus, select:focus, textarea:focus {
   padding: 28px;
 }
 
+.import-modal {
+  width: min(640px, 100%);
+}
+
+.import-recognize-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--panel-border);
+  background: var(--accent-soft);
+}
+
+.import-recognize-option input {
+  margin-top: 4px;
+}
+
+.import-recognize-option span {
+  display: grid;
+  gap: 6px;
+}
+
+.import-recognize-option small {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.import-option-block {
+  margin: 0 0 20px;
+}
+
+.import-option-block.disabled {
+  opacity: 0.45;
+}
+
+.import-option-block > strong {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.import-option-block > p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .export-choice-row {
   display: flex;
   align-items: center;

@@ -48,6 +48,38 @@ class GalleryImportSummary:
     duplicated: int = 0
 
 
+ZIP_PERSON_TAG_MODES = ("all", "known_only", "none")
+ZIP_UNKNOWN_TAG_SOURCES = ("import_unknown", "unknown")
+
+
+def normalize_gallery_zip_import_options(
+    *,
+    person_tags: str = "all",
+    unknown_tag_source: str = "import_unknown",
+    recognize: bool = False,
+) -> dict[str, str | bool]:
+    if person_tags not in ZIP_PERSON_TAG_MODES:
+        raise ValueError("不支持的人物标签导入方式")
+    if unknown_tag_source not in ZIP_UNKNOWN_TAG_SOURCES:
+        raise ValueError("不支持的未知人物标签来源")
+    return {
+        "person_tags": person_tags,
+        "unknown_tag_source": unknown_tag_source,
+        "recognize": bool(recognize),
+    }
+
+
+def zip_import_option_summary(person_tags: str, unknown_tag_source: str, recognize: bool) -> str:
+    if recognize:
+        return "人物：本机识别（清单人物不保留）"
+    labels = {"all": "全部导入", "known_only": "仅已知人名", "none": "不导入"}
+    text = f"人物：{labels.get(person_tags, person_tags)}"
+    if person_tags == "all":
+        protected = "受保护" if unknown_tag_source == "import_unknown" else "可被重识别替换"
+        text += f"；未知：{protected}"
+    return text
+
+
 @dataclass(frozen=True)
 class PersonMatch:
     person_id: int | None
@@ -927,68 +959,7 @@ class PictureService:
             filename,
             len(recognition_plan),
         )
-        for detected, match in recognition_plan:
-            try:
-                with db.begin_nested():
-                    matched_person = None
-                    if match.person_id is not None:
-                        matched_person = db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == workspace_id))
-                    decision = self._evaluate_match(match, matched_person)
-                    if decision.accepted:
-                        face = FaceRecord(
-                            workspace_id=workspace_id,
-                            gallery_photo_id=photo.id,
-                            matched_person_id=matched_person.id,
-                            match_score=match.score,
-                            needs_review=False,
-                            vector_collection=None,
-                            **self._face_fields(detected, match, decision),
-                        )
-                        db.add(face)
-                        db.flush()
-                        self.ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
-                        self.apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
-                        summary.known_matches += 1
-                        logger.info(
-                            "Gallery known face matched photo_id=%s face_id=%s person_id=%s score=%.4f",
-                            photo.id,
-                            face.id,
-                            matched_person.id,
-                            match.score,
-                        )
-                        continue
-
-                    person = self.get_or_create_unknown_person(db, workspace_id)
-                    summary.unknown_faces += 1
-                    logger.info(
-                        "Gallery unknown face tagged photo_id=%s person_id=%s matched_score=%s",
-                        photo.id,
-                        person.id,
-                        f"{match.score:.4f}" if match.score is not None else "None",
-                    )
-
-                    face = FaceRecord(
-                        workspace_id=workspace_id,
-                        gallery_photo_id=photo.id,
-                        matched_person_id=person.id,
-                        match_score=match.score,
-                        needs_review=True,
-                        vector_collection=None,
-                        **self._face_fields(detected, match, decision),
-                    )
-                    db.add(face)
-                    db.flush()
-                    self.ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
-                    logger.info(
-                        "Gallery unknown face recorded photo_id=%s face_id=%s person_id=%s",
-                        photo.id,
-                        face.id,
-                        person.id,
-                    )
-            except Exception:
-                logger.exception("Face process failed, skip this face photo_id=%s filename=%s", photo.id, filename)
-                continue
-
+        self._record_recognized_faces(db, photo, recognition_plan, workspace_id, summary, filename=filename)
         db.commit()
         db.refresh(photo)
         logger.info(
@@ -1019,6 +990,86 @@ class PictureService:
         image_bgr: np.ndarray | None = None,
     ) -> list[tuple[DetectedFace, PersonMatch]]:
         return self._recognition_plan(db, payload, workspace_id, image_bgr=image_bgr)
+
+    def _record_recognized_faces(
+        self,
+        db: Session,
+        photo: GalleryPhoto,
+        recognition_plan: list[tuple[DetectedFace, PersonMatch]],
+        workspace_id: int | None,
+        summary: GalleryImportSummary,
+        *,
+        filename: str | None = None,
+    ) -> int:
+        tagged = 0
+        for detected, match in recognition_plan:
+            try:
+                with db.begin_nested():
+                    matched_person = None
+                    if match.person_id is not None:
+                        matched_person = db.scalar(select(Person).where(Person.id == match.person_id, Person.workspace_id == workspace_id))
+                    decision = self._evaluate_match(match, matched_person)
+                    if decision.accepted:
+                        face = FaceRecord(
+                            workspace_id=workspace_id,
+                            gallery_photo_id=photo.id,
+                            matched_person_id=matched_person.id,
+                            match_score=match.score,
+                            needs_review=False,
+                            vector_collection=None,
+                            **self._face_fields(detected, match, decision),
+                        )
+                        db.add(face)
+                        db.flush()
+                        self.ensure_gallery_person_tag(db, photo.id, matched_person.id, "auto")
+                        self.apply_person_tags_to_gallery_photo(db, photo.id, matched_person.id)
+                        summary.known_matches += 1
+                        tagged += 1
+                        logger.info(
+                            "Gallery known face matched photo_id=%s face_id=%s person_id=%s score=%.4f",
+                            photo.id,
+                            face.id,
+                            matched_person.id,
+                            match.score,
+                        )
+                        continue
+
+                    person = self.get_or_create_unknown_person(db, workspace_id)
+                    summary.unknown_faces += 1
+                    logger.info(
+                        "Gallery unknown face tagged photo_id=%s person_id=%s matched_score=%s",
+                        photo.id,
+                        person.id,
+                        f"{match.score:.4f}" if match.score is not None else "None",
+                    )
+
+                    face = FaceRecord(
+                        workspace_id=workspace_id,
+                        gallery_photo_id=photo.id,
+                        matched_person_id=person.id,
+                        match_score=match.score,
+                        needs_review=True,
+                        vector_collection=None,
+                        **self._face_fields(detected, match, decision),
+                    )
+                    db.add(face)
+                    db.flush()
+                    self.ensure_gallery_person_tag(db, photo.id, person.id, "unknown")
+                    tagged += 1
+                    logger.info(
+                        "Gallery unknown face recorded photo_id=%s face_id=%s person_id=%s",
+                        photo.id,
+                        face.id,
+                        person.id,
+                    )
+            except Exception:
+                logger.exception(
+                    "Face process failed, skip this face photo_id=%s filename=%s",
+                    photo.id,
+                    filename or photo.filename,
+                )
+                continue
+        return tagged
 
     def rename_person(self, db: Session, person: Person, new_name: str) -> Person:
         if self.is_singleton_unknown_person(person):
@@ -1904,14 +1955,43 @@ class PictureService:
         )
         return result
 
-    def import_gallery_from_zip(self, db: Session, zip_source: bytes | Path, workspace_id: int | None, progress_callback=None, *, actor_id=None, actor_name=None) -> dict:
-        logger.info("Start gallery import from zip source=%s", type(zip_source).__name__)
+    def import_gallery_from_zip(
+        self,
+        db: Session,
+        zip_source: bytes | Path,
+        workspace_id: int | None,
+        progress_callback=None,
+        *,
+        actor_id=None,
+        actor_name=None,
+        person_tags: str = "all",
+        unknown_tag_source: str = "import_unknown",
+        recognize: bool = False,
+    ) -> dict:
+        options = normalize_gallery_zip_import_options(
+            person_tags=person_tags,
+            unknown_tag_source=unknown_tag_source,
+            recognize=recognize,
+        )
+        person_tags = str(options["person_tags"])
+        unknown_tag_source = str(options["unknown_tag_source"])
+        recognize = bool(options["recognize"])
+        logger.info(
+            "Start gallery import from zip source=%s person_tags=%s unknown_tag_source=%s recognize=%s",
+            type(zip_source).__name__,
+            person_tags,
+            unknown_tag_source,
+            recognize,
+        )
         result = {
             "added_photos": 0,
             "updated_existing": 0,
             "skipped_photos": 0,
             "tags_added": 0,
             "persons_added": 0,
+            "recognized_known": 0,
+            "recognized_unknown": 0,
+            "option_summary": zip_import_option_summary(person_tags, unknown_tag_source, recognize),
         }
 
         with _open_zip(zip_source) as zf:
@@ -2047,8 +2127,11 @@ class PictureService:
                 photo.display_batch_at = display_batch_at
                 photo.display_index = index - 1
 
-                db.execute(delete(FaceRecord).where(FaceRecord.gallery_photo_id == photo.id))
-                db.execute(delete(GalleryPhotoPersonTag).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id))
+                keep_local_persons = is_existing and (recognize or person_tags == "none")
+                apply_manifest_persons = not recognize and person_tags != "none"
+                if not keep_local_persons:
+                    db.execute(delete(FaceRecord).where(FaceRecord.gallery_photo_id == photo.id))
+                    db.execute(delete(GalleryPhotoPersonTag).where(GalleryPhotoPersonTag.gallery_photo_id == photo.id))
                 db.execute(delete(GalleryPhotoTag).where(GalleryPhotoTag.gallery_photo_id == photo.id))
                 db.flush()
 
@@ -2069,41 +2152,60 @@ class PictureService:
                     if existing_tag_link is None:
                         result["tags_added"] += 1
 
-                for person_data in raw_persons:
-                    if not isinstance(person_data, dict):
-                        continue
-                    person_name = str(person_data.get("name") or person_data.get("display_name") or "").strip()
-                    manifest_is_unknown = bool(person_data.get("is_unknown"))
-                    if manifest_is_unknown:
-                        person = self.get_or_create_unknown_person(db, workspace_id)
-                    else:
-                        if not person_name:
+                if apply_manifest_persons:
+                    for person_data in raw_persons:
+                        if not isinstance(person_data, dict):
                             continue
-                        person = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
-                        if person is None:
-                            person = Person(
-                                workspace_id=workspace_id,
-                                name=person_name,
-                                display_name=str(person_data.get("display_name") or person_name).strip() or person_name,
-                                note=None,
-                                is_unknown=False,
-                            )
-                            db.add(person)
-                            db.flush()
+                        person_name = str(person_data.get("name") or person_data.get("display_name") or "").strip()
+                        manifest_is_unknown = bool(person_data.get("is_unknown"))
+                        if manifest_is_unknown:
+                            if person_tags == "known_only":
+                                continue
+                            person = self.get_or_create_unknown_person(db, workspace_id)
                         else:
-                            person.display_name = str(person_data.get("display_name") or person.display_name).strip() or person.display_name
-                            person.is_unknown = False
-                            person.unknown_serial = None
-                    existing_person_link = db.scalar(
-                        select(GalleryPhotoPersonTag).where(
-                            GalleryPhotoPersonTag.gallery_photo_id == photo.id,
-                            GalleryPhotoPersonTag.person_id == person.id,
+                            if not person_name:
+                                continue
+                            person = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
+                            if person is None:
+                                person = Person(
+                                    workspace_id=workspace_id,
+                                    name=person_name,
+                                    display_name=str(person_data.get("display_name") or person_name).strip() or person_name,
+                                    note=None,
+                                    is_unknown=False,
+                                )
+                                db.add(person)
+                                db.flush()
+                            else:
+                                person.display_name = str(person_data.get("display_name") or person.display_name).strip() or person.display_name
+                                person.is_unknown = False
+                                person.unknown_serial = None
+                        existing_person_link = db.scalar(
+                            select(GalleryPhotoPersonTag).where(
+                                GalleryPhotoPersonTag.gallery_photo_id == photo.id,
+                                GalleryPhotoPersonTag.person_id == person.id,
+                            )
                         )
-                    )
-                    source = "import_unknown" if person.is_unknown else "import"
-                    self.ensure_gallery_person_tag(db, photo.id, person.id, source)
-                    if existing_person_link is None:
-                        result["persons_added"] += 1
+                        source = unknown_tag_source if person.is_unknown else "import"
+                        self.ensure_gallery_person_tag(db, photo.id, person.id, source)
+                        if existing_person_link is None:
+                            result["persons_added"] += 1
+
+                if recognize and not is_existing:
+                    try:
+                        recognition_plan = self._recognition_plan(db, payload, workspace_id)
+                    except Exception:
+                        logger.exception("Gallery zip recognition failed photo_id=%s", photo.id)
+                        recognition_plan = None
+                    if recognition_plan:
+                        summary = GalleryImportSummary()
+                        tagged = self._record_recognized_faces(
+                            db, photo, recognition_plan, workspace_id, summary, filename=photo.filename,
+                        )
+                        result["recognized_known"] += summary.known_matches
+                        result["recognized_unknown"] += summary.unknown_faces
+                        result["persons_added"] += tagged
+
                 db.add(photo)
                 db.commit()
                 if progress_callback:

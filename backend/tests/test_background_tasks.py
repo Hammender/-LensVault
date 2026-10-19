@@ -48,13 +48,22 @@ class FakeZipPictureService:
         _workspace_id: int,
         _progress_callback,
         *, actor_id=None, actor_name=None,
+        person_tags="all", unknown_tag_source="import_unknown", recognize=False,
     ) -> dict[str, int]:
+        self.received = {
+            "person_tags": person_tags,
+            "unknown_tag_source": unknown_tag_source,
+            "recognize": recognize,
+        }
         return {
             "added_photos": 2,
             "updated_existing": 1,
             "skipped_photos": 1,
             "tags_added": 0,
             "persons_added": 0,
+            "recognized_known": 0,
+            "recognized_unknown": 0,
+            "option_summary": "人物：全部导入；未知：受保护",
         }
 
 
@@ -117,6 +126,42 @@ def test_gallery_zip_import_records_import_activity(monkeypatch) -> None:
 
     assert history is not None
     assert (history.total_count, history.success_count, history.duplicate_count) == (4, 3, 1)
+    assert task is not None
+    assert task.status == "completed"
+    assert "人物：全部导入；未知：受保护" in (task.message or "")
+    engine.dispose()
+
+
+def test_gallery_zip_import_task_forwards_person_tag_options(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    task_id = "gallery-zip-import-options"
+    service = FakeZipPictureService()
+
+    with Session(engine) as db:
+        db.add(Task(id=task_id, workspace_id=None, kind="gallery_zip_import", status="pending", progress=0.0))
+        db.commit()
+
+    monkeypatch.setattr("app.background_tasks.mark_similarity_scans_stale", lambda _db, _workspace_id: None)
+    process_gallery_zip_import_task(
+        session_factory,
+        service,
+        task_id,
+        b"zip",
+        workspace_id=1,
+        person_tags="none",
+        unknown_tag_source="unknown",
+        recognize=True,
+    )
+
+    assert service.received == {
+        "person_tags": "none",
+        "unknown_tag_source": "unknown",
+        "recognize": True,
+    }
+    with Session(engine) as db:
+        task = db.get(Task, task_id)
     assert task is not None
     assert task.status == "completed"
     engine.dispose()

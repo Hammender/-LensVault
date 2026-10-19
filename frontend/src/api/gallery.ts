@@ -174,7 +174,17 @@ export async function downloadGalleryExport(options: GalleryExportOptions): Prom
   });
   return parseBlobResponse(response, "gallery_export.zip", "导出失败。");
 }
-export async function importGalleryExportZip(file: File): Promise<Task> { const formData = new FormData(); formData.append("file", file); return parseResponse<Task>(await authFetch("/api/gallery/photos/import-zip", { method: "POST", body: formData })); }
+export async function importGalleryExportZip(
+  file: File,
+  options: { personTags?: string; unknownTagSource?: string; recognize?: boolean } = {}
+): Promise<Task> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("person_tags", options.personTags ?? "all");
+  formData.append("unknown_tag_source", options.unknownTagSource ?? "import_unknown");
+  formData.append("recognize", options.recognize ? "true" : "false");
+  return parseResponse<Task>(await authFetch("/api/gallery/photos/import-zip", { method: "POST", body: formData }));
+}
 export async function updateGalleryPhotoRichText(photoId: number, richText: string): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/rich-text`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ rich_text: richText }) })); }
 export async function getTask(taskId: string): Promise<Task> { return parseResponse<Task>(await authFetch(`/api/tasks/${taskId}`)); }
 export async function reRecognizeGalleryPhoto(photoId: number): Promise<GalleryPhotoDetail> { return parseResponse<GalleryPhotoDetail>(await authFetch(`/api/gallery/photos/${photoId}/re-recognize`, { method: "POST" })); }

@@ -316,24 +316,45 @@ def process_gallery_zip_import_task(
     task_id: str,
     zip_source: bytes | Path,
     workspace_id: int,
+    *,
+    person_tags: str = "all",
+    unknown_tag_source: str = "import_unknown",
+    recognize: bool = False,
 ) -> None:
-    logger.info("Gallery zip import task started task_id=%s", task_id)
+    logger.info(
+        "Gallery zip import task started task_id=%s person_tags=%s unknown_tag_source=%s recognize=%s",
+        task_id,
+        person_tags,
+        unknown_tag_source,
+        recognize,
+    )
     db = session_factory()
     try:
         update_task(db, task_id, status="running", progress=0.05, message="正在解析展示图 ZIP")
 
         def progress_callback(processed: int, total: int) -> None:
             progress = 0.05 + 0.9 * (processed / max(total, 1))
+            action = "正在还原并识别展示图" if recognize else "正在还原展示图"
             record_task_progress(
                 session_factory,
                 task_id,
                 status="running",
                 progress=min(progress, 1.0),
-                message=f"正在还原展示图 {processed}/{total}",
+                message=f"{action} {processed}/{total}",
             )
 
         task = db.get(Task, task_id)
-        result = picture_service.import_gallery_from_zip(db, zip_source, workspace_id, progress_callback, actor_id=task.created_by, actor_name=task.actor_name)
+        result = picture_service.import_gallery_from_zip(
+            db,
+            zip_source,
+            workspace_id,
+            progress_callback,
+            actor_id=task.created_by,
+            actor_name=task.actor_name,
+            person_tags=person_tags,
+            unknown_tag_source=unknown_tag_source,
+            recognize=recognize,
+        )
         if result["added_photos"] or result["updated_existing"] or result["persons_added"]:
             mark_similarity_scans_stale(db, workspace_id)
             db.commit()
@@ -343,7 +364,13 @@ def process_gallery_zip_import_task(
             f"跳过 {result['skipped_photos']} 张，"
             f"绑定 {result['tags_added']} 个普通标签，"
             f"绑定 {result['persons_added']} 个人物标签"
+            f"（{result.get('option_summary', '人物：全部导入；未知：受保护')}）"
         )
+        if recognize:
+            message += (
+                f"；识别已知 {result.get('recognized_known', 0)} 张人脸，"
+                f"未知 {result.get('recognized_unknown', 0)} 张"
+            )
         update_task(db, task_id, status="completed", progress=1.0, message=message)
         db.add(
             UploadHistory(

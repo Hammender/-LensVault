@@ -40,6 +40,10 @@ import type { PageKey } from "../lib/routing";
 import { sortByPinyin, sortByPinyinName } from "../lib/sort";
 import { filterTagMatches, resolveExistingTag } from "../lib/tagPicker";
 import { isTerminalTask } from "../lib/taskStatus";
+import {
+  DEFAULT_GALLERY_ZIP_IMPORT_OPTIONS,
+  type GalleryZipImportOptions
+} from "../lib/galleryZipImport";
 import type { GalleryPhotoDetail, GalleryPhotoListItem, Person, Tag, Task } from "../types";
 import { usePolling } from "./usePolling";
 import { useGalleryLightbox } from "./useGalleryLightbox";
@@ -162,6 +166,10 @@ export function useGallery({
   const [lightboxRichTextDraft, setLightboxRichTextDraft] = useState("");
   const [lightboxEditMode, setLightboxEditMode] = useState(false);
   const [galleryImportTask, setGalleryImportTask] = useState<Task | null>(null);
+  const [galleryImportModalOpen, setGalleryImportModalOpen] = useState(false);
+  const [galleryZipImportOptions, setGalleryZipImportOptions] = useState<GalleryZipImportOptions>(
+    DEFAULT_GALLERY_ZIP_IMPORT_OPTIONS
+  );
   const [jumpPageInput, setJumpPageInput] = useState("");
   const [recognitionNotice, setRecognitionNotice] = useState<{ id: number; message: string } | null>(null);
   const galleryImportFileRef = useRef<HTMLInputElement | null>(null);
@@ -624,6 +632,11 @@ export function useGallery({
   }
 
   function handlePickGalleryImportFile() {
+    setGalleryZipImportOptions(DEFAULT_GALLERY_ZIP_IMPORT_OPTIONS);
+    setGalleryImportModalOpen(true);
+  }
+
+  function handleConfirmGalleryImportFile() {
     galleryImportFileRef.current?.click();
   }
 
@@ -632,10 +645,15 @@ export function useGallery({
     if (!file) {
       return;
     }
+    setGalleryImportModalOpen(false);
     setBusy(true);
     setError(null);
     try {
-      const task = await importGalleryExportZip(file);
+      const task = await importGalleryExportZip(file, {
+        personTags: galleryZipImportOptions.personTags,
+        unknownTagSource: galleryZipImportOptions.unknownTagSource,
+        recognize: galleryZipImportOptions.recognize
+      });
       setGalleryImportTask(task);
       if (isTerminalTask(task)) {
         if (task.status === "completed") {
@@ -1167,7 +1185,7 @@ export function useGallery({
     selectedPhoto, galleryDrawer, galleryCompact, activeGalleryFilterSection, galleryFiltersExpanded, galleryDetailPinned,
     activeGalleryDetailTab, selectedFaceId, excludePersonSearch, excludeTagSearch, manualPersonId, manualPersonSearch,
     manualPersonNotice, manualTagId, manualTagSearch, manualTagNotice, manualTagName, richTextDraft, lightboxRichTextDraft,
-    lightboxEditMode, galleryImportFileRef, galleryImportTask, jumpPageInput, galleryDetailRef, galleryDetailCloseRef,
+    lightboxEditMode, galleryImportFileRef, galleryImportTask, galleryImportModalOpen, galleryZipImportOptions, jumpPageInput, galleryDetailRef, galleryDetailCloseRef,
     unknownPersonCount, galleryFilterCount, includedKnownPersons, includedUnknownPersons, excludedPersonResults, excludedKnownPersonResults,
     excludedTagResults, excludedUnknownPersonResults, totalPages, currentPage, galleryExportStartCount,
     galleryExportFiltersDisabled, galleryExportDisabled, availablePersonsForPhoto, matchingPersonsForPhoto,
@@ -1183,13 +1201,14 @@ export function useGallery({
     setLightboxEditMode, setJumpPageInput, setSelectedFaceId, setActiveGalleryDetailTab, setGalleryDetailPinned,
     setSelectedGalleryPhotoIds, setLastSelectedGalleryPhotoId, setGalleryExportModalOpen, setGalleryExportScope,
     setGalleryExportPersonIds, setGalleryExportTagIds, setGalleryExportExcludePersonIds, setGalleryExportExcludeTagIds,
+    setGalleryImportModalOpen, setGalleryZipImportOptions,
     setRecognitionNotice,
     closeGalleryDrawer, refreshGallery, handleTogglePersonFilter, handleToggleTagFilter, handleToggleUnknownPersonFilters,
     handleClearGalleryFilters, toggleGalleryFilterSection, handleToggleExcludePerson, handleToggleExcludeTag,
     openGalleryPhoto, openGalleryLightbox, closeGalleryLightbox, openLightboxPhotoDetail,
     copyCurrentGalleryFiltersToExport, openGalleryExportModal, openSelectedGalleryExportModal, openGalleryExportFromPhoto,
     handleExportGalleryPhotos, handleToggleGalleryExportPerson, handleToggleGalleryExportTag,
-    handlePickGalleryImportFile, handleGalleryImportFileChange,
+    handlePickGalleryImportFile, handleConfirmGalleryImportFile, handleGalleryImportFileChange,
     renderFaceMatchSource, faceRejectionReasonLabel,
     handleAddPhotoPerson, handlePromotePhotoPerson, handleBindFace, handlePromoteFace, handleUnbindFace,
     handleUndoPromotePhotoPerson, handleDeletePhotoPerson, handleAddExistingPhotoTag, handleCreateAndAddPhotoTag,

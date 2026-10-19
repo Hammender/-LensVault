@@ -21,6 +21,10 @@ import {
 } from "../lib/galleryMasonryPack";
 import { formatPhotoDate } from "../lib/utils";
 import { readGalleryLightboxOrder } from "../lib/galleryLightboxOrder";
+import {
+  galleryZipPersonTagControlsEnabled,
+  galleryZipUnknownSourceEnabled
+} from "../lib/galleryZipImport";
 
 export default function GalleryPage({ model }: { model: GalleryModel }) {
   const {
@@ -102,6 +106,8 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
     lightboxLayoutRequest,
     completeLightboxLayout,
     galleryExportModalOpen,
+    galleryImportModalOpen,
+    galleryZipImportOptions,
     galleryExportScope,
     galleryExportPersonIds,
     galleryExportTagIds,
@@ -138,6 +144,8 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
     setGalleryExportTagIds,
     setGalleryExportExcludePersonIds,
     setGalleryExportExcludeTagIds,
+    setGalleryImportModalOpen,
+    setGalleryZipImportOptions,
     setRecognitionNotice,
     closeGalleryDrawer,
     refreshGallery,
@@ -156,6 +164,7 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
     handleToggleGalleryExportPerson,
     handleToggleGalleryExportTag,
     handlePickGalleryImportFile,
+    handleConfirmGalleryImportFile,
     handleGalleryImportFileChange,
     renderFaceMatchSource,
     faceRejectionReasonLabel,
@@ -1274,6 +1283,87 @@ export default function GalleryPage({ model }: { model: GalleryModel }) {
             />
           )}
         </main>
+      {galleryImportModalOpen && (
+        <div className="modal-backdrop" onClick={() => setGalleryImportModalOpen(false)}>
+          <div className="export-modal import-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">导入展示图</p>
+                <h2>选择人物处理方式</h2>
+              </div>
+              <button className="lightbox-close" onClick={() => setGalleryImportModalOpen(false)}>
+                关闭
+              </button>
+            </div>
+
+            <label className="import-recognize-option">
+              <input
+                type="checkbox"
+                checked={galleryZipImportOptions.recognize}
+                onChange={(event) => setGalleryZipImportOptions((current) => ({ ...current, recognize: event.target.checked }))}
+              />
+              <span>
+                <strong>导入后按本机样本识别</strong>
+                <small>新增图的人物以本机识别为准，清单中的人物不会保留。已存在的图不识别。耗时更长。</small>
+              </span>
+            </label>
+
+            <div className={galleryZipPersonTagControlsEnabled(galleryZipImportOptions) ? "import-option-block" : "import-option-block disabled"}>
+              <strong>清单人物标签</strong>
+              <div className="export-choice-row">
+                <button
+                  className={galleryZipImportOptions.personTags === "all" ? "soft-chip active" : "soft-chip"}
+                  disabled={!galleryZipPersonTagControlsEnabled(galleryZipImportOptions)}
+                  onClick={() => setGalleryZipImportOptions((current) => ({ ...current, personTags: "all" }))}
+                >
+                  全部导入
+                </button>
+                <button
+                  className={galleryZipImportOptions.personTags === "known_only" ? "soft-chip active" : "soft-chip"}
+                  disabled={!galleryZipPersonTagControlsEnabled(galleryZipImportOptions)}
+                  onClick={() => setGalleryZipImportOptions((current) => ({ ...current, personTags: "known_only" }))}
+                >
+                  只导入已知人名
+                </button>
+                <button
+                  className={galleryZipImportOptions.personTags === "none" ? "soft-chip active" : "soft-chip"}
+                  disabled={!galleryZipPersonTagControlsEnabled(galleryZipImportOptions)}
+                  onClick={() => setGalleryZipImportOptions((current) => ({ ...current, personTags: "none" }))}
+                >
+                  不导入人物
+                </button>
+              </div>
+              <p>默认全部导入，与原先一致。只导入已知人名会跳过清单中的未知人物。</p>
+            </div>
+
+            <div className={galleryZipUnknownSourceEnabled(galleryZipImportOptions) ? "import-option-block" : "import-option-block disabled"}>
+              <strong>未知人物标签</strong>
+              <div className="export-choice-row">
+                <button
+                  className={galleryZipImportOptions.unknownTagSource === "import_unknown" ? "soft-chip active" : "soft-chip"}
+                  disabled={!galleryZipUnknownSourceEnabled(galleryZipImportOptions)}
+                  onClick={() => setGalleryZipImportOptions((current) => ({ ...current, unknownTagSource: "import_unknown" }))}
+                >
+                  受保护
+                </button>
+                <button
+                  className={galleryZipImportOptions.unknownTagSource === "unknown" ? "soft-chip active" : "soft-chip"}
+                  disabled={!galleryZipUnknownSourceEnabled(galleryZipImportOptions)}
+                  onClick={() => setGalleryZipImportOptions((current) => ({ ...current, unknownTagSource: "unknown" }))}
+                >
+                  可被重识别替换
+                </button>
+              </div>
+              <p>受保护的未知标签在之后的重新识别中会保留；不受保护的可以换成识别结果。</p>
+            </div>
+
+            <div className="modal-actions">
+              <button onClick={() => setGalleryImportModalOpen(false)}>取消</button>
+              <button disabled={busy} onClick={handleConfirmGalleryImportFile}>选择 ZIP 并导入</button>
+            </div>
+          </div>
+        </div>
+      )}
       {galleryExportModalOpen && (
         <div className="modal-backdrop" onClick={() => setGalleryExportModalOpen(false)}>
           <div className="export-modal" onClick={(event) => event.stopPropagation()}>

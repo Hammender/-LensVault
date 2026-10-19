@@ -572,12 +572,31 @@ async def import_gallery_export_zip(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    person_tags: str = Form(default="all"),
+    unknown_tag_source: str = Form(default="import_unknown"),
+    recognize: bool = Form(default=False),
     db: Session = Depends(get_db),
     current: CurrentContext = Depends(require_context),
 ) -> TaskRead:
+    if person_tags not in ("all", "known_only", "none"):
+        raise HTTPException(status_code=422, detail="不支持的人物标签导入方式")
+    if unknown_tag_source not in ("import_unknown", "unknown"):
+        raise HTTPException(status_code=422, detail="不支持的未知人物标签来源")
+    options = {
+        "person_tags": person_tags,
+        "unknown_tag_source": unknown_tag_source,
+        "recognize": bool(recognize),
+    }
     task = create_task(db, "gallery_zip_import", "已排队展示图 ZIP 导入", current.workspace_id, actor_id=current.user.id)
     zip_path = await spool_upload(request.app.state.settings, task.id, 0, file)
-    logger.info("Gallery zip import enqueued task_id=%s path=%s", task.id, zip_path.name)
+    logger.info(
+        "Gallery zip import enqueued task_id=%s path=%s person_tags=%s unknown_tag_source=%s recognize=%s",
+        task.id,
+        zip_path.name,
+        options["person_tags"],
+        options["unknown_tag_source"],
+        options["recognize"],
+    )
     background_tasks.add_task(
         process_gallery_zip_import_task,
         request.app.state.session_factory,
@@ -585,6 +604,9 @@ async def import_gallery_export_zip(
         task.id,
         zip_path,
         current.workspace_id,
+        person_tags=str(options["person_tags"]),
+        unknown_tag_source=str(options["unknown_tag_source"]),
+        recognize=bool(options["recognize"]),
     )
     return TaskRead.model_validate(task)
 

@@ -5,6 +5,8 @@ from datetime import datetime
 import hashlib
 from io import BytesIO
 import json
+
+import numpy as np
 from types import SimpleNamespace
 from zipfile import ZipFile
 
@@ -19,8 +21,9 @@ from app.core.config import Settings
 from app.db import Base
 from app.models import FaceRecord, GalleryPhoto, GalleryPhotoPersonTag, GalleryPhotoTag, Person, Tag
 from app.schemas import GalleryPhotoExportRequest
-from app.services.importer import PictureService
+from app.services.importer import PersonMatch, PictureService, normalize_gallery_zip_import_options
 from app.tools.cleanup_gallery_zip_import import cleanup_gallery_zip_import
+from face_runtime import DetectedFace
 
 
 class MemoryStorage:
@@ -233,6 +236,159 @@ def test_duplicate_zip_photo_is_exactly_replaced_from_manifest(db_session: Sessi
     assert [link.tag.name for link in restored.tags] == ["新标签"]
     assert [(link.person.name, link.source) for link in restored.person_tags] == [("new", "import")]
     assert restored.faces == []
+
+
+def _people_manifest_zip(**overrides: object) -> bytes:
+    entry = {
+        "filename": "shot.jpg",
+        "tags": ["风景"],
+        "persons": [
+            {"name": "已知人", "display_name": "已知人", "is_unknown": False},
+            {"name": "未知人物", "display_name": "未知人物", "is_unknown": True},
+        ],
+    }
+    entry.update(overrides)
+    return make_zip([entry])
+
+
+def test_zip_import_known_only_skips_unknown_persons(db_session: Session) -> None:
+    result = make_service().import_gallery_from_zip(db_session, _people_manifest_zip(), None, person_tags="known_only")
+    photo = db_session.scalar(select(GalleryPhoto))
+    assert result["persons_added"] == 1
+    assert [(link.person.name, link.source) for link in photo.person_tags] == [("已知人", "import")]
+
+
+def test_zip_import_none_skips_all_manifest_persons(db_session: Session) -> None:
+    result = make_service().import_gallery_from_zip(db_session, _people_manifest_zip(), None, person_tags="none")
+    photo = db_session.scalar(select(GalleryPhoto))
+    assert result["persons_added"] == 0
+    assert photo.person_tags == []
+    assert photo.faces == []
+    assert [link.tag.name for link in photo.tags] == ["风景"]
+
+
+def test_zip_import_none_keeps_existing_person_tags(db_session: Session) -> None:
+    payload = b"keep-local"
+    sha256 = hashlib.sha256(payload).hexdigest()
+    storage = MemoryStorage()
+    service = make_service(storage)
+    local_person = Person(name="本地人", display_name="本地人", is_unknown=False)
+    photo = GalleryPhoto(
+        filename="old.jpg",
+        content_type="image/jpeg",
+        sha256=sha256,
+        object_key="gallery/old.jpg",
+        is_rich_text=False,
+    )
+    db_session.add_all([local_person, photo])
+    db_session.flush()
+    db_session.add(
+        GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=local_person.id, source="auto")
+    )
+    db_session.add(
+        FaceRecord(
+            gallery_photo_id=photo.id,
+            matched_person_id=local_person.id,
+            bbox_left=0,
+            bbox_top=0,
+            bbox_right=8,
+            bbox_bottom=8,
+            needs_review=False,
+        )
+    )
+    db_session.commit()
+
+    service.import_gallery_from_zip(
+        db_session,
+        make_zip([{"filename": "new.jpg", "payload": payload, "persons": [{"name": "包里的人", "is_unknown": False}]}]),
+        None,
+        person_tags="none",
+    )
+    db_session.expire_all()
+    restored = db_session.scalar(select(GalleryPhoto).where(GalleryPhoto.id == photo.id))
+    assert [(link.person.name, link.source) for link in restored.person_tags] == [("本地人", "auto")]
+    assert restored.faces != []
+    assert restored.filename == "new.jpg"
+
+
+def test_zip_import_unprotected_unknown_source(db_session: Session) -> None:
+    make_service().import_gallery_from_zip(
+        db_session,
+        _people_manifest_zip(),
+        None,
+        unknown_tag_source="unknown",
+    )
+    photo = db_session.scalar(select(GalleryPhoto))
+    sources = {(link.person.is_unknown, link.source) for link in photo.person_tags}
+    assert sources == {(False, "import"), (True, "unknown")}
+
+
+def test_zip_import_recognize_replaces_manifest_persons_on_new_photos(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known = Person(name="样本人物", display_name="样本人物", is_unknown=False)
+    db_session.add(known)
+    db_session.commit()
+    detected = DetectedFace(
+        bbox=(0, 0, 12, 12),
+        score=0.99,
+        embedding=np.zeros(4),
+        face_size=80,
+        blur_score=90,
+        pose_yaw=0,
+    )
+
+    def fake_plan(self, db, payload, workspace_id, **_kwargs):
+        return [(detected, PersonMatch(known.id, 0.95))]
+
+    monkeypatch.setattr(PictureService, "_recognition_plan", fake_plan)
+    service = make_service()
+    result = service.import_gallery_from_zip(db_session, _people_manifest_zip(), None, recognize=True)
+    photo = db_session.scalar(select(GalleryPhoto))
+    assert result["recognized_known"] == 1
+    assert [(link.person.name, link.source) for link in photo.person_tags] == [("样本人物", "auto")]
+    assert photo.faces != []
+
+
+def test_zip_import_recognize_does_not_change_existing_persons(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"already-here"
+    sha256 = hashlib.sha256(payload).hexdigest()
+    storage = MemoryStorage()
+    local_person = Person(name="本地人", display_name="本地人", is_unknown=False)
+    photo = GalleryPhoto(
+        filename="old.jpg",
+        content_type="image/jpeg",
+        sha256=sha256,
+        object_key="gallery/old.jpg",
+        is_rich_text=False,
+    )
+    db_session.add_all([local_person, photo])
+    db_session.flush()
+    db_session.add(GalleryPhotoPersonTag(gallery_photo_id=photo.id, person_id=local_person.id, source="auto"))
+    db_session.commit()
+
+    def boom(self, *_args, **_kwargs):
+        raise AssertionError("重复图不得调用识别")
+
+    monkeypatch.setattr(PictureService, "_recognition_plan", boom)
+    make_service(storage).import_gallery_from_zip(
+        db_session,
+        make_zip([{"filename": "new.jpg", "payload": payload, "persons": [{"name": "包里的人", "is_unknown": False}]}]),
+        None,
+        recognize=True,
+    )
+    db_session.expire_all()
+    restored = db_session.scalar(select(GalleryPhoto).where(GalleryPhoto.id == photo.id))
+    assert [(link.person.name, link.source) for link in restored.person_tags] == [("本地人", "auto")]
+
+
+def test_normalize_gallery_zip_import_options_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError, match="人物标签"):
+        normalize_gallery_zip_import_options(person_tags="drop")
+    with pytest.raises(ValueError, match="未知人物"):
+        normalize_gallery_zip_import_options(unknown_tag_source="protected")
 
 
 def test_export_v3_uses_the_same_stable_display_order(db_session: Session) -> None:
