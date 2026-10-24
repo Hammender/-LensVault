@@ -1,6 +1,7 @@
 import type {
   AcquisitionAsset,
   AcquisitionAssetSummary,
+  AcquisitionAssetWindow,
   AcquisitionFrame,
   AcquisitionCaptureResult,
   AcquisitionCategory,
@@ -214,6 +215,28 @@ export async function listAcquisitionAssets(
 
 export async function getAcquisitionAsset(assetId: string): Promise<AcquisitionAsset> {
   return parse<AcquisitionAsset>(await fetch(`/api/acquisition/assets/${encodeURIComponent(assetId)}`));
+}
+
+
+export async function getAcquisitionAssetWindow(
+  anchorId: string,
+  options: {
+    status: string;
+    previewable?: boolean;
+    mediaType?: "image" | "video";
+    before?: number;
+    after?: number;
+  }
+): Promise<AcquisitionAssetWindow> {
+  const params = new URLSearchParams({
+    anchor_id: anchorId,
+    status: options.status,
+    before: String(options.before ?? 60),
+    after: String(options.after ?? 60),
+  });
+  if (options.previewable) params.set("previewable", "true");
+  if (options.mediaType) params.set("media_type", options.mediaType);
+  return parse<AcquisitionAssetWindow>(await fetch(`/api/acquisition/assets/window?${params.toString()}`));
 }
 
 export async function listAcquisitionAssetIds(

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   getAcquisitionAssetSummary,
+  getAcquisitionAssetWindow,
   listAcquisitionAssetIds,
   listAcquisitionAssets,
   listAcquisitionImportBatches,
@@ -22,6 +23,7 @@ import {
   getAcquisitionLightboxShortcut,
   getAcquisitionPagination,
   getNextAcquisitionSnapshotIndex,
+  pageOffsetFromGlobalIndex,
   hasSelectedAllAcquisitionAssets,
   isAcquisitionPageFillValid,
   isAcquisitionImportBatchActive,
@@ -109,6 +111,49 @@ describe("acquisition review pagination", () => {
     await listAcquisitionAssetIds("pending_review", true, "video");
 
     expect(fetch.mock.calls[0][0]).toBe("/api/acquisition/assets/ids?status=pending_review&previewable=true&media_type=video");
+  });
+
+  it("requests a previewable lightbox window around the anchor asset", async () => {
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+      ids: ["a", "b", "c"],
+      index: 1,
+      global_index: 10,
+      total: 100,
+      has_previous: true,
+      has_next: true
+    }), { status: 200 }));
+    Object.assign(globalThis, {
+      window: {
+        location: { origin: "http://localhost:5173" },
+        localStorage: {
+          getItem: () => null,
+          setItem: () => undefined,
+          removeItem: () => undefined
+        },
+        fetch
+      }
+    });
+
+    const assetWindow = await getAcquisitionAssetWindow("b", {
+      status: "pending_review",
+      previewable: true,
+      before: 60,
+      after: 60,
+      mediaType: "video"
+    });
+
+    expect(fetch.mock.calls[0][0]).toBe(
+      "/api/acquisition/assets/window?anchor_id=b&status=pending_review&before=60&after=60&previewable=true&media_type=video"
+    );
+    expect(assetWindow.global_index).toBe(10);
+    expect(assetWindow.total).toBe(100);
+  });
+
+  it("maps a global lightbox index onto the review list page offset", () => {
+    expect(pageOffsetFromGlobalIndex(60)).toBe(60);
+    expect(pageOffsetFromGlobalIndex(59)).toBe(0);
+    expect(pageOffsetFromGlobalIndex(0)).toBe(0);
+    expect(pageOffsetFromGlobalIndex(120, 60)).toBe(120);
   });
 
   it("calculates seven pages and the final range for 377 assets", () => {

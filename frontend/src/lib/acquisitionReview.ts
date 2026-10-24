@@ -9,6 +9,16 @@ export function getAcquisitionAssetPageOffset(
   return index < 0 ? null : Math.floor(index / pageSize) * pageSize;
 }
 
+
+export function pageOffsetFromGlobalIndex(
+  globalIndex: number,
+  pageSize = acquisitionAssetPageSize
+): number {
+  if (globalIndex < 0) return 0;
+  return Math.floor(globalIndex / pageSize) * pageSize;
+}
+
+
 export function getAcquisitionPreviewUrl(
   previewUrl: string,
   maxEdge: number

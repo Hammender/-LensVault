@@ -186,6 +186,12 @@
     ]
   },
   {
+    "path": "/api/acquisition/assets/window",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
     "path": "/api/acquisition/assets/{asset_id}",
     "methods": [
       "GET"
