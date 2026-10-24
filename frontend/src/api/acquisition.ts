@@ -241,20 +241,21 @@ export async function changeAcquisitionAssets(
   })) as Promise<AcquisitionImportBatch | void>;
 }
 
-export async function getAcquisitionAssetSummary(): Promise<AcquisitionAssetSummary> {
-  return parse<AcquisitionAssetSummary>(await fetch("/api/acquisition/assets/summary"));
+export async function getAcquisitionAssetSummary(signal?: AbortSignal): Promise<AcquisitionAssetSummary> {
+  return parse<AcquisitionAssetSummary>(await fetch("/api/acquisition/assets/summary", { signal }));
 }
 
 export async function listAcquisitionImportBatches(
   offset = 0,
   limit = 20,
   dateFrom?: string,
-  dateTo?: string
+  dateTo?: string,
+  signal?: AbortSignal
 ): Promise<PaginatedAcquisitionImportBatches> {
   const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
   if (dateFrom) params.set("date_from", toShanghaiDateTimeBoundary(dateFrom, "start"));
   if (dateTo) params.set("date_to", toShanghaiDateTimeBoundary(dateTo, "end"));
-  return parse<PaginatedAcquisitionImportBatches>(await fetch(`/api/acquisition/import-batches?${params}`));
+  return parse<PaginatedAcquisitionImportBatches>(await fetch(`/api/acquisition/import-batches?${params}`, { signal }));
 }
 
 export async function listAcquisitionImportBatchItems(
@@ -263,13 +264,14 @@ export async function listAcquisitionImportBatchItems(
   offset = 0,
   limit = 40,
   dateFrom?: string,
-  dateTo?: string
+  dateTo?: string,
+  signal?: AbortSignal
 ): Promise<PaginatedAcquisitionImportBatchItems> {
   const params = new URLSearchParams({ status, offset: String(offset), limit: String(limit) });
   if (batchId === "unassigned" && dateFrom) params.set("date_from", toShanghaiDateTimeBoundary(dateFrom, "start"));
   if (batchId === "unassigned" && dateTo) params.set("date_to", toShanghaiDateTimeBoundary(dateTo, "end"));
   return parse<PaginatedAcquisitionImportBatchItems>(
-    await fetch(`/api/acquisition/import-batches/${encodeURIComponent(batchId)}/items?${params}`)
+    await fetch(`/api/acquisition/import-batches/${encodeURIComponent(batchId)}/items?${params}`, { signal })
   );
 }
 

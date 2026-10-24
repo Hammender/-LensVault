@@ -131,6 +131,17 @@ export function isAcquisitionImportBatchActive(status: string): boolean {
   return status === "queued" || status === "running";
 }
 
+export function isAcquisitionImportPollAbortError(reason: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" && reason instanceof DOMException && reason.name === "AbortError")
+    || (reason instanceof Error && reason.name === "AbortError")
+  );
+}
+
+export function shouldImmediateImportPollRetry(elapsedMs: number, intervalMs = 2000): boolean {
+  return elapsedMs >= intervalMs;
+}
+
 export type AcquisitionPagination = {
   currentPage: number;
   totalPages: number;

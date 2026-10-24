@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  getAcquisitionAssetSummary,
   listAcquisitionAssetIds,
   listAcquisitionAssets,
   listAcquisitionImportBatches,
@@ -24,6 +25,8 @@ import {
   hasSelectedAllAcquisitionAssets,
   isAcquisitionPageFillValid,
   isAcquisitionImportBatchActive,
+  isAcquisitionImportPollAbortError,
+  shouldImmediateImportPollRetry,
   isAcquisitionPageSelected,
   removeAcquisitionSelection,
   selectAcquisitionAssetRange,
@@ -320,6 +323,40 @@ describe("acquisition import batch state", () => {
     expect(isAcquisitionImportBatchActive("completed")).toBe(false);
     expect(isAcquisitionImportBatchActive("completed_with_errors")).toBe(false);
     expect(isAcquisitionImportBatchActive("failed")).toBe(false);
+  });
+
+  it("treats AbortError as a soft poll cancellation", () => {
+    expect(isAcquisitionImportPollAbortError(new DOMException("Aborted", "AbortError"))).toBe(true);
+    expect(isAcquisitionImportPollAbortError(Object.assign(new Error("Aborted"), { name: "AbortError" }))).toBe(true);
+    expect(isAcquisitionImportPollAbortError(new Error("入库进度刷新失败"))).toBe(false);
+    expect(isAcquisitionImportPollAbortError("timeout")).toBe(false);
+  });
+
+  it("only immediately re-polls when a round already used a full interval", () => {
+    expect(shouldImmediateImportPollRetry(1999, 2000)).toBe(false);
+    expect(shouldImmediateImportPollRetry(2000, 2000)).toBe(true);
+    expect(shouldImmediateImportPollRetry(10_500, 2000)).toBe(true);
+  });
+
+  it("forwards AbortSignal on batch list, items and summary requests", async () => {
+    const fetch = installWindow();
+    const controller = new AbortController();
+    await listAcquisitionImportBatches(0, 20, undefined, undefined, controller.signal);
+    await listAcquisitionImportBatchItems("batch-id", "all", 0, 40, undefined, undefined, controller.signal);
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      pending_review: 1,
+      import_queued: 0,
+      importing: 2,
+      imported: 3,
+      rejected: 0,
+      gallery_duplicate: 0
+    }), { status: 200 }));
+    await getAcquisitionAssetSummary(controller.signal);
+
+    expect(fetch.mock.calls[0][1]).toMatchObject({ signal: controller.signal });
+    expect(fetch.mock.calls[1][1]).toMatchObject({ signal: controller.signal });
+    expect(fetch.mock.calls[2][0]).toBe("/api/acquisition/assets/summary");
+    expect(fetch.mock.calls[2][1]).toMatchObject({ signal: controller.signal });
   });
 
   it("sends independent pagination and date filters for batches and details", async () => {

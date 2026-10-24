@@ -53,6 +53,8 @@ import {
   getNextAcquisitionSnapshotIndex,
   hasSelectedAllAcquisitionAssets,
   isAcquisitionImportBatchActive,
+  isAcquisitionImportPollAbortError,
+  shouldImmediateImportPollRetry,
   isAcquisitionPageFillValid,
   isAcquisitionPageSelected,
   removeAcquisitionSelection,
@@ -205,6 +207,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const [expandedImportAssetId, setExpandedImportAssetId] = useState<string | null>(null);
   const [importHistoryLoading, setImportHistoryLoading] = useState(false);
   const importBatchPollPendingRef = useRef(false);
+  const importBatchPollGenerationRef = useRef(0);
+  const importBatchPollControllerRef = useRef<AbortController | null>(null);
   const [exports, setExports] = useState<AcquisitionExport[]>([]);
   const [reviewMode, setReviewMode] = useState<"list" | "similarity">("list");
   const [similarityScanType, setSimilarityScanType] = useState<"normal" | "mirror">("normal");
@@ -385,13 +389,15 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     }
   }, []);
 
-  const loadImportBatchPage = useCallback(async (requestedOffset: number) => {
+  const loadImportBatchPage = useCallback(async (requestedOffset: number, signal?: AbortSignal) => {
     setImportHistoryLoading(true);
     try {
-      let page = await listAcquisitionImportBatches(Math.max(0, requestedOffset), importBatchPageSize, batchDateFrom, batchDateTo);
+      let page = await listAcquisitionImportBatches(Math.max(0, requestedOffset), importBatchPageSize, batchDateFrom, batchDateTo, signal);
+      if (signal?.aborted) return;
       const validOffset = clampAcquisitionOffset(page.total, requestedOffset, importBatchPageSize);
       if (validOffset !== page.offset) {
-        page = await listAcquisitionImportBatches(validOffset, importBatchPageSize, batchDateFrom, batchDateTo);
+        page = await listAcquisitionImportBatches(validOffset, importBatchPageSize, batchDateFrom, batchDateTo, signal);
+        if (signal?.aborted) return;
       }
       setImportBatches(page.items);
       setImportBatchesTotal(page.total);
@@ -407,13 +413,15 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     }
   }, [batchDateFrom, batchDateTo]);
 
-  const loadImportBatchItemPage = useCallback(async (batchId: string, requestedOffset: number) => {
+  const loadImportBatchItemPage = useCallback(async (batchId: string, requestedOffset: number, signal?: AbortSignal) => {
     setImportHistoryLoading(true);
     try {
-      let page = await listAcquisitionImportBatchItems(batchId, importBatchItemStatus, Math.max(0, requestedOffset), importBatchItemPageSize, batchDateFrom, batchDateTo);
+      let page = await listAcquisitionImportBatchItems(batchId, importBatchItemStatus, Math.max(0, requestedOffset), importBatchItemPageSize, batchDateFrom, batchDateTo, signal);
+      if (signal?.aborted) return;
       const validOffset = clampAcquisitionOffset(page.total, requestedOffset, importBatchItemPageSize);
       if (validOffset !== page.offset) {
-        page = await listAcquisitionImportBatchItems(batchId, importBatchItemStatus, validOffset, importBatchItemPageSize, batchDateFrom, batchDateTo);
+        page = await listAcquisitionImportBatchItems(batchId, importBatchItemStatus, validOffset, importBatchItemPageSize, batchDateFrom, batchDateTo, signal);
+        if (signal?.aborted) return;
       }
       setImportBatchItems(page.items);
       setImportBatchItemsTotal(page.total);
@@ -667,22 +675,62 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
 
   useEffect(() => {
     if (!importBatches.some((batch) => isAcquisitionImportBatchActive(batch.status))) return;
-    const timer = window.setInterval(() => {
+    const generation = importBatchPollGenerationRef.current + 1;
+    importBatchPollGenerationRef.current = generation;
+    let stopped = false;
+    const timeoutMs = 10_000;
+    const intervalMs = 2000;
+
+    const poll = () => {
+      if (stopped || importBatchPollGenerationRef.current !== generation) return;
       if (importBatchPollPendingRef.current) return;
       importBatchPollPendingRef.current = true;
+      const started = performance.now();
+      const controller = new AbortController();
+      importBatchPollControllerRef.current = controller;
+      const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
       const requests: Promise<unknown>[] = [
-        loadImportBatchPage(importBatchOffset),
-        getAcquisitionAssetSummary().then((summary) => setAssetSummary(summary))
+        loadImportBatchPage(importBatchOffset, controller.signal),
+        getAcquisitionAssetSummary(controller.signal).then((summary) => {
+          if (!controller.signal.aborted && importBatchPollGenerationRef.current === generation) {
+            setAssetSummary(summary);
+          }
+        })
       ];
       if (tab === "history" && selectedImportBatchId) {
-        requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset));
+        requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset, controller.signal));
       }
       void Promise.allSettled(requests).then((results) => {
-        const failed = results.find((result) => result.status === "rejected");
-        if (failed?.status === "rejected") setNotice(failed.reason instanceof Error ? failed.reason.message : "入库进度刷新失败");
-      }).finally(() => { importBatchPollPendingRef.current = false; });
-    }, 2000);
-    return () => window.clearInterval(timer);
+        if (stopped || importBatchPollGenerationRef.current !== generation || controller.signal.aborted) return;
+        const failed = results.find((result) => (
+          result.status === "rejected" && !isAcquisitionImportPollAbortError(result.reason)
+        ));
+        if (failed?.status === "rejected") {
+          setNotice(failed.reason instanceof Error ? failed.reason.message : "入库进度刷新失败");
+        }
+      }).finally(() => {
+        window.clearTimeout(timeoutId);
+        if (importBatchPollControllerRef.current === controller) {
+          importBatchPollControllerRef.current = null;
+        }
+        if (importBatchPollGenerationRef.current !== generation) return;
+        importBatchPollPendingRef.current = false;
+        if (stopped) return;
+        if (shouldImmediateImportPollRetry(performance.now() - started, intervalMs)) {
+          void poll();
+        }
+      });
+    };
+
+    const timer = window.setInterval(() => { void poll(); }, intervalMs);
+    return () => {
+      stopped = true;
+      importBatchPollGenerationRef.current += 1;
+      window.clearInterval(timer);
+      importBatchPollControllerRef.current?.abort();
+      importBatchPollControllerRef.current = null;
+      importBatchPollPendingRef.current = false;
+    };
   }, [importBatchItemOffset, importBatchOffset, importBatches, loadImportBatchItemPage, loadImportBatchPage, selectedImportBatchId, tab]);
 
   useEffect(() => {
