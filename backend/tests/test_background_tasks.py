@@ -11,6 +11,7 @@ from app.background_tasks import (
     process_gallery_zip_import_task,
     process_person_import_task,
 )
+from app.services.importer import PersonImportPartialError
 from app.db import Base
 from app.models import Task, UploadHistory
 
@@ -174,7 +175,16 @@ def test_gallery_zip_import_task_forwards_person_tag_options(monkeypatch) -> Non
 class FakePersonZipService:
     settings = SimpleNamespace(data_dir=None)
 
-    def import_persons_from_zip(self, _db: Session, _zip_source, _workspace_id: int, progress_callback) -> dict[str, int]:
+    def import_persons_from_zip(
+        self,
+        _db: Session,
+        _zip_source,
+        _workspace_id: int,
+        progress_callback,
+        progress_due=None,
+    ) -> dict[str, int]:
+        if progress_due is not None:
+            progress_due()
         progress_callback(1, 13)
         return {
             "created_persons": 1,
@@ -206,4 +216,33 @@ def test_person_import_task_completes_when_progress_recording_fails(monkeypatch)
     assert task is not None
     assert task.status == "completed"
     assert "创建 1 个人物" in (task.message or "")
+    engine.dispose()
+
+
+def test_person_import_task_keeps_partial_error_message() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    task_id = "person-import-partial"
+
+    class PartialPersonZipService:
+        settings = SimpleNamespace(data_dir=None)
+
+        def import_persons_from_zip(self, _db: Session, _zip_source, _workspace_id: int, progress_callback, progress_due=None):
+            raise PersonImportPartialError(
+                "导入中断：已保留 2 个样本，已提交批次的人物质心已更新。原因：质心写入失败",
+                retained_samples=2,
+            )
+
+    with Session(engine) as db:
+        db.add(Task(id=task_id, workspace_id=None, kind="person_import", status="pending", progress=0.0))
+        db.commit()
+
+    process_person_import_task(session_factory, PartialPersonZipService(), task_id, b"zip", workspace_id=1)
+
+    with Session(engine) as db:
+        task = db.get(Task, task_id)
+    assert task is not None
+    assert task.status == "failed"
+    assert task.message == "导入中断：已保留 2 个样本，已提交批次的人物质心已更新。原因：质心写入失败"
     engine.dispose()

@@ -4,6 +4,7 @@ from app.services.provenance import attach_provenance, imported_snapshot
 from app.services.media_archives import MAX_IMAGE_FILE, read_json_entry, safe_entry
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -102,6 +103,14 @@ class PersonMatch:
 class MatchDecision:
     accepted: bool
     rejection_reason: str | None
+
+
+class PersonImportPartialError(Exception):
+    """人物 ZIP 导入中断。已提交批次保留，消息里写明保留条数。"""
+
+    def __init__(self, message: str, *, retained_samples: int) -> None:
+        super().__init__(message)
+        self.retained_samples = retained_samples
 
 
 class PictureService:
@@ -1776,184 +1785,282 @@ class PictureService:
         }
         return photo
 
-    def import_persons_from_zip(self, db: Session, zip_source: bytes | Path, workspace_id: int | None, progress_callback=None) -> dict:
+    def import_persons_from_zip(
+        self,
+        db: Session,
+        zip_source: bytes | Path,
+        workspace_id: int | None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        progress_due: Callable[[], bool] | None = None,
+    ) -> dict:
         logger.info("Start person import from zip source=%s", type(zip_source).__name__)
         result = {"created_persons": 0, "existing_persons": 0, "added_samples": 0, "skipped_samples": 0, "tags_added": 0}
 
         with _open_zip(zip_source) as zf:
             manifest = json.loads(zf.read("metadata.json"))
-            total_persons = len(manifest.get("persons", []))
             total_samples = sum(len(p.get("samples", [])) for p in manifest.get("persons", []))
 
             processed_samples = 0
+            # flush 之后 session.dirty 会空，不能用它判断还有没有未提交写入。
+            pending_writes = False
+            open_batch_face_ids: list[int] = []
+            committed_added_samples = 0
+            committed_person_ids: set[int] = set()
+            last_reported_samples = 0
+            person_added_ready_samples = 0
+            person_created = False
+            cleared_empty_centroid = False
+            person: Person | None = None
 
-            def report_progress() -> None:
-                # SQLite 同时只允许一个写事务。进度回写走独立会话，必须先提交当前工作单元，
-                # 否则会与导入会话互相等待直到 database is locked。
-                db.commit()
-                if progress_callback is None:
-                    return
-                try:
-                    progress_callback(processed_samples, total_samples)
-                except Exception:
-                    logger.exception(
-                        "Person import progress callback failed processed=%s total=%s",
-                        processed_samples,
-                        total_samples,
-                    )
-
-            for person_index, person_data in enumerate(manifest["persons"]):
-                person_name = person_data["name"].strip()
-                existing = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
-
-                if existing is None:
-                    person = Person(
-                        workspace_id=workspace_id,
-                        name=person_name,
-                        display_name=person_data.get("display_name", person_name),
-                        note=person_data.get("note"),
-                        is_unknown=False,
-                    )
-                    db.add(person)
+            def checkpoint_person(current: Person, *, force: bool) -> None:
+                nonlocal pending_writes, committed_added_samples, last_reported_samples, cleared_empty_centroid
+                # 未传入 progress_due 时每次都视为到期，兼容直接调用回调的测试。
+                due = True if progress_due is None else bool(progress_due())
+                if pending_writes and (force or due):
+                    # 质心在 Qdrant，不在 SQLite 事务里。必须先写完质心再提交样本。
                     db.flush()
-                    result["created_persons"] += 1
-                    logger.info("Created person from import name=%s person_id=%s", person_name, person.id)
-                else:
-                    person = existing
-                    result["existing_persons"] += 1
-                    logger.info("Matched existing person name=%s person_id=%s", person_name, person.id)
-
-                for tag_name in person_data.get("tags", []):
-                    tag = self.find_or_create_tag(db, tag_name.strip(), workspace_id)
-                    existing_link = db.scalar(
-                        select(PersonTag).where(PersonTag.person_id == person.id, PersonTag.tag_id == tag.id)
-                    )
-                    if existing_link is None:
-                        db.add(PersonTag(person_id=person.id, tag_id=tag.id))
-                        result["tags_added"] += 1
-                db.flush()
-                db.commit()
-
-                samples_dir = f"samples/{person_name}"
-                for sample_data in person_data.get("samples", []):
-                    sha256 = sample_data["sha256"]
-                    duplicate = db.scalar(
-                        select(SamplePhoto).where(SamplePhoto.workspace_id == workspace_id, SamplePhoto.sha256 == sha256)
-                    )
-                    if duplicate is not None:
-                        result["skipped_samples"] += 1
-                        processed_samples += 1
-                        report_progress()
-                        continue
-
-                    filename = sample_data["filename"]
-                    content_type = sample_data.get("content_type")
-                    zip_path = f"{samples_dir}/{filename}"
-
+                    should_recompute = person_added_ready_samples > 0 or (force and person_created)
+                    if should_recompute:
+                        self._recompute_person_centroid(db, current.id, workspace_id)
+                        if person_added_ready_samples == 0:
+                            cleared_empty_centroid = True
+                    db.commit()
+                    pending_writes = False
+                    open_batch_face_ids.clear()
+                    committed_added_samples = result["added_samples"]
+                    committed_person_ids.add(current.id)
+                elif force and person_created and person_added_ready_samples == 0 and not cleared_empty_centroid:
+                    # 新建人物没有任何 ready 样本时仍清一次质心，避免留下旧中心。
+                    self._recompute_person_centroid(db, current.id, workspace_id)
+                    cleared_empty_centroid = True
+                if progress_callback is not None and (force or due) and processed_samples != last_reported_samples:
                     try:
-                        payload = zf.read(zip_path)
-                    except KeyError:
-                        logger.warning("Sample file not found in zip path=%s", zip_path)
-                        result["skipped_samples"] += 1
-                        processed_samples += 1
-                        report_progress()
-                        continue
-
-                    width = sample_data.get("width")
-                    height = sample_data.get("height")
-                    taken_at = None
-                    if sample_data.get("taken_at"):
-                        try:
-                            taken_at = datetime.fromisoformat(sample_data["taken_at"])
-                        except (ValueError, TypeError):
-                            pass
-
-                    object_key = self._build_object_key(workspace_id, "samples", filename)
-                    self.storage.put_bytes(object_key, payload, content_type)
-                    sample_photo = SamplePhoto(
-                        workspace_id=workspace_id,
-                        person_id=person.id,
-                        filename=filename,
-                        content_type=content_type,
-                        sha256=sha256,
-                        object_key=object_key,
-                        width=width,
-                        height=height,
-                        taken_at=taken_at,
-                        status="processing",
-                    )
-                    db.add(sample_photo)
-                    db.flush()
-
-                    try:
-                        detected_faces = self.face_service.detect_faces(payload)
-                    except Exception as exc:
-                        logger.exception("Sample face detection failed person_id=%s filename=%s", person.id, filename)
-                        sample_photo.status = "error"
-                        sample_photo.error_message = str(exc)
-                        result["added_samples"] += 1
-                        processed_samples += 1
-                        report_progress()
-                        continue
-
-                    if len(detected_faces) == 0:
-                        sample_photo.status = "no_face"
-                        sample_photo.error_message = "未检测到人脸"
-                        result["added_samples"] += 1
-                        processed_samples += 1
-                        report_progress()
-                        continue
-
-                    if len(detected_faces) != 1:
-                        sample_photo.status = "multi_face"
-                        sample_photo.error_message = f"检测到 {len(detected_faces)} 张人脸，仅支持单人样本"
-                        result["added_samples"] += 1
-                        processed_samples += 1
-                        report_progress()
-                        continue
-
-                    detected = detected_faces[0]
-                    if detected.face_size < self.settings.face_sample_min_size:
-                        sample_photo.status = "low_quality"
-                        sample_photo.quality_status = "rejected"
-                        sample_photo.error_message = (
-                            f"人脸尺寸过小（{detected.face_size:.0f}px，最低 {self.settings.face_sample_min_size}px）"
+                        progress_callback(processed_samples, total_samples)
+                    except Exception:
+                        logger.exception(
+                            "Person import progress callback failed processed=%s total=%s",
+                            processed_samples,
+                            total_samples,
                         )
+                    last_reported_samples = processed_samples
+
+            def stage_sample(
+                status: str,
+                error_message: str | None = None,
+            ) -> SamplePhoto:
+                sample_photo = SamplePhoto(
+                    workspace_id=workspace_id,
+                    person_id=person.id,  # type: ignore[union-attr]
+                    filename=filename,
+                    content_type=content_type,
+                    sha256=sha256,
+                    object_key=object_key,
+                    width=width,
+                    height=height,
+                    taken_at=taken_at,
+                    status=status,
+                    error_message=error_message,
+                )
+                return sample_photo
+
+            def remember_sample(sample_photo: SamplePhoto) -> None:
+                nonlocal pending_writes
+                db.add(sample_photo)
+                db.flush()
+                pending_writes = True
+
+            for _person_index, person_data in enumerate(manifest["persons"]):
+                person_added_ready_samples = 0
+                person_created = False
+                cleared_empty_centroid = False
+                person = None
+                try:
+                    person_name = person_data["name"].strip()
+                    existing = db.scalar(
+                        select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name)
+                    )
+
+                    if existing is None:
+                        person = Person(
+                            workspace_id=workspace_id,
+                            name=person_name,
+                            display_name=person_data.get("display_name", person_name),
+                            note=person_data.get("note"),
+                            is_unknown=False,
+                        )
+                        db.add(person)
+                        db.flush()
+                        person_created = True
+                        pending_writes = True
+                        result["created_persons"] += 1
+                        logger.info("Created person from import name=%s person_id=%s", person_name, person.id)
+                    else:
+                        person = existing
+                        result["existing_persons"] += 1
+                        logger.info("Matched existing person name=%s person_id=%s", person_name, person.id)
+
+                    for tag_name in person_data.get("tags", []):
+                        tag = self.find_or_create_tag(db, tag_name.strip(), workspace_id)
+                        existing_link = db.scalar(
+                            select(PersonTag).where(PersonTag.person_id == person.id, PersonTag.tag_id == tag.id)
+                        )
+                        if existing_link is None:
+                            db.add(PersonTag(person_id=person.id, tag_id=tag.id))
+                            result["tags_added"] += 1
+                            pending_writes = True
+                    # 人物和标签并入该人物第一次检查点，不要在质心之前单独提交。
+                    db.flush()
+                    pending_writes = True
+
+                    samples_dir = f"samples/{person_name}"
+                    for sample_data in person_data.get("samples", []):
+                        sha256 = sample_data["sha256"]
+                        duplicate = db.scalar(
+                            select(SamplePhoto).where(
+                                SamplePhoto.workspace_id == workspace_id, SamplePhoto.sha256 == sha256
+                            )
+                        )
+                        if duplicate is not None:
+                            result["skipped_samples"] += 1
+                            processed_samples += 1
+                            checkpoint_person(person, force=False)
+                            continue
+
+                        filename = sample_data["filename"]
+                        content_type = sample_data.get("content_type")
+                        zip_path = f"{samples_dir}/{filename}"
+
+                        try:
+                            payload = zf.read(zip_path)
+                        except KeyError:
+                            logger.warning("Sample file not found in zip path=%s", zip_path)
+                            result["skipped_samples"] += 1
+                            processed_samples += 1
+                            checkpoint_person(person, force=False)
+                            continue
+
+                        width = sample_data.get("width")
+                        height = sample_data.get("height")
+                        taken_at = None
+                        if sample_data.get("taken_at"):
+                            try:
+                                taken_at = datetime.fromisoformat(sample_data["taken_at"])
+                            except (ValueError, TypeError):
+                                pass
+
+                        object_key = self._build_object_key(workspace_id, "samples", filename)
+                        self.storage.put_bytes(object_key, payload, content_type)
+                        # 检测前先按到期提交，避免握着写锁做慢检测。当前样本还没写入。
+                        checkpoint_person(person, force=False)
+
+                        try:
+                            detected_faces = self.face_service.detect_faces(payload)
+                        except Exception as exc:
+                            logger.exception(
+                                "Sample face detection failed person_id=%s filename=%s", person.id, filename
+                            )
+                            remember_sample(stage_sample("error", str(exc)))
+                            result["added_samples"] += 1
+                            processed_samples += 1
+                            checkpoint_person(person, force=False)
+                            continue
+
+                        if len(detected_faces) == 0:
+                            remember_sample(stage_sample("no_face", "未检测到人脸"))
+                            result["added_samples"] += 1
+                            processed_samples += 1
+                            checkpoint_person(person, force=False)
+                            continue
+
+                        if len(detected_faces) != 1:
+                            remember_sample(
+                                stage_sample("multi_face", f"检测到 {len(detected_faces)} 张人脸，仅支持单人样本")
+                            )
+                            result["added_samples"] += 1
+                            processed_samples += 1
+                            checkpoint_person(person, force=False)
+                            continue
+
+                        detected = detected_faces[0]
+                        if detected.face_size < self.settings.face_sample_min_size:
+                            low_quality = stage_sample(
+                                "low_quality",
+                                (
+                                    f"人脸尺寸过小（{detected.face_size:.0f}px，"
+                                    f"最低 {self.settings.face_sample_min_size}px）"
+                                ),
+                            )
+                            low_quality.quality_status = "rejected"
+                            remember_sample(low_quality)
+                            result["added_samples"] += 1
+                            processed_samples += 1
+                            checkpoint_person(person, force=False)
+                            continue
+
+                        sample_photo = stage_sample("ready")
+                        warnings = self._quality_warnings(detected)
+                        sample_photo.quality_warnings = (
+                            json.dumps(warnings, ensure_ascii=False) if warnings else None
+                        )
+                        sample_photo.quality_status = "warning" if warnings else "good"
+                        remember_sample(sample_photo)
+                        face = FaceRecord(
+                            workspace_id=workspace_id,
+                            sample_photo_id=sample_photo.id,
+                            matched_person_id=person.id,
+                            match_score=1.0,
+                            needs_review=False,
+                            vector_collection="known",
+                            **self._face_fields(detected),
+                        )
+                        db.add(face)
+                        db.flush()
+                        self.vector_store.upsert_face(
+                            self.settings.qdrant_known_collection,
+                            face.id,
+                            person.id,
+                            detected.embedding,
+                            workspace_id=workspace_id,
+                            sample_photo_id=sample_photo.id,
+                            embedding_version=self.settings.face_embedding_version,
+                        )
+                        open_batch_face_ids.append(face.id)
+                        pending_writes = True
+                        person_added_ready_samples += 1
                         result["added_samples"] += 1
                         processed_samples += 1
-                        report_progress()
-                        continue
-                    face = FaceRecord(
-                        workspace_id=workspace_id,
-                        sample_photo_id=sample_photo.id,
-                        matched_person_id=person.id,
-                        match_score=1.0,
-                        needs_review=False,
-                        vector_collection="known",
-                        **self._face_fields(detected),
-                    )
-                    db.add(face)
-                    db.flush()
-                    self.vector_store.upsert_face(
-                        self.settings.qdrant_known_collection,
-                        face.id,
-                        person.id,
-                        detected.embedding,
-                        workspace_id=workspace_id,
-                        sample_photo_id=sample_photo.id,
-                        embedding_version=self.settings.face_embedding_version,
-                    )
-                    sample_photo.status = "ready"
-                    warnings = self._quality_warnings(detected)
-                    sample_photo.quality_warnings = json.dumps(warnings, ensure_ascii=False) if warnings else None
-                    sample_photo.quality_status = "warning" if warnings else "good"
-                    result["added_samples"] += 1
-                    processed_samples += 1
-                    report_progress()
+                        checkpoint_person(person, force=False)
 
-                db.flush()
-                self._recompute_person_centroid(db, person.id, workspace_id)
-                db.commit()
+                    checkpoint_person(person, force=True)
+                except PersonImportPartialError:
+                    raise
+                except Exception as exc:
+                    face_ids = list(open_batch_face_ids)
+                    person_id = person.id if person is not None and person.id in committed_person_ids else None
+                    db.rollback()
+                    pending_writes = False
+                    open_batch_face_ids.clear()
+                    if face_ids:
+                        try:
+                            self.vector_store.delete_faces(self.settings.qdrant_known_collection, face_ids)
+                        except Exception:
+                            logger.exception("回滚未提交样本的人脸向量失败")
+                    if person_id is not None:
+                        try:
+                            self._recompute_person_centroid(db, person_id, workspace_id)
+                        except Exception:
+                            logger.exception("按已提交样本重算质心失败")
+                    if committed_added_samples > 0:
+                        message = (
+                            f"导入中断：已保留 {committed_added_samples} 个样本，"
+                            f"已提交批次的人物质心已更新。原因：{exc}"
+                        )
+                    else:
+                        message = f"导入中断：尚未写入样本。原因：{exc}"
+                    raise PersonImportPartialError(
+                        message,
+                        retained_samples=committed_added_samples,
+                    ) from exc
 
         logger.info(
             "Completed person import created=%d existing=%d added=%d skipped=%d tags=%d",

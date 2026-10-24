@@ -309,6 +309,15 @@ class AcquisitionAssetSummary(BaseModel):
     status_media_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
+class AcquisitionAssetWindow(BaseModel):
+    ids: list[str]
+    index: int
+    global_index: int
+    total: int
+    has_previous: bool
+    has_next: bool
+
+
 class AcquisitionImportBatchItemRead(BaseModel):
     id: int
     asset_id: str

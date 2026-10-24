@@ -43,6 +43,16 @@ def update_task(db: Session, task_id: str, **changes: object) -> Task:
     return task
 
 
+def task_progress_due(task_id: str, *, force: bool = False, status: str | None = None) -> bool:
+    """非终态进度约 1 秒才到期。未到期时调用方不应再开写事务。"""
+    terminal = status in {"completed", "failed", "canceled"}
+    if force or terminal:
+        return True
+    now = time.monotonic()
+    with _progress_lock:
+        return now - _last_progress_at.get(task_id, 0.0) >= _PROGRESS_INTERVAL_SECONDS
+
+
 def record_task_progress(
     session_factory: Callable[[], Session],
     task_id: str,
@@ -51,15 +61,17 @@ def record_task_progress(
     message: str | None = None,
     status: str | None = None,
     force: bool = False,
-) -> None:
-    """用独立短事务更新任务进度，避免把扫描自己的事务提前提交。"""
+) -> bool:
+    """用独立短事务更新任务进度，避免把扫描自己的事务提前提交。
+
+    返回是否写入成功。未到期直接返回 False，不改节流时间。
+    只有 update_task 成功才推进节流；写入失败留在原时间，便于立刻重试。
+    终态无论成败都清掉节流槽。
+    """
     terminal = status in {"completed", "failed", "canceled"}
-    now = time.monotonic()
-    if not force and not terminal:
-        with _progress_lock:
-            last = _last_progress_at.get(task_id, 0.0)
-            if now - last < _PROGRESS_INTERVAL_SECONDS:
-                return
+    if not task_progress_due(task_id, force=force, status=status):
+        return False
+    wrote = False
     try:
         db = session_factory()
         try:
@@ -72,6 +84,7 @@ def record_task_progress(
                 changes["status"] = status
             if changes:
                 update_task(db, task_id, **changes)
+                wrote = True
         finally:
             db.close()
     except Exception:
@@ -79,8 +92,9 @@ def record_task_progress(
     with _progress_lock:
         if terminal:
             _last_progress_at.pop(task_id, None)
-        else:
+        elif wrote:
             _last_progress_at[task_id] = time.monotonic()
+    return wrote
 
 
 def fail_incomplete_tasks(

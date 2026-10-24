@@ -21,7 +21,8 @@ from app.services.similarity import (
     select_normal_near_duplicate_auto_delete_photo_ids,
 )
 from app.services.import_spool import cleanup_import
-from app.services.tasks import record_task_progress, update_task
+from app.services.importer import PersonImportPartialError
+from app.services.tasks import record_task_progress, task_progress_due, update_task
 
 
 def _upload_bytes(payload: bytes | Path) -> bytes:
@@ -288,7 +289,13 @@ def process_person_import_task(
             except Exception:
                 logger.exception("Person import progress update failed task_id=%s", task_id)
 
-        result = picture_service.import_persons_from_zip(db, zip_source, workspace_id, progress_callback)
+        result = picture_service.import_persons_from_zip(
+            db,
+            zip_source,
+            workspace_id,
+            progress_callback,
+            progress_due=lambda: task_progress_due(task_id),
+        )
         message = (
             f"导入完成：创建 {result['created_persons']} 个人物，"
             f"匹配 {result['existing_persons']} 个已有，"
@@ -298,6 +305,14 @@ def process_person_import_task(
         )
         update_task(db, task_id, status="completed", progress=1.0, message=message)
         logger.info("Person import task completed task_id=%s %s", task_id, message)
+    except PersonImportPartialError as exc:
+        # 消息里已经写明保留条数，不要再包一层把文案丢掉。
+        logger.exception("Person import task failed task_id=%s", task_id)
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Failed to rollback task session task_id=%s", task_id)
+        _mark_task_failed(session_factory, task_id, exc)
     except Exception as exc:
         logger.exception("Person import task failed task_id=%s", task_id)
         try:

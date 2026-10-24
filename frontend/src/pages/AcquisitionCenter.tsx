@@ -17,6 +17,7 @@ import {
   listTelegramDialogs,
   listTelegramTopics,
   scanTelegramForumTopics,
+  getAcquisitionAssetWindow,
   listAcquisitionAssetIds,
   listAcquisitionAssets,
   listAcquisitionCategories,
@@ -45,7 +46,7 @@ import {
   acquisitionAssetPageSize,
   clampAcquisitionOffset,
   createAcquisitionStatusReset,
-  getAcquisitionAssetPageOffset,
+  pageOffsetFromGlobalIndex,
   getAcquisitionPageFill,
   getAcquisitionPreviewUrl,
   handleAcquisitionLightboxShortcut,
@@ -53,6 +54,8 @@ import {
   getNextAcquisitionSnapshotIndex,
   hasSelectedAllAcquisitionAssets,
   isAcquisitionImportBatchActive,
+  isAcquisitionImportPollAbortError,
+  shouldImmediateImportPollRetry,
   isAcquisitionPageFillValid,
   isAcquisitionPageSelected,
   removeAcquisitionSelection,
@@ -189,8 +192,13 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const [assetJumpPage, setAssetJumpPage] = useState("");
   const [assetLoading, setAssetLoading] = useState(false);
   const [lightboxSelection, setLightboxSelection] = useState<{ asset: AcquisitionAsset; globalIndex: number } | null>(null);
-  const [lightboxSnapshotIds, setLightboxSnapshotIds] = useState<string[]>([]);
-  const [lightboxSnapshotIndex, setLightboxSnapshotIndex] = useState(-1);
+  const [lightboxWindowIds, setLightboxWindowIds] = useState<string[]>([]);
+  const [lightboxWindowIndex, setLightboxWindowIndex] = useState(-1);
+  const [lightboxGlobalIndexState, setLightboxGlobalIndexState] = useState(0);
+  const [lightboxTotal, setLightboxTotal] = useState(0);
+  const [lightboxHasPrevious, setLightboxHasPrevious] = useState(false);
+  const [lightboxHasNext, setLightboxHasNext] = useState(false);
+  const [lightboxWindowLoading, setLightboxWindowLoading] = useState(false);
   const [lightboxNavigationBusy, setLightboxNavigationBusy] = useState(false);
   const [assetSummary, setAssetSummary] = useState<AcquisitionAssetSummary>({ total: 0, status_counts: {} });
   const [importBatches, setImportBatches] = useState<AcquisitionImportBatch[]>([]);
@@ -205,6 +213,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const [expandedImportAssetId, setExpandedImportAssetId] = useState<string | null>(null);
   const [importHistoryLoading, setImportHistoryLoading] = useState(false);
   const importBatchPollPendingRef = useRef(false);
+  const importBatchPollGenerationRef = useRef(0);
+  const importBatchPollControllerRef = useRef<AbortController | null>(null);
   const [exports, setExports] = useState<AcquisitionExport[]>([]);
   const [reviewMode, setReviewMode] = useState<"list" | "similarity">("list");
   const [similarityScanType, setSimilarityScanType] = useState<"normal" | "mirror">("normal");
@@ -313,9 +323,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const reviewPageAssetIds = assets.map((asset) => asset.id);
   const areCurrentReviewPageSelected = isAcquisitionPageSelected(selectedAssets, reviewPageAssetIds);
   const lightboxAsset = lightboxSelection?.asset ?? null;
-  const lightboxGlobalIndex = lightboxSnapshotIndex;
-  const canGoToPreviousAsset = lightboxSnapshotIndex > 0;
-  const canGoToNextAsset = lightboxSnapshotIndex >= 0 && lightboxSnapshotIndex + 1 < lightboxSnapshotIds.length;
+  const lightboxGlobalIndex = lightboxGlobalIndexState;
+  const canGoToPreviousAsset = lightboxHasPrevious || lightboxWindowIndex > 0;
+  const canGoToNextAsset = lightboxHasNext || (lightboxWindowIndex >= 0 && lightboxWindowIndex + 1 < lightboxWindowIds.length);
   const importBatchPagination = getAcquisitionPagination(importBatchesTotal, importBatchOffset, importBatches.length, importBatchPageSize);
   const importBatchItemPagination = getAcquisitionPagination(importBatchItemsTotal, importBatchItemOffset, importBatchItems.length, importBatchItemPageSize);
   const similarityPagination = getAcquisitionPagination(similarity.total, similarity.offset, similarity.groups.length, similarityGroupPageSize);
@@ -385,13 +395,15 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     }
   }, []);
 
-  const loadImportBatchPage = useCallback(async (requestedOffset: number) => {
+  const loadImportBatchPage = useCallback(async (requestedOffset: number, signal?: AbortSignal) => {
     setImportHistoryLoading(true);
     try {
-      let page = await listAcquisitionImportBatches(Math.max(0, requestedOffset), importBatchPageSize, batchDateFrom, batchDateTo);
+      let page = await listAcquisitionImportBatches(Math.max(0, requestedOffset), importBatchPageSize, batchDateFrom, batchDateTo, signal);
+      if (signal?.aborted) return;
       const validOffset = clampAcquisitionOffset(page.total, requestedOffset, importBatchPageSize);
       if (validOffset !== page.offset) {
-        page = await listAcquisitionImportBatches(validOffset, importBatchPageSize, batchDateFrom, batchDateTo);
+        page = await listAcquisitionImportBatches(validOffset, importBatchPageSize, batchDateFrom, batchDateTo, signal);
+        if (signal?.aborted) return;
       }
       setImportBatches(page.items);
       setImportBatchesTotal(page.total);
@@ -407,13 +419,15 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     }
   }, [batchDateFrom, batchDateTo]);
 
-  const loadImportBatchItemPage = useCallback(async (batchId: string, requestedOffset: number) => {
+  const loadImportBatchItemPage = useCallback(async (batchId: string, requestedOffset: number, signal?: AbortSignal) => {
     setImportHistoryLoading(true);
     try {
-      let page = await listAcquisitionImportBatchItems(batchId, importBatchItemStatus, Math.max(0, requestedOffset), importBatchItemPageSize, batchDateFrom, batchDateTo);
+      let page = await listAcquisitionImportBatchItems(batchId, importBatchItemStatus, Math.max(0, requestedOffset), importBatchItemPageSize, batchDateFrom, batchDateTo, signal);
+      if (signal?.aborted) return;
       const validOffset = clampAcquisitionOffset(page.total, requestedOffset, importBatchItemPageSize);
       if (validOffset !== page.offset) {
-        page = await listAcquisitionImportBatchItems(batchId, importBatchItemStatus, validOffset, importBatchItemPageSize, batchDateFrom, batchDateTo);
+        page = await listAcquisitionImportBatchItems(batchId, importBatchItemStatus, validOffset, importBatchItemPageSize, batchDateFrom, batchDateTo, signal);
+        if (signal?.aborted) return;
       }
       setImportBatchItems(page.items);
       setImportBatchItemsTotal(page.total);
@@ -667,22 +681,62 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
 
   useEffect(() => {
     if (!importBatches.some((batch) => isAcquisitionImportBatchActive(batch.status))) return;
-    const timer = window.setInterval(() => {
+    const generation = importBatchPollGenerationRef.current + 1;
+    importBatchPollGenerationRef.current = generation;
+    let stopped = false;
+    const timeoutMs = 10_000;
+    const intervalMs = 2000;
+
+    const poll = () => {
+      if (stopped || importBatchPollGenerationRef.current !== generation) return;
       if (importBatchPollPendingRef.current) return;
       importBatchPollPendingRef.current = true;
+      const started = performance.now();
+      const controller = new AbortController();
+      importBatchPollControllerRef.current = controller;
+      const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
       const requests: Promise<unknown>[] = [
-        loadImportBatchPage(importBatchOffset),
-        getAcquisitionAssetSummary().then((summary) => setAssetSummary(summary))
+        loadImportBatchPage(importBatchOffset, controller.signal),
+        getAcquisitionAssetSummary(controller.signal).then((summary) => {
+          if (!controller.signal.aborted && importBatchPollGenerationRef.current === generation) {
+            setAssetSummary(summary);
+          }
+        })
       ];
       if (tab === "history" && selectedImportBatchId) {
-        requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset));
+        requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset, controller.signal));
       }
       void Promise.allSettled(requests).then((results) => {
-        const failed = results.find((result) => result.status === "rejected");
-        if (failed?.status === "rejected") setNotice(failed.reason instanceof Error ? failed.reason.message : "入库进度刷新失败");
-      }).finally(() => { importBatchPollPendingRef.current = false; });
-    }, 2000);
-    return () => window.clearInterval(timer);
+        if (stopped || importBatchPollGenerationRef.current !== generation || controller.signal.aborted) return;
+        const failed = results.find((result) => (
+          result.status === "rejected" && !isAcquisitionImportPollAbortError(result.reason)
+        ));
+        if (failed?.status === "rejected") {
+          setNotice(failed.reason instanceof Error ? failed.reason.message : "入库进度刷新失败");
+        }
+      }).finally(() => {
+        window.clearTimeout(timeoutId);
+        if (importBatchPollControllerRef.current === controller) {
+          importBatchPollControllerRef.current = null;
+        }
+        if (importBatchPollGenerationRef.current !== generation) return;
+        importBatchPollPendingRef.current = false;
+        if (stopped) return;
+        if (shouldImmediateImportPollRetry(performance.now() - started, intervalMs)) {
+          void poll();
+        }
+      });
+    };
+
+    const timer = window.setInterval(() => { void poll(); }, intervalMs);
+    return () => {
+      stopped = true;
+      importBatchPollGenerationRef.current += 1;
+      window.clearInterval(timer);
+      importBatchPollControllerRef.current?.abort();
+      importBatchPollControllerRef.current = null;
+      importBatchPollPendingRef.current = false;
+    };
   }, [importBatchItemOffset, importBatchOffset, importBatches, loadImportBatchItemPage, loadImportBatchPage, selectedImportBatchId, tab]);
 
   useEffect(() => {
@@ -1206,12 +1260,35 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     if (!filter && assets.some((asset) => asset.id === assetId)) return;
     const status = filter?.status ?? assetStatus;
     const pageMediaFilter = filter?.mediaType ?? mediaFilter;
-    // 灯箱快照只含可预览项，列表页的位置必须按完整列表的当前顺序计算。
-    const ids = await listAcquisitionAssetIds(status, false, pageMediaFilter === "all" ? undefined : pageMediaFilter);
+    // 列表页位置按完整筛选（含不可预览）的 global_index 计算，与灯箱 previewable 窗口分开。
+    const window = await getAcquisitionAssetWindow(assetId, {
+      status,
+      previewable: false,
+      before: 0,
+      after: 0,
+      mediaType: pageMediaFilter === "all" ? undefined : pageMediaFilter
+    });
     if (lightboxSnapshotRequestIdRef.current !== expectedGeneration) return;
-    const offset = getAcquisitionAssetPageOffset(ids, assetId);
-    if (offset === null) throw new Error("当前素材已不在审核列表中");
+    const offset = pageOffsetFromGlobalIndex(window.global_index);
     await loadAssetPage(status, offset, false, pageMediaFilter);
+  }
+
+  function applyLightboxWindow(
+    window: {
+      ids: string[];
+      index: number;
+      global_index: number;
+      total: number;
+      has_previous: boolean;
+      has_next: boolean;
+    }
+  ) {
+    setLightboxWindowIds(window.ids);
+    setLightboxWindowIndex(window.index);
+    setLightboxGlobalIndexState(window.global_index);
+    setLightboxTotal(window.total);
+    setLightboxHasPrevious(window.has_previous);
+    setLightboxHasNext(window.has_next);
   }
 
   function showLightboxAsset(asset: AcquisitionAsset, filter?: { status: string; mediaType: "image" | "video" }) {
@@ -1220,24 +1297,37 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     lightboxAssetCacheRef.current.set(asset.id, asset);
     unavailableLightboxAssetIdsRef.current.clear();
     setLightboxSelection({ asset, globalIndex: 0 });
-    setLightboxSnapshotIds([asset.id]);
-    setLightboxSnapshotIndex(0);
-    setLightboxNavigationBusy(true);
-    void listAcquisitionAssetIds(filter?.status ?? assetStatus, true, filter?.mediaType ?? (mediaFilter === "all" ? undefined : mediaFilter)).then(async (ids) => {
+    setLightboxWindowIds([asset.id]);
+    setLightboxWindowIndex(0);
+    setLightboxGlobalIndexState(0);
+    setLightboxTotal(0);
+    setLightboxHasPrevious(false);
+    setLightboxHasNext(false);
+    setLightboxWindowLoading(true);
+    const status = filter?.status ?? assetStatus;
+    const mediaType = filter?.mediaType ?? (mediaFilter === "all" ? undefined : mediaFilter);
+    void getAcquisitionAssetWindow(asset.id, {
+      status,
+      previewable: true,
+      before: 60,
+      after: 60,
+      mediaType
+    }).then(async (window) => {
       if (requestId !== lightboxSnapshotRequestIdRef.current) return;
-      const currentIndex = ids.indexOf(asset.id);
-      if (currentIndex < 0) {
+      applyLightboxWindow(window);
+      setLightboxSelection({ asset, globalIndex: window.global_index });
+      await syncReviewPageToLightboxAsset(asset.id, requestId, filter);
+    }).catch((error: Error) => {
+      if (requestId !== lightboxSnapshotRequestIdRef.current) return;
+      const message = error.message || "";
+      if (message.includes("不在当前筛选") || message.includes("不存在") || message.includes("不在待审核") || message.includes("不在审核")) {
         setLightboxSelection(null);
         setNotice("当前素材已不在待审核列表中");
         return;
       }
-      setLightboxSnapshotIds(ids);
-      setLightboxSnapshotIndex(currentIndex);
-      await syncReviewPageToLightboxAsset(asset.id, requestId, filter);
-    }).catch((error: Error) => {
-      if (requestId === lightboxSnapshotRequestIdRef.current) setNotice(error.message);
+      setNotice(message);
     }).finally(() => {
-      if (requestId === lightboxSnapshotRequestIdRef.current) setLightboxNavigationBusy(false);
+      if (requestId === lightboxSnapshotRequestIdRef.current) setLightboxWindowLoading(false);
     });
   }
 
@@ -1316,20 +1406,28 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     void goToAssetOffset((pageNumber - 1) * acquisitionAssetPageSize);
   }
 
-  async function selectLightboxSnapshotAsset(
-    snapshotIds: string[],
+  async function selectLightboxWindowAsset(
+    windowIds: string[],
     index: number,
+    windowStartGlobal: number,
+    total: number,
     expectedGeneration = lightboxSnapshotRequestIdRef.current
   ): Promise<boolean> {
-    const assetId = snapshotIds[index];
+    const assetId = windowIds[index];
     if (!assetId || unavailableLightboxAssetIdsRef.current.has(assetId)) return false;
     try {
       const asset = lightboxAssetCacheRef.current.get(assetId) ?? await getAcquisitionAsset(assetId);
       if (!asset.original_url) throw new Error("该素材已不可预览");
       if (lightboxSnapshotRequestIdRef.current !== expectedGeneration) return false;
       lightboxAssetCacheRef.current.set(asset.id, asset);
-      setLightboxSelection({ asset, globalIndex: index });
-      setLightboxSnapshotIndex(index);
+      const globalIndex = windowStartGlobal + index;
+      setLightboxSelection({ asset, globalIndex });
+      setLightboxWindowIds(windowIds);
+      setLightboxWindowIndex(index);
+      setLightboxGlobalIndexState(globalIndex);
+      setLightboxTotal(total);
+      setLightboxHasPrevious(globalIndex > 0);
+      setLightboxHasNext(globalIndex + 1 < total);
       try {
         await syncReviewPageToLightboxAsset(asset.id, expectedGeneration);
       } catch (error) {
@@ -1347,31 +1445,79 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   }
 
   async function navigateLightbox(direction: -1 | 1) {
-    if (lightboxNavigationBusy) return;
+    if (lightboxNavigationBusy || lightboxWindowLoading) return;
     const generation = lightboxSnapshotRequestIdRef.current;
     setLightboxNavigationBusy(true);
     try {
-      let index = getNextAcquisitionSnapshotIndex(
-        lightboxSnapshotIds,
-        lightboxSnapshotIndex,
-        direction,
-        unavailableLightboxAssetIdsRef.current
-      );
-      while (index >= 0 && lightboxSnapshotRequestIdRef.current === generation) {
-        if (await selectLightboxSnapshotAsset(lightboxSnapshotIds, index, generation)) return;
-        index = getNextAcquisitionSnapshotIndex(
-          lightboxSnapshotIds,
+      let ids = lightboxWindowIds;
+      let index = lightboxWindowIndex;
+      let hasPrevious = lightboxHasPrevious;
+      let hasNext = lightboxHasNext;
+      let globalIndex = lightboxGlobalIndexState;
+      let total = lightboxTotal;
+      const status = assetStatus;
+      const mediaType = mediaFilter === "all" ? undefined : mediaFilter;
+
+      while (lightboxSnapshotRequestIdRef.current === generation) {
+        const nextIndex = getNextAcquisitionSnapshotIndex(
+          ids,
           index,
           direction,
           unavailableLightboxAssetIdsRef.current
         );
+        if (nextIndex >= 0) {
+          const windowStartGlobal = globalIndex - index;
+          if (await selectLightboxWindowAsset(ids, nextIndex, windowStartGlobal, total, generation)) return;
+          index = nextIndex;
+          continue;
+        }
+
+        const needMore = direction === 1 ? hasNext : hasPrevious;
+        if (!needMore || ids.length === 0) return;
+
+        const edgeId = ids[direction === 1 ? ids.length - 1 : 0];
+        let window;
+        try {
+          window = await getAcquisitionAssetWindow(edgeId, {
+            status,
+            previewable: true,
+            before: 60,
+            after: 60,
+            mediaType
+          });
+        } catch (error) {
+          if (lightboxSnapshotRequestIdRef.current !== generation) return;
+          const message = error instanceof Error ? error.message : "素材窗口加载失败";
+          if (message.includes("不在当前筛选") || message.includes("不存在")) {
+            setLightboxSelection(null);
+            setNotice("当前素材已不在待审核列表中");
+            return;
+          }
+          setNotice(message);
+          return;
+        }
+        if (lightboxSnapshotRequestIdRef.current !== generation) return;
+        applyLightboxWindow(window);
+        ids = window.ids;
+        index = window.index;
+        hasPrevious = window.has_previous;
+        hasNext = window.has_next;
+        globalIndex = window.global_index;
+        total = window.total;
+        const progressed = getNextAcquisitionSnapshotIndex(
+          ids,
+          index,
+          direction,
+          unavailableLightboxAssetIdsRef.current
+        );
+        if (progressed < 0) return;
       }
     } finally {
       if (lightboxSnapshotRequestIdRef.current === generation) setLightboxNavigationBusy(false);
     }
   }
 
-  async function rejectLightboxAsset(beforeReject: () => void): Promise<boolean> {
+  async function rejectLightboxAsset(beforeReject: () => void | Promise<void>): Promise<boolean> {
     if (!lightboxAsset || !canDelete || lightboxRejectPendingRef.current) return false;
     let rejected = false;
     try {
@@ -1385,14 +1531,18 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       if (!confirmed || lightboxRejectPendingRef.current) return false;
 
       const rejectedId = lightboxAsset.id;
-      const rejectedSnapshotIndex = lightboxSnapshotIndex;
+      const rejectedWindowIndex = lightboxWindowIndex;
+      const rejectedGlobalIndex = lightboxGlobalIndexState;
+      const rejectedTotal = lightboxTotal;
+      const rejectedHasNext = lightboxHasNext;
+      const rejectedHasPrevious = lightboxHasPrevious;
       const remainingAssets = assets.filter((asset) => asset.id !== rejectedId);
       const remainingTotal = Math.max(0, assetsTotal - 1);
       const closeGeneration = lightboxSnapshotRequestIdRef.current;
       lightboxRejectPendingRef.current = true;
       setAssetActionBusy(true);
       setNotice(null);
-      beforeReject();
+      await beforeReject();
       await changeAcquisitionAssets("reject", [rejectedId]);
       rejected = true;
       setSelectedAssets((current) => removeAcquisitionSelection(current, [rejectedId]));
@@ -1406,12 +1556,47 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       const fillPage = reconcileAssetPageAfterRemoval(remainingAssets, remainingTotal);
       fillPage.catch(() => undefined);
       if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return true;
-      const nextSnapshotIds = lightboxSnapshotIds.filter((assetId) => assetId !== rejectedId);
+      const nextWindowIds = lightboxWindowIds.filter((assetId) => assetId !== rejectedId);
       lightboxAssetCacheRef.current.delete(rejectedId);
       unavailableLightboxAssetIdsRef.current.delete(rejectedId);
-      setLightboxSnapshotIds(nextSnapshotIds);
-      const nextIndex = Math.min(rejectedSnapshotIndex, nextSnapshotIds.length - 1);
-      const opened = nextIndex >= 0 && (await selectLightboxSnapshotAsset(nextSnapshotIds, nextIndex, closeGeneration));
+      const nextTotal = Math.max(0, rejectedTotal - 1);
+      let nextIndex = Math.min(rejectedWindowIndex, nextWindowIds.length - 1);
+      let nextGlobal = rejectedGlobalIndex;
+      if (nextIndex >= 0 && nextIndex < rejectedWindowIndex) {
+        // 丢弃的是窗口末尾，退到上一项
+        nextGlobal = Math.max(0, rejectedGlobalIndex - 1);
+      }
+      // 丢弃当前项后，原下一项滑到同一 global 位置
+      setLightboxWindowIds(nextWindowIds);
+      setLightboxTotal(nextTotal);
+      setLightboxHasPrevious(nextGlobal > 0);
+      setLightboxHasNext(nextGlobal + 1 < nextTotal);
+
+      let opened = false;
+      if (nextIndex >= 0) {
+        const windowStartGlobal = nextGlobal - nextIndex;
+        opened = await selectLightboxWindowAsset(nextWindowIds, nextIndex, windowStartGlobal, nextTotal, closeGeneration);
+      } else if (rejectedHasNext || rejectedHasPrevious) {
+        // 窗口被删空但仍有全局邻居：以列表补位页里相邻素材重新开窗（不回拉全表）
+        const neighbor = remainingAssets.find((asset) => asset.id !== rejectedId && asset.original_url);
+        if (neighbor) {
+          try {
+            const window = await getAcquisitionAssetWindow(neighbor.id, {
+              status: assetStatus,
+              previewable: true,
+              before: 60,
+              after: 60,
+              mediaType: mediaFilter === "all" ? undefined : mediaFilter
+            });
+            if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return true;
+            applyLightboxWindow(window);
+            lightboxAssetCacheRef.current.set(neighbor.id, neighbor);
+            opened = await selectLightboxWindowAsset(window.ids, window.index, window.global_index - window.index, window.total, closeGeneration);
+          } catch {
+            opened = false;
+          }
+        }
+      }
       if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return true;
       if (!opened) setLightboxSelection(null);
       try {
@@ -1457,8 +1642,13 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   function closeReviewLightbox() {
     lightboxSnapshotRequestIdRef.current += 1;
     setLightboxSelection(null);
-    setLightboxSnapshotIds([]);
-    setLightboxSnapshotIndex(-1);
+    setLightboxWindowIds([]);
+    setLightboxWindowIndex(-1);
+    setLightboxGlobalIndexState(0);
+    setLightboxTotal(0);
+    setLightboxHasPrevious(false);
+    setLightboxHasNext(false);
+    setLightboxWindowLoading(false);
     setLightboxNavigationBusy(false);
     lightboxAssetCacheRef.current.clear();
     unavailableLightboxAssetIdsRef.current.clear();
@@ -1979,13 +2169,13 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     {lightboxAsset?.original_url && <AcquisitionReviewLightbox
       asset={lightboxAsset}
       statusLabel={statusLabel(assetStatus)}
-      indexLabel={`${lightboxGlobalIndex + 1} / ${lightboxSnapshotIds.length}`}
+      indexLabel={lightboxTotal > 0 ? `${lightboxGlobalIndex + 1} / ${lightboxTotal}` : "加载位置…"}
       selected={selectedAssets.includes(lightboxAsset.id)}
       canDelete={canDelete}
       canCapture={canAdd && assetStatus === "pending_review"}
       onCaptured={handleFrameCaptured}
       onViewCapture={viewCapturedAsset}
-      busy={assetActionBusy || lightboxNavigationBusy}
+      busy={assetActionBusy}
       canGoPrevious={canGoToPreviousAsset}
       canGoNext={canGoToNextAsset}
       onClose={closeReviewLightbox}

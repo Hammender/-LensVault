@@ -6,7 +6,7 @@ import { formatVideoTime, parseVideoTime, toggleAcquisitionVideoPlayback } from 
 import { useAcquisitionFrames } from "../lib/useAcquisitionFrames";
 import { getAcquisitionCaptureNotice } from "../lib/acquisitionReview";
 import { getAcquisitionReviewShortcuts, handleAcquisitionReviewKeyDown } from "../lib/acquisitionReviewKeyboard";
-import { releaseHtmlVideo } from "../lib/htmlVideo";
+import { htmlVideoHasAddress, releaseHtmlVideo, waitForHtmlVideoRelease } from "../lib/htmlVideo";
 import PhotoLightbox from "./PhotoLightbox";
 import type { AcquisitionAsset, AcquisitionCaptureResult } from "../types";
 import { formatBytes, formatDate, formatDurationSeconds } from "../lib/utils";
@@ -31,7 +31,7 @@ type AcquisitionReviewLightboxProps = {
   onPrevious: () => void | Promise<void>;
   onNext: () => void | Promise<void>;
   onToggleSelect: () => void;
-  onReject: (beforeReject: () => void) => Promise<boolean>;
+  onReject: (beforeReject: () => void | Promise<void>) => Promise<boolean>;
 };
 
 export default function AcquisitionReviewLightbox({
@@ -92,6 +92,16 @@ export default function AcquisitionReviewLightbox({
   const [indicatorText, setIndicatorText] = useState<string | null>(null);
   const indicatorTimerRef = useRef<number | null>(null);
   const hideControlsTimerRef = useRef<number | null>(null);
+  const suppressEmptyErrorRef = useRef(false);
+  const restoreListenerRef = useRef<{ video: HTMLVideoElement; onReady: () => void } | null>(null);
+  const ignoreClickRef = useRef(false);
+
+  function clearRestoreListener() {
+    const current = restoreListenerRef.current;
+    if (!current) return;
+    current.video.removeEventListener("loadedmetadata", current.onReady);
+    restoreListenerRef.current = null;
+  }
 
   const showIndicator = useCallback((text: string) => {
     setIndicatorText(text);
@@ -108,6 +118,8 @@ export default function AcquisitionReviewLightbox({
   }, []);
 
   useEffect(() => {
+    clearRestoreListener();
+    suppressEmptyErrorRef.current = false;
     setMediaReady(false);
     setBuffering(true);
     setMediaError(null);
@@ -122,6 +134,7 @@ export default function AcquisitionReviewLightbox({
     setIsPlaying(false);
     dragRef.current = null;
     frameDraggedRef.current = false;
+    ignoreClickRef.current = false;
     resumeAfterSeek.current = false;
     setDraggingProgress(false);
     setShowControls(true);
@@ -149,6 +162,8 @@ export default function AcquisitionReviewLightbox({
   useEffect(() => {
     const video = videoRef.current;
     if (!isVideo || !video) return undefined;
+    // StrictMode 会先 release 再重跑。src 还在时不能把 suppress 留成 true，否则真实播放错误被丢掉。
+    if (video.getAttribute("src")) suppressEmptyErrorRef.current = false;
     let cancelled = false;
     let started = false;
     const tryPlay = () => {
@@ -172,6 +187,7 @@ export default function AcquisitionReviewLightbox({
       cancelled = true;
       video.removeEventListener("loadeddata", tryPlay);
       if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+      clearRestoreListener();
       releaseHtmlVideo(video);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -222,12 +238,25 @@ export default function AcquisitionReviewLightbox({
     const pausedAt = video?.currentTime ?? 0;
     video?.pause();
     setIsPlaying(false);
-    void onReject(() => releaseHtmlVideo(video)).then((rejected) => {
+    // 确认后才释放。取消确认不进入该回调，地址保持不变。
+    void onReject(async () => {
+      clearRestoreListener();
+      suppressEmptyErrorRef.current = true;
+      releaseHtmlVideo(video);
+      await waitForHtmlVideoRelease(video);
+    }).then((rejected) => {
       if (rejected || !video || videoRef.current !== video || video.getAttribute("src") || !asset.original_url) return;
-      // 删除失败时仍可继续查看；取消确认时原来的 src 未被清除。
-      video.addEventListener("loadedmetadata", () => {
+      // 丢弃失败：清掉空 load 留下的失败态，并把暂停位置尽量恢复到确认前。
+      setMediaError(null);
+      setBuffering(true);
+      setMediaReady(false);
+      const onReady = () => {
+        restoreListenerRef.current = null;
+        suppressEmptyErrorRef.current = false;
         video.currentTime = Number.isFinite(video.duration) ? Math.min(pausedAt, video.duration) : pausedAt;
-      }, { once: true });
+      };
+      video.addEventListener("loadedmetadata", onReady);
+      restoreListenerRef.current = { video, onReady };
       video.src = acquisitionDownloadUrl(asset.original_url);
       video.load();
     });
@@ -293,7 +322,13 @@ export default function AcquisitionReviewLightbox({
     <div
       ref={playerRef}
       className={`acquisition-review-player${showControls || !isPlaying ? " show-controls" : ""}`}
-      onClick={togglePlay}
+      onClick={() => {
+        if (ignoreClickRef.current) {
+          ignoreClickRef.current = false;
+          return;
+        }
+        togglePlay();
+      }}
       onMouseMove={revealControls}
       onMouseLeave={() => {
         if (isPlaying) setShowControls(false);
@@ -304,10 +339,22 @@ export default function AcquisitionReviewLightbox({
         ref={videoRef}
         src={acquisitionDownloadUrl(asset.original_url)}
         poster={asset.preview_url ?? undefined}
-        onLoadedData={() => { setMediaReady(true); setBuffering(false); }}
+        onLoadedData={() => { setMediaReady(true); setBuffering(false); suppressEmptyErrorRef.current = false; }}
         onWaiting={() => setBuffering(true)}
         onCanPlay={() => setBuffering(false)}
-        onError={() => { setMediaError("视频播放失败，请重试；若仍无法播放，请检查视频格式。"); setBuffering(false); setMediaReady(false); setIsPlaying(false); }}
+        onError={(event) => {
+          const target = event.currentTarget;
+          // 换素材后旧元素的 error 仍可能迟到；空 load 的 error 也可能晚于 src 写回。
+          if (target !== videoRef.current) return;
+          const emptySource = !target.getAttribute("src")
+            || target.networkState === HTMLMediaElement.NETWORK_EMPTY
+            || target.networkState === HTMLMediaElement.NETWORK_NO_SOURCE;
+          if (!htmlVideoHasAddress(target) || (suppressEmptyErrorRef.current && emptySource)) return;
+          setMediaError("视频播放失败，请重试；若仍无法播放，请检查视频格式。");
+          setBuffering(false);
+          setMediaReady(false);
+          setIsPlaying(false);
+        }}
         onSeeking={() => setSeeking(true)}
         onSeeked={() => setSeeking(false)}
         onProgress={() => {
@@ -370,7 +417,7 @@ export default function AcquisitionReviewLightbox({
         {!isPlaying && mediaReady && <span>{decoded ? `精细选帧 · 第 ${decoded.frame.frame_index + 1} 帧` : "已暂停"}</span>}
         {indicatorText && <span>{indicatorText}</span>}
       </div>
-      <div className="acquisition-review-controls" onClick={(event) => event.stopPropagation()}>
+      <div className="acquisition-review-controls" onClick={(event) => { ignoreClickRef.current = false; event.stopPropagation(); }}>
         <div className="acquisition-review-progress-wrap">
           <div className="acquisition-review-progress-buffer" style={{ width: `${duration > 0 ? Math.min(100, bufferedTime / duration * 100) : 0}%` }} />
           <input
@@ -379,9 +426,11 @@ export default function AcquisitionReviewLightbox({
             aria-label="视频播放进度" aria-valuetext={formatVideoTime(displayedTime, true)}
             title={formatVideoTime(displayedTime, true)}
             disabled={!mediaReady || locating || saving || busy || Boolean(mediaError) || duration <= 0}
-            style={{ background: `linear-gradient(to right, #9fe0d8 ${progressRatio * 100}%, transparent ${progressRatio * 100}%)` }}
+            style={{ ["--acquisition-progress" as string]: `${progressRatio * 100}%` }}
             onPointerDown={(event) => {
               if (frameDisabled) return;
+              // 只吞掉这次拖动随后的 click。条内松手的 click 由控制条自己消化，不能留给下一次画面点击。
+              ignoreClickRef.current = true;
               resumeAfterSeek.current = Boolean(videoRef.current && !videoRef.current.paused);
               videoRef.current?.pause();
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -393,8 +442,13 @@ export default function AcquisitionReviewLightbox({
               setDraggingProgress(false);
               if (resumeAfterSeek.current) void videoRef.current?.play().catch(() => {});
               resumeAfterSeek.current = false;
+              window.setTimeout(() => { ignoreClickRef.current = false; }, 0);
             }}
-            onPointerCancel={() => { setDraggingProgress(false); resumeAfterSeek.current = false; }}
+            onPointerCancel={() => {
+              setDraggingProgress(false);
+              resumeAfterSeek.current = false;
+              ignoreClickRef.current = false;
+            }}
             onChange={(event) => seekTo(Number(event.target.value))}
           />
         </div>

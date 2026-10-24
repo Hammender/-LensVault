@@ -190,6 +190,15 @@ export type AcquisitionAssetSummary = {
   status_media_counts?: Record<string, Record<string, number>>;
 };
 
+export type AcquisitionAssetWindow = {
+  ids: string[];
+  index: number;
+  global_index: number;
+  total: number;
+  has_previous: boolean;
+  has_next: boolean;
+};
+
 export type AcquisitionImportBatchItem = {
   id: number;
   asset_id: string;
