@@ -204,6 +204,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   const [importBatchItemStatus, setImportBatchItemStatus] = useState("all");
   const [expandedImportAssetId, setExpandedImportAssetId] = useState<string | null>(null);
   const [importHistoryLoading, setImportHistoryLoading] = useState(false);
+  const importBatchPollPendingRef = useRef(false);
   const [exports, setExports] = useState<AcquisitionExport[]>([]);
   const [reviewMode, setReviewMode] = useState<"list" | "similarity">("list");
   const [similarityScanType, setSimilarityScanType] = useState<"normal" | "mirror">("normal");
@@ -667,6 +668,8 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
   useEffect(() => {
     if (!importBatches.some((batch) => isAcquisitionImportBatchActive(batch.status))) return;
     const timer = window.setInterval(() => {
+      if (importBatchPollPendingRef.current) return;
+      importBatchPollPendingRef.current = true;
       const requests: Promise<unknown>[] = [
         loadImportBatchPage(importBatchOffset),
         getAcquisitionAssetSummary().then((summary) => setAssetSummary(summary))
@@ -674,7 +677,10 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       if (tab === "history" && selectedImportBatchId) {
         requests.push(loadImportBatchItemPage(selectedImportBatchId, importBatchItemOffset));
       }
-      void Promise.all(requests).catch((error: Error) => setNotice(error.message));
+      void Promise.allSettled(requests).then((results) => {
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") setNotice(failed.reason instanceof Error ? failed.reason.message : "入库进度刷新失败");
+      }).finally(() => { importBatchPollPendingRef.current = false; });
     }, 2000);
     return () => window.clearInterval(timer);
   }, [importBatchItemOffset, importBatchOffset, importBatches, loadImportBatchItemPage, loadImportBatchPage, selectedImportBatchId, tab]);
@@ -1365,8 +1371,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     }
   }
 
-  async function rejectLightboxAsset() {
-    if (!lightboxAsset || !canDelete || lightboxRejectPendingRef.current) return;
+  async function rejectLightboxAsset(beforeReject: () => void): Promise<boolean> {
+    if (!lightboxAsset || !canDelete || lightboxRejectPendingRef.current) return false;
+    let rejected = false;
     try {
       const confirmed = await confirm({
         title: "丢弃这项采集素材？",
@@ -1375,7 +1382,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
         tone: "danger",
         backdrop: "transparent"
       });
-      if (!confirmed || lightboxRejectPendingRef.current) return;
+      if (!confirmed || lightboxRejectPendingRef.current) return false;
 
       const rejectedId = lightboxAsset.id;
       const rejectedSnapshotIndex = lightboxSnapshotIndex;
@@ -1385,7 +1392,9 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       lightboxRejectPendingRef.current = true;
       setAssetActionBusy(true);
       setNotice(null);
+      beforeReject();
       await changeAcquisitionAssets("reject", [rejectedId]);
+      rejected = true;
       setSelectedAssets((current) => removeAcquisitionSelection(current, [rejectedId]));
       setAssetSummary((current) => {
         const statusCounts = { ...current.status_counts };
@@ -1396,26 +1405,28 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       reviewReconcileNeededRef.current = true;
       const fillPage = reconcileAssetPageAfterRemoval(remainingAssets, remainingTotal);
       fillPage.catch(() => undefined);
-      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
+      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return true;
       const nextSnapshotIds = lightboxSnapshotIds.filter((assetId) => assetId !== rejectedId);
       lightboxAssetCacheRef.current.delete(rejectedId);
       unavailableLightboxAssetIdsRef.current.delete(rejectedId);
       setLightboxSnapshotIds(nextSnapshotIds);
       const nextIndex = Math.min(rejectedSnapshotIndex, nextSnapshotIds.length - 1);
       const opened = nextIndex >= 0 && (await selectLightboxSnapshotAsset(nextSnapshotIds, nextIndex, closeGeneration));
-      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
+      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return true;
       if (!opened) setLightboxSelection(null);
       try {
         await fillPage;
       } catch {
-        if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
+        if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return true;
         setNotice("素材已丢弃，但列表补位失败");
-        return;
+        return true;
       }
-      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return;
+      if (lightboxSnapshotRequestIdRef.current !== closeGeneration) return true;
       setNotice("素材已丢弃，临时文件已清除");
+      return true;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "素材丢弃失败");
+      return rejected;
     } finally {
       setAssetActionBusy(false);
       lightboxRejectPendingRef.current = false;
@@ -1981,7 +1992,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       onPrevious={() => navigateLightbox(-1)}
       onNext={() => navigateLightbox(1)}
       onToggleSelect={() => toggleAsset(lightboxAsset.id)}
-      onReject={() => void rejectLightboxAsset()}
+      onReject={rejectLightboxAsset}
     />}
 
     {similarityLightboxAsset?.original_url && similarityLightboxGroup && <PhotoLightbox

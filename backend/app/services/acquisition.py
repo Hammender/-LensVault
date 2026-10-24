@@ -1605,6 +1605,7 @@ class AcquisitionService:
             self._record_remote_failure(db, run.id, prepared, exc)
 
     def reject_assets(self, db: Session, workspace_id: int | None, asset_ids: list[str]) -> int:
+        started_at = time.perf_counter()
         assets = db.scalars(
             select(AcquisitionAsset).where(AcquisitionAsset.workspace_id == workspace_id, AcquisitionAsset.id.in_(asset_ids))
         ).all()
@@ -1619,29 +1620,49 @@ class AcquisitionService:
             item.id: item
             for item in db.scalars(select(AcquisitionSourceItem).where(AcquisitionSourceItem.id.in_(source_item_ids))).all()
         }
+        queried_at = time.perf_counter()
+        lock_seconds = original_seconds = cache_seconds = cover_seconds = 0.0
         for asset in assets:
+            stage_at = time.perf_counter()
             with preview_source_guard(asset.object_key) if asset.object_key else nullcontext():
+                lock_seconds += time.perf_counter() - stage_at
+                stage_at = time.perf_counter()
                 if asset.object_key:
                     self.storage.remove_object(asset.object_key)
+                original_seconds += time.perf_counter() - stage_at
+                stage_at = time.perf_counter()
                 remove_prefix = getattr(self.storage, "remove_prefix", None)
                 if remove_prefix is not None:
                     try:
                         remove_prefix(acquisition_preview_cache_prefix(asset.workspace_id, asset.id, asset.sha256))
                     except Exception:
                         logger.warning("清理采集预览缓存失败 asset_id=%s", asset.id, exc_info=True)
+                cache_seconds += time.perf_counter() - stage_at
+                stage_at = time.perf_counter()
                 cover_key = self._preview_key(asset.workspace_id, asset.id)
                 self.storage.remove_object(cover_key)
                 if asset.preview_object_key and asset.preview_object_key != cover_key:
                     self.storage.remove_object(asset.preview_object_key)
                 asset.preview_object_key = None
+                cover_seconds += time.perf_counter() - stage_at
             asset.object_key = None
             asset.status = "rejected"
+        cleaned_at = time.perf_counter()
         for run_item in run_items:
             run_item.status = "rejected"
             source_item = source_items.get(run_item.source_item_id)
             if source_item is not None:
                 source_item.status = "rejected"
         db.commit()
+        finished_at = time.perf_counter()
+        if finished_at - started_at >= 1:
+            logger.info(
+                "采集素材丢弃耗时 count=%s 查询=%.0fms 存储清理=%.0fms 状态提交=%.0fms "
+                "预览锁=%.0fms 原文件=%.0fms 预览缓存=%.0fms 封面=%.0fms",
+                len(assets), (queried_at - started_at) * 1000,
+                (cleaned_at - queried_at) * 1000, (finished_at - cleaned_at) * 1000,
+                lock_seconds * 1000, original_seconds * 1000, cache_seconds * 1000, cover_seconds * 1000,
+            )
         return len(assets)
 
     def create_import_batch(

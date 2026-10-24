@@ -4,6 +4,7 @@ from app.services.provenance import actor_snapshot
 
 from collections.abc import Callable
 from datetime import datetime
+import logging
 import time
 from threading import Lock
 from uuid import uuid4
@@ -13,6 +14,8 @@ from sqlalchemy.orm import Session
 
 from app.core.timezones import shanghai_now
 from app.models import Task
+
+logger = logging.getLogger(__name__)
 
 _progress_lock = Lock()
 _last_progress_at: dict[str, float] = {}
@@ -57,19 +60,22 @@ def record_task_progress(
             last = _last_progress_at.get(task_id, 0.0)
             if now - last < _PROGRESS_INTERVAL_SECONDS:
                 return
-    db = session_factory()
     try:
-        changes: dict[str, object] = {}
-        if progress is not None:
-            changes["progress"] = progress
-        if message is not None:
-            changes["message"] = message
-        if status is not None:
-            changes["status"] = status
-        if changes:
-            update_task(db, task_id, **changes)
-    finally:
-        db.close()
+        db = session_factory()
+        try:
+            changes: dict[str, object] = {}
+            if progress is not None:
+                changes["progress"] = progress
+            if message is not None:
+                changes["message"] = message
+            if status is not None:
+                changes["status"] = status
+            if changes:
+                update_task(db, task_id, **changes)
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to record task progress task_id=%s", task_id)
     with _progress_lock:
         if terminal:
             _last_progress_at.pop(task_id, None)

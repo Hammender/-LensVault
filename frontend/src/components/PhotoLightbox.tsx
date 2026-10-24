@@ -20,6 +20,7 @@ type PhotoLightboxProps = {
   onClose: () => void;
   onPrevious: () => void | Promise<void>;
   onNext: () => void | Promise<void>;
+  onShortcutKeyDown?: (event: KeyboardEvent) => boolean;
   onKeyDown?: (event: KeyboardEvent) => void;
 };
 
@@ -40,6 +41,7 @@ export default function PhotoLightbox({
   onClose,
   onPrevious,
   onNext,
+  onShortcutKeyDown,
   onKeyDown: onCustomKeyDown
 }: PhotoLightboxProps) {
   const shellRef = useRef<HTMLDivElement>(null);
@@ -107,6 +109,10 @@ export default function PhotoLightbox({
       if (event.defaultPrevented) return;
       const lightboxes = document.querySelectorAll(".lightbox-backdrop");
       if (shellRef.current?.closest(".lightbox-backdrop") !== lightboxes[lightboxes.length - 1]) return;
+      if (onShortcutKeyDown) {
+        if (document.querySelector(".confirm-dialog-backdrop")) return;
+        if (onShortcutKeyDown(event)) return;
+      }
       if (image && (event.key === "o" || event.key === "O") && !event.ctrlKey && !event.metaKey
           && !event.altKey && !isTextEditingTarget(event.target)) {
         event.preventDefault();
@@ -135,7 +141,7 @@ export default function PhotoLightbox({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, canGoNext, canGoPrevious, image, keyboardEnabled, ignoreInteractiveTargets, onClose, onCustomKeyDown, onNext, onPrevious]);
+  }, [busy, canGoNext, canGoPrevious, image, keyboardEnabled, ignoreInteractiveTargets, onClose, onCustomKeyDown, onNext, onPrevious, onShortcutKeyDown]);
 
   const previousButton = (
     <button

@@ -16,3 +16,30 @@ export function parseVideoTime(value: string): number | null {
   const seconds = parts.reduce((total, part) => total * 60 + part, 0);
   return Number.isFinite(seconds) ? seconds : null;
 }
+
+export async function toggleAcquisitionVideoPlayback(
+  video: Pick<HTMLVideoElement, "paused" | "currentTime" | "play" | "pause">,
+  options: {
+    frameTime?: number;
+    clearFrame: () => void;
+    isCurrent: () => boolean;
+    showIndicator: (text: string) => void;
+  }
+): Promise<void> {
+  if (!video.paused) {
+    video.pause();
+    options.showIndicator("暂停");
+    return;
+  }
+  if (options.frameTime !== undefined) video.currentTime = options.frameTime;
+  // 同时取消尚未完成的精确定位，避免结果回来后再次盖住正在播放的视频。
+  options.clearFrame();
+  try {
+    await video.play();
+    if (options.isCurrent() && !video.paused) options.showIndicator("播放");
+  } catch (cause) {
+    if (options.isCurrent() && !(cause instanceof Error && cause.name === "AbortError")) {
+      options.showIndicator("无法播放，请重试");
+    }
+  }
+}

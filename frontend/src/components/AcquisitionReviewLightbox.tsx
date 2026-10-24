@@ -2,13 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { Camera, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Film, Maximize2, Minimize2, Pause, Play, RotateCcw, Trash2, ZoomIn, ZoomOut, Volume1, Volume2, VolumeX } from "lucide-react";
 
 import { acquisitionDownloadUrl } from "../api/acquisition";
-import { formatVideoTime, parseVideoTime } from "../lib/acquisitionVideo";
+import { formatVideoTime, parseVideoTime, toggleAcquisitionVideoPlayback } from "../lib/acquisitionVideo";
 import { useAcquisitionFrames } from "../lib/useAcquisitionFrames";
-import { getAcquisitionCaptureNotice, handleAcquisitionLightboxShortcut } from "../lib/acquisitionReview";
+import { getAcquisitionCaptureNotice } from "../lib/acquisitionReview";
+import { getAcquisitionReviewShortcuts, handleAcquisitionReviewKeyDown } from "../lib/acquisitionReviewKeyboard";
 import { releaseHtmlVideo } from "../lib/htmlVideo";
 import PhotoLightbox from "./PhotoLightbox";
 import type { AcquisitionAsset, AcquisitionCaptureResult } from "../types";
-import { formatBytes, formatDate, formatDurationSeconds, isTextEditingTarget } from "../lib/utils";
+import { formatBytes, formatDate, formatDurationSeconds } from "../lib/utils";
 import "./AcquisitionReviewLightbox.css";
 
 const SEEK_STEP_SECONDS = 2;
@@ -30,7 +31,7 @@ type AcquisitionReviewLightboxProps = {
   onPrevious: () => void | Promise<void>;
   onNext: () => void | Promise<void>;
   onToggleSelect: () => void;
-  onReject: () => void;
+  onReject: (beforeReject: () => void) => Promise<boolean>;
 };
 
 export default function AcquisitionReviewLightbox({
@@ -73,12 +74,13 @@ export default function AcquisitionReviewLightbox({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const frameDraggedRef = useRef(false);
   const [draggingProgress, setDraggingProgress] = useState(false);
   const resumeAfterSeek = useRef(false);
   const captionRef = useRef<HTMLParagraphElement | null>(null);
   const [captionExpanded, setCaptionExpanded] = useState(false);
   const [captionOverflows, setCaptionOverflows] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(true);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.15);
   const [duration, setDuration] = useState(asset.duration_seconds ?? 0);
@@ -117,7 +119,13 @@ export default function AcquisitionReviewLightbox({
     setPan({ x: 0, y: 0 });
     setCurrentTime(0);
     setDuration(asset.duration_seconds ?? 0);
-    setIsPlaying(true);
+    setIsPlaying(false);
+    dragRef.current = null;
+    frameDraggedRef.current = false;
+    resumeAfterSeek.current = false;
+    setDraggingProgress(false);
+    setShowControls(true);
+    setIndicatorText(null);
     setShowSpeedMenu(false);
     setCaptionExpanded(false);
   }, [asset.id, asset.duration_seconds]);
@@ -149,10 +157,8 @@ export default function AcquisitionReviewLightbox({
       video.playbackRate = playbackRate;
       video.volume = volume;
       video.muted = isMuted;
-      void video.play().then(() => {
-        if (!cancelled) setIsPlaying(true);
-      }).catch(() => {
-        if (!cancelled) setIsPlaying(false);
+      void video.play().catch((cause) => {
+        if (!cancelled && !(cause instanceof Error && cause.name === "AbortError")) showIndicator("点击画面或按空格播放");
       });
     };
     video.addEventListener("loadeddata", tryPlay);
@@ -194,29 +200,38 @@ export default function AcquisitionReviewLightbox({
   }, []);
 
   const togglePlay = useCallback(() => {
-    if (!videoRef.current || !mediaReady || locating || saving) return;
-    if (videoRef.current.paused) {
-      if (decoded) {
-        videoRef.current.currentTime = decoded.frame.time_seconds;
-        clearFrame();
-        setZoom(1);
-        setPan({ x: 0, y: 0 });
-      }
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
-      showIndicator("播放");
-    } else {
-      videoRef.current.pause();
-      setIsPlaying(false);
-      showIndicator("暂停");
+    const video = videoRef.current;
+    if (!video || !mediaReady || saving || busy || mediaError) return;
+    if (video.paused) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+      dragRef.current = null;
+      frameDraggedRef.current = false;
     }
-  }, [showIndicator, mediaReady, locating, saving, decoded, clearFrame]);
+    void toggleAcquisitionVideoPlayback(video, {
+      frameTime: decoded?.frame.time_seconds,
+      clearFrame,
+      isCurrent: () => videoRef.current === video && Boolean(video.getAttribute("src")),
+      showIndicator
+    });
+  }, [showIndicator, mediaReady, saving, busy, mediaError, decoded, clearFrame]);
 
   const handleReject = useCallback(() => {
     if (saving) return;
-    videoRef.current?.pause();
+    const video = videoRef.current;
+    const pausedAt = video?.currentTime ?? 0;
+    video?.pause();
     setIsPlaying(false);
-    onReject();
-  }, [onReject, saving]);
+    void onReject(() => releaseHtmlVideo(video)).then((rejected) => {
+      if (rejected || !video || videoRef.current !== video || video.getAttribute("src") || !asset.original_url) return;
+      // 删除失败时仍可继续查看；取消确认时原来的 src 未被清除。
+      video.addEventListener("loadedmetadata", () => {
+        video.currentTime = Number.isFinite(video.duration) ? Math.min(pausedAt, video.duration) : pausedAt;
+      }, { once: true });
+      video.src = acquisitionDownloadUrl(asset.original_url);
+      video.load();
+    });
+  }, [onReject, saving, asset.original_url]);
 
   const toggleMute = useCallback(() => {
     if (!videoRef.current) return;
@@ -265,6 +280,9 @@ export default function AcquisitionReviewLightbox({
   const displayedTime = decoded?.frame.time_seconds ?? currentTime;
   const captureDisabled = !canCapture || !mediaReady || seeking || locating || saving || busy || Boolean(mediaError);
   const frameDisabled = !mediaReady || seeking || locating || saving || busy || Boolean(mediaError);
+  const previousFrameDisabled = frameDisabled || decoded?.frame.frame_index === 0;
+  const nextFrameDisabled = frameDisabled || Boolean(decoded && decoded.frame.frame_index === decoded.frame.total_frames - 1);
+  const playbackDisabled = !mediaReady || saving || busy || Boolean(mediaError);
   const seekFromPointer = (event: PointerEvent<HTMLInputElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     seekTo(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * duration);
@@ -289,7 +307,7 @@ export default function AcquisitionReviewLightbox({
         onLoadedData={() => { setMediaReady(true); setBuffering(false); }}
         onWaiting={() => setBuffering(true)}
         onCanPlay={() => setBuffering(false)}
-        onError={() => { setMediaError("视频播放失败，请重试；若仍无法播放，请检查视频格式。"); setBuffering(false); setMediaReady(false); }}
+        onError={() => { setMediaError("视频播放失败，请重试；若仍无法播放，请检查视频格式。"); setBuffering(false); setMediaReady(false); setIsPlaying(false); }}
         onSeeking={() => setSeeking(true)}
         onSeeked={() => setSeeking(false)}
         onProgress={() => {
@@ -319,24 +337,31 @@ export default function AcquisitionReviewLightbox({
       <span className="acquisition-review-type-chip">视频</span>
       {decoded && <div
         className={`acquisition-review-frame-view${zoom > 1 ? " is-zoomed" : ""}`}
-        onClick={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          if (frameDraggedRef.current) event.stopPropagation();
+          frameDraggedRef.current = false;
+        }}
         onPointerDown={(event) => {
-          if (zoom <= 1) return;
+          frameDraggedRef.current = false;
+          if (zoom <= 1 || event.button !== 0) return;
           event.currentTarget.setPointerCapture(event.pointerId);
           dragRef.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
         }}
         onPointerMove={(event) => {
           const drag = dragRef.current;
-          if (drag) setPan({ x: drag.panX + event.clientX - drag.x, y: drag.panY + event.clientY - drag.y });
+          if (!drag) return;
+          if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 5) frameDraggedRef.current = true;
+          if (frameDraggedRef.current) setPan({ x: drag.panX + event.clientX - drag.x, y: drag.panY + event.clientY - drag.y });
         }}
         onPointerUp={() => { dragRef.current = null; }}
         onPointerCancel={() => { dragRef.current = null; }}
       >
         <img src={decoded.url} alt={`第 ${decoded.frame.frame_index + 1} 帧`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} draggable={false} />
       </div>}
-      {(mediaError || (buffering && !decoded) || locating) && <div className="acquisition-review-player-status" onClick={(event) => event.stopPropagation()}>
-        <span>{mediaError || (locating ? "正在准备精确画面…" : "正在加载视频…")}</span>
-        {mediaError && <button type="button" onClick={() => {
+      {(mediaError || (buffering && !decoded) || locating || saving) && <div className="acquisition-review-player-status">
+        <span>{mediaError || (saving ? "正在保存原尺寸截图…" : locating ? "正在准备精确画面，点击画面可继续播放" : "正在加载视频…")}</span>
+        {mediaError && <button type="button" onClick={(event) => {
+          event.stopPropagation();
           setMediaError(null); setBuffering(true); videoRef.current?.load();
           void videoRef.current?.play().catch(() => {});
         }}>重试播放</button>}
@@ -375,7 +400,7 @@ export default function AcquisitionReviewLightbox({
         </div>
         <div className="acquisition-review-ctrl-row">
           <div className="acquisition-review-ctrl-left">
-            <button type="button" className="acquisition-review-ctrl-btn" onClick={togglePlay} title="播放/暂停（空格）" aria-label={isPlaying ? "暂停" : "播放"} disabled={!mediaReady || locating || saving}>
+            <button type="button" className="acquisition-review-ctrl-btn" onClick={togglePlay} title="播放/暂停（空格）" aria-label={isPlaying ? "暂停" : "播放"} disabled={playbackDisabled}>
               {isPlaying ? <Pause size={18} /> : <Play size={18} />}
             </button>
             <div className="acquisition-review-volume">
@@ -408,9 +433,9 @@ export default function AcquisitionReviewLightbox({
             <span className="acquisition-review-time">{formatVideoTime(displayedTime, true)} / {formatVideoTime(duration)}</span>
           </div>
           <div className={`acquisition-review-frame-step${decoded ? " is-active" : ""}`} role="group" aria-label="逐帧选画面" aria-busy={locating}>
-            <button type="button" className="acquisition-review-frame-step-btn" disabled={frameDisabled || decoded?.frame.frame_index === 0} onClick={() => stepFrame(-1)} title="上一帧（逗号）" aria-label="上一帧"><ChevronLeft size={17} /></button>
+            <button type="button" className="acquisition-review-frame-step-btn" disabled={previousFrameDisabled} onClick={() => stepFrame(-1)} title="上一帧（逗号）" aria-label="上一帧"><ChevronLeft size={17} /></button>
             <span className="acquisition-review-frame-step-label"><Film size={14} aria-hidden="true" />逐帧</span>
-            <button type="button" className="acquisition-review-frame-step-btn" disabled={frameDisabled || (decoded ? decoded.frame.frame_index === decoded.frame.total_frames - 1 : false)} onClick={() => stepFrame(1)} title="下一帧（句号）" aria-label="下一帧"><ChevronRight size={17} /></button>
+            <button type="button" className="acquisition-review-frame-step-btn" disabled={nextFrameDisabled} onClick={() => stepFrame(1)} title="下一帧（句号）" aria-label="下一帧"><ChevronRight size={17} /></button>
           </div>
           <div className="acquisition-review-ctrl-right">
             <button type="button" className="acquisition-review-ctrl-btn" disabled={frameDisabled} onClick={() => handleSeek(-SEEK_STEP_SECONDS)} title="快退 2 秒（J）" aria-label="快退 2 秒"><RotateCcw size={17} /></button>
@@ -488,49 +513,28 @@ export default function AcquisitionReviewLightbox({
       nextLabel="下一项"
       onPrevious={onPrevious}
       onNext={onNext}
-      onKeyDown={(event) => {
-        if (isTextEditingTarget(event.target)) return;
-        if (event.ctrlKey || event.metaKey || event.altKey) return;
-        if (isVideo) {
-          if (event.key === "," || event.key === ".") {
-            event.preventDefault();
-            if (!frameDisabled && !event.repeat) stepFrame(event.key === "," ? -1 : 1);
-            return;
+      onShortcutKeyDown={(event) => {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        const range = target instanceof HTMLInputElement && target.type === "range";
+        const editing = Boolean(target && (target.isContentEditable || target.closest("textarea, select, [contenteditable=true], [contenteditable='']") || (target.tagName === "INPUT" && !range)));
+        return handleAcquisitionReviewKeyDown(event, {
+          isVideo, editing, range, blocked: busy,
+          onAction: (action) => {
+            switch (action) {
+              case "select": onToggleSelect(); break;
+              case "previous": if (canGoPrevious) void onPrevious(); break;
+              case "next": if (canGoNext) void onNext(); break;
+              case "play": togglePlay(); break;
+              case "seek_back": if (!frameDisabled) handleSeek(-SEEK_STEP_SECONDS); break;
+              case "seek_forward": if (!frameDisabled) handleSeek(SEEK_STEP_SECONDS); break;
+              case "previous_frame": if (!previousFrameDisabled) stepFrame(-1); break;
+              case "next_frame": if (!nextFrameDisabled) stepFrame(1); break;
+              case "capture": if (!captureDisabled) void saveFrame(); break;
+              case "mute": toggleMute(); break;
+              case "fullscreen": toggleFullscreen(); break;
+              case "reject": if (canDelete) handleReject(); break;
+            }
           }
-          if (event.key.toLowerCase() === "s") {
-            event.preventDefault();
-            if (!captureDisabled && !event.repeat) void saveFrame();
-            return;
-          }
-          if (event.key === " ") {
-            event.preventDefault();
-            if (!event.repeat) togglePlay();
-            return;
-          }
-          if (event.key === "j" || event.key === "J" || (event.key === "ArrowLeft" && event.shiftKey)) {
-            event.preventDefault();
-            handleSeek(-SEEK_STEP_SECONDS);
-            return;
-          }
-          if (event.key === "l" || event.key === "L" || (event.key === "ArrowRight" && event.shiftKey)) {
-            event.preventDefault();
-            handleSeek(SEEK_STEP_SECONDS);
-            return;
-          }
-          if (event.key === "m" || event.key === "M") {
-            event.preventDefault();
-            toggleMute();
-            return;
-          }
-          if (event.key === "f" || event.key === "F") {
-            event.preventDefault();
-            toggleFullscreen();
-            return;
-          }
-        }
-        handleAcquisitionLightboxShortcut(event, asset.media_type, {
-          onToggleSelect,
-          onReject: canDelete ? handleReject : undefined
         });
       }}
       meta={
@@ -600,7 +604,7 @@ export default function AcquisitionReviewLightbox({
             </p>
           </section>
           <div className="acquisition-lightbox-actions">
-            <button type="button" className={selected ? "selected" : ""} onClick={onToggleSelect} disabled={busy}>
+            <button type="button" className={selected ? "selected" : ""} onClick={onToggleSelect} disabled={busy} aria-pressed={selected} title="选中 / 取消选中（X）">
               <Check size={17} /> {selected ? "取消选择" : "选中当前"}
             </button>
             {canDelete && (
@@ -645,12 +649,14 @@ export default function AcquisitionReviewLightbox({
               </div>
             </section>
           )}
-          {isVideo && (
-            <section className="acquisition-review-shortcuts">
-              <strong>快捷键</strong>
-              <p>空格播放 · , / . 逐帧 · S 截图 · J / L 前后 2 秒 · Enter 选中 · M 静音 · F 全屏 · ← / → 切换素材</p>
-            </section>
-          )}
+          <section className="acquisition-review-shortcuts">
+            <strong>快捷键</strong>
+            <dl>
+              {getAcquisitionReviewShortcuts(isVideo, canCapture).map((shortcut) => (
+                <div key={shortcut.key}><dt><kbd>{shortcut.label}</kbd></dt><dd>{shortcut.description}</dd></div>
+              ))}
+            </dl>
+          </section>
         </>
       }
     >

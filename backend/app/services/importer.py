@@ -1786,6 +1786,22 @@ class PictureService:
             total_samples = sum(len(p.get("samples", [])) for p in manifest.get("persons", []))
 
             processed_samples = 0
+
+            def report_progress() -> None:
+                # SQLite 同时只允许一个写事务。进度回写走独立会话，必须先提交当前工作单元，
+                # 否则会与导入会话互相等待直到 database is locked。
+                db.commit()
+                if progress_callback is None:
+                    return
+                try:
+                    progress_callback(processed_samples, total_samples)
+                except Exception:
+                    logger.exception(
+                        "Person import progress callback failed processed=%s total=%s",
+                        processed_samples,
+                        total_samples,
+                    )
+
             for person_index, person_data in enumerate(manifest["persons"]):
                 person_name = person_data["name"].strip()
                 existing = db.scalar(select(Person).where(Person.workspace_id == workspace_id, Person.name == person_name))
@@ -1816,6 +1832,7 @@ class PictureService:
                         db.add(PersonTag(person_id=person.id, tag_id=tag.id))
                         result["tags_added"] += 1
                 db.flush()
+                db.commit()
 
                 samples_dir = f"samples/{person_name}"
                 for sample_data in person_data.get("samples", []):
@@ -1826,8 +1843,7 @@ class PictureService:
                     if duplicate is not None:
                         result["skipped_samples"] += 1
                         processed_samples += 1
-                        if progress_callback:
-                            progress_callback(processed_samples, total_samples)
+                        report_progress()
                         continue
 
                     filename = sample_data["filename"]
@@ -1840,8 +1856,7 @@ class PictureService:
                         logger.warning("Sample file not found in zip path=%s", zip_path)
                         result["skipped_samples"] += 1
                         processed_samples += 1
-                        if progress_callback:
-                            progress_callback(processed_samples, total_samples)
+                        report_progress()
                         continue
 
                     width = sample_data.get("width")
@@ -1878,8 +1893,7 @@ class PictureService:
                         sample_photo.error_message = str(exc)
                         result["added_samples"] += 1
                         processed_samples += 1
-                        if progress_callback:
-                            progress_callback(processed_samples, total_samples)
+                        report_progress()
                         continue
 
                     if len(detected_faces) == 0:
@@ -1887,8 +1901,7 @@ class PictureService:
                         sample_photo.error_message = "未检测到人脸"
                         result["added_samples"] += 1
                         processed_samples += 1
-                        if progress_callback:
-                            progress_callback(processed_samples, total_samples)
+                        report_progress()
                         continue
 
                     if len(detected_faces) != 1:
@@ -1896,8 +1909,7 @@ class PictureService:
                         sample_photo.error_message = f"检测到 {len(detected_faces)} 张人脸，仅支持单人样本"
                         result["added_samples"] += 1
                         processed_samples += 1
-                        if progress_callback:
-                            progress_callback(processed_samples, total_samples)
+                        report_progress()
                         continue
 
                     detected = detected_faces[0]
@@ -1909,8 +1921,7 @@ class PictureService:
                         )
                         result["added_samples"] += 1
                         processed_samples += 1
-                        if progress_callback:
-                            progress_callback(processed_samples, total_samples)
+                        report_progress()
                         continue
                     face = FaceRecord(
                         workspace_id=workspace_id,
@@ -1938,8 +1949,7 @@ class PictureService:
                     sample_photo.quality_status = "warning" if warnings else "good"
                     result["added_samples"] += 1
                     processed_samples += 1
-                    if progress_callback:
-                        progress_callback(processed_samples, total_samples)
+                    report_progress()
 
                 db.flush()
                 self._recompute_person_centroid(db, person.id, workspace_id)

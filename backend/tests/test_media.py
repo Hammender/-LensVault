@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import pytest
@@ -111,3 +112,73 @@ def test_iter_storage_response_releases_connection() -> None:
     assert list(iter_storage_response(source)) == [b"a", b"b"]
     assert source.closed is True
     assert source.released is True
+
+
+@pytest.mark.parametrize("range_header", [None, "bytes=2-5"])
+def test_stream_disconnect_closes_upstream_while_body_is_paused(range_header) -> None:
+    storage = FakeStorage()
+    response = stream_storage_object(storage, make_request(range_header), "media/object", "video.mp4", "video/mp4")
+    source = storage.responses[0]
+
+    async def run():
+        disconnected = asyncio.Event()
+
+        async def receive():
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if message["type"] == "http.response.body":
+                disconnected.set()
+                # 模拟浏览器暂停读取，生成器仍停在 yield，尚未自然结束。
+                await asyncio.Event().wait()
+
+        await asyncio.wait_for(response(make_request(range_header).scope, receive, send), timeout=2)
+        assert source.closed and source.released
+
+    asyncio.run(run())
+
+
+def test_stream_send_failure_before_first_chunk_closes_upstream() -> None:
+    storage = FakeStorage()
+    request = make_request()
+    response = stream_storage_object(storage, request, "media/object", "video.mp4", "video/mp4")
+
+    async def run():
+        async def receive():
+            await asyncio.Event().wait()
+
+        async def send(_message):
+            raise RuntimeError("客户端连接已断开")
+
+        with pytest.raises(Exception):
+            await response(request.scope, receive, send)
+        assert storage.responses[0].closed and storage.responses[0].released
+
+    asyncio.run(run())
+
+
+def test_stream_server_cancellation_closes_upstream() -> None:
+    storage = FakeStorage()
+    request = make_request()
+    response = stream_storage_object(storage, request, "media/object", "video.mp4", "video/mp4")
+
+    async def run():
+        body_started = asyncio.Event()
+
+        async def receive():
+            await asyncio.Event().wait()
+
+        async def send(message):
+            if message["type"] == "http.response.body":
+                body_started.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(response(request.scope, receive, send))
+        await asyncio.wait_for(body_started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert storage.responses[0].closed and storage.responses[0].released
+
+    asyncio.run(run())

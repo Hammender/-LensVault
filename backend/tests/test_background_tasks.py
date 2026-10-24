@@ -6,7 +6,11 @@ from types import SimpleNamespace
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.background_tasks import process_gallery_import_task, process_gallery_zip_import_task
+from app.background_tasks import (
+    process_gallery_import_task,
+    process_gallery_zip_import_task,
+    process_person_import_task,
+)
 from app.db import Base
 from app.models import Task, UploadHistory
 
@@ -164,4 +168,42 @@ def test_gallery_zip_import_task_forwards_person_tag_options(monkeypatch) -> Non
         task = db.get(Task, task_id)
     assert task is not None
     assert task.status == "completed"
+    engine.dispose()
+
+
+class FakePersonZipService:
+    settings = SimpleNamespace(data_dir=None)
+
+    def import_persons_from_zip(self, _db: Session, _zip_source, _workspace_id: int, progress_callback) -> dict[str, int]:
+        progress_callback(1, 13)
+        return {
+            "created_persons": 1,
+            "existing_persons": 0,
+            "added_samples": 13,
+            "skipped_samples": 0,
+            "tags_added": 0,
+        }
+
+
+def test_person_import_task_completes_when_progress_recording_fails(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    task_id = "person-import-task"
+
+    with Session(engine) as db:
+        db.add(Task(id=task_id, workspace_id=None, kind="person_import", status="pending", progress=0.0))
+        db.commit()
+
+    def boom(*_args, **_kwargs) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("app.background_tasks.record_task_progress", boom)
+    process_person_import_task(session_factory, FakePersonZipService(), task_id, b"zip", workspace_id=1)
+
+    with Session(engine) as db:
+        task = db.get(Task, task_id)
+    assert task is not None
+    assert task.status == "completed"
+    assert "创建 1 个人物" in (task.message or "")
     engine.dispose()

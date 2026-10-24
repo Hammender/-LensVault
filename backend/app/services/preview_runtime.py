@@ -71,7 +71,7 @@ class PreviewRuntime:
                     finally:
                         duration_ms = (time.perf_counter() - started_at) * 1000
                         if waited_ms >= 1000 or duration_ms >= 1000:
-                            logger.warning("图片预览耗时 key=%s 排队=%.0fms 处理=%.0fms", key, waited_ms, duration_ms)
+                            logger.info("图片预览耗时 key=%s 排队=%.0fms 处理=%.0fms", key, waited_ms, duration_ms)
 
                 return await anyio.to_thread.run_sync(work, limiter=self.limiter)
 

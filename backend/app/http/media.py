@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from threading import Lock
 from typing import Protocol
 from urllib.parse import quote
 
+import anyio
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 
 class StorageResponse(Protocol):
@@ -63,6 +66,44 @@ def iter_storage_response(response: StorageResponse, chunk_size: int = 1024 * 10
         response.release_conn()
 
 
+class _StorageStreamingResponse(StreamingResponse):
+    """客户端断开或发送失败时主动关闭上游，不依赖生成器被垃圾回收。"""
+
+    def __init__(self, source: StorageResponse, **kwargs) -> None:
+        self._source = source
+        self._closed = False
+        self._close_lock = Lock()
+        super().__init__(self._chunks(), **kwargs)
+
+    def _close_source(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._source.close()
+            finally:
+                self._source.release_conn()
+
+    def _chunks(self) -> Iterator[bytes]:
+        try:
+            yield from self._source.stream(1024 * 1024)
+        finally:
+            self._close_source()
+
+    async def listen_for_disconnect(self, receive: Receive) -> None:
+        await super().listen_for_disconnect(receive)
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(self._close_source)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(self._close_source)
+
+
 def content_disposition(
     disposition: str,
     filename: str,
@@ -103,7 +144,7 @@ def stream_storage_object(
     if range_tuple is None:
         response = storage.get_stream(object_key)
         headers["Content-Length"] = str(size)
-        return StreamingResponse(iter_storage_response(response), media_type=media_type, headers=headers)
+        return _StorageStreamingResponse(response, media_type=media_type, headers=headers)
 
     start, end = range_tuple
     length = end - start + 1
@@ -114,8 +155,8 @@ def stream_storage_object(
             "Content-Length": str(length),
         }
     )
-    return StreamingResponse(
-        iter_storage_response(response),
+    return _StorageStreamingResponse(
+        response,
         status_code=206,
         media_type=media_type,
         headers=headers,

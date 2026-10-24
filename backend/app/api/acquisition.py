@@ -531,18 +531,18 @@ def _batch_read(db: Session, batch: AcquisitionImportBatch, include_items: bool 
 
 
 def _unassigned_import_filter(workspace_id: int | None):
-    successful_batch_item = (
-        select(AcquisitionImportBatchItem.id)
+    successful_asset_ids = (
+        select(AcquisitionImportBatchItem.asset_id)
         .join(AcquisitionImportBatch, AcquisitionImportBatch.id == AcquisitionImportBatchItem.batch_id)
         .where(
-            AcquisitionImportBatchItem.asset_id == AcquisitionImportedPhoto.asset_id,
             AcquisitionImportBatchItem.status == "imported",
             AcquisitionImportBatch.workspace_id == workspace_id,
         )
     )
     return (
         AcquisitionRun.workspace_id == workspace_id,
-        ~exists(successful_batch_item),
+        # asset_id 不可为空；一次生成排除集合，避免 SQLite 对每张图片重扫全部成功条目。
+        AcquisitionImportedPhoto.asset_id.not_in(successful_asset_ids),
     )
 
 

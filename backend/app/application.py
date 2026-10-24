@@ -18,11 +18,17 @@ from app.services.container import ServiceContainer
 
 def _configure_application_logging() -> None:
     app_logger = logging.getLogger("app")
-    if not any(getattr(handler, "pictureshow_console", False) for handler in app_logger.handlers):
+    console_handlers = [handler for handler in app_logger.handlers if getattr(handler, "pictureshow_console", False)]
+    if logging.getLogger().handlers:
+        for handler in console_handlers:
+            app_logger.removeHandler(handler)
+        app_logger.propagate = True
+    elif not console_handlers:
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         handler.pictureshow_console = True
         app_logger.addHandler(handler)
+        app_logger.propagate = False
     app_logger.setLevel(logging.INFO)
 
 
@@ -39,14 +45,14 @@ class SlowRequestMiddleware:
         path = scope["path"]
         logger = logging.getLogger("app.http")
         loop = asyncio.get_running_loop()
-        pending = loop.call_later(1.0, logger.warning, "请求仍在等待 method=%s path=%s", method, path)
+        pending = loop.call_later(1.0, logger.info, "请求仍在等待 method=%s path=%s", method, path)
         try:
             await self.app(scope, receive, send)
         finally:
             pending.cancel()
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             if elapsed_ms >= 1000:
-                logger.warning("请求已完成 method=%s path=%s duration_ms=%.0f", method, path, elapsed_ms)
+                logger.info("请求已完成 method=%s path=%s duration_ms=%.0f", method, path, elapsed_ms)
 
 
 def create_app(

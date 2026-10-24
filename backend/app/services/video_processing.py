@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 
@@ -36,13 +38,31 @@ def extract_video_cover_frame(
         "3",
         str(output_path),
     ]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    started_at = time.monotonic()
+
+    def run(args: list[str]) -> subprocess.CompletedProcess:
+        remaining = timeout - (time.monotonic() - started_at)
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(args, timeout)
+        return subprocess.run(args, capture_output=True, text=True, timeout=remaining, check=False)
+
+    result = run(command)
+    if result.returncode != 0 and "Invalid color space" in (result.stderr or ""):
+        # 无效矩阵标记会在滤镜入口就失败，setparams 无法补救。只修复临时片段的标记。
+        codec = next((name for name in ("h264", "hevc") if f"{name} (native)" in result.stderr), None)
+        if codec:
+            with tempfile.TemporaryDirectory(prefix="video-cover-color-") as directory:
+                sample = Path(directory) / "sample.mp4"
+                repaired = run([
+                    ffmpeg_path, "-y", "-ss", f"{seek_at:.3f}", "-i", str(input_path),
+                    "-map", "0:v:0", "-t", "1", "-c:v", "copy",
+                    "-bsf:v", f"{codec}_metadata=matrix_coefficients=1", "-an", str(sample),
+                ])
+                if repaired.returncode == 0:
+                    retry = list(command)
+                    retry[retry.index("-ss") + 1] = "0"
+                    retry[retry.index("-i") + 1] = str(sample)
+                    result = run(retry)
     if result.returncode != 0:
         logger.warning("Video cover extraction failed: %s", (result.stderr or result.stdout or "").strip()[-1000:])
         return False

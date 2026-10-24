@@ -22,7 +22,7 @@
   outline: none;
 }
 
-.acquisition-review-frame-view { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #0c1211; touch-action: none; cursor: default; }
+.acquisition-review-frame-view { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #0c1211; touch-action: none; cursor: pointer; }
 .acquisition-review-frame-view.is-zoomed { cursor: grab; }
 .acquisition-review-frame-view.is-zoomed:active { cursor: grabbing; }
 .acquisition-review-frame-view img { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; }
@@ -143,7 +143,13 @@
   transform: translateY(8px);
   transition: opacity .18s ease, transform .18s ease;
   cursor: default;
+  pointer-events: none;
 }
+
+.acquisition-review-controls :is(button, input) { pointer-events: none; }
+.acquisition-review-player.show-controls .acquisition-review-controls :is(button, input),
+.acquisition-review-player:hover .acquisition-review-controls :is(button, input),
+.acquisition-review-controls:focus-within :is(button, input) { pointer-events: auto; }
 
 .acquisition-review-player.show-controls .acquisition-review-controls,
 .acquisition-review-player:hover .acquisition-review-controls {
@@ -462,12 +468,18 @@
   font-size: .68rem;
 }
 
-.acquisition-review-shortcuts p {
+.acquisition-review-shortcuts dl {
+  display: grid;
+  gap: 6px;
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: .68rem;
+  font-size: .75rem;
   line-height: 1.45;
 }
+
+.acquisition-review-shortcuts dl > div { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: baseline; gap: 10px; }
+.acquisition-review-shortcuts dt, .acquisition-review-shortcuts dd { margin: 0; }
+.acquisition-review-shortcuts kbd { font: 700 .75rem var(--font-mono); color: #213a3d; }
 
 @media (max-width: 1150px) {
   .acquisition-review-ctrl-row { grid-template-columns: minmax(0, 1fr) auto; }

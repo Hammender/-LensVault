@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from app.application import create_app
+from app.application import SlowRequestMiddleware, _configure_application_logging, create_app
 from app.core.config import Settings
 from app.lifecycle import initialize_database
 
@@ -106,5 +106,45 @@ def test_create_app_uses_injected_lifecycle_dependencies(tmp_path, monkeypatch) 
         "acquisition_similarity_scan_mirror_gallery",
     ]
     engine.dispose()
+
+
+def test_application_logging_uses_one_console_output(monkeypatch, capsys) -> None:
+    root = logging.getLogger()
+    app_logger = logging.getLogger("app")
+    old_handler = logging.StreamHandler()
+    old_handler.pictureshow_console = True
+    monkeypatch.setattr(app_logger, "handlers", [old_handler])
+    monkeypatch.setattr(app_logger, "propagate", True)
+    monkeypatch.setattr(root, "handlers", [logging.StreamHandler()])
+    _configure_application_logging()
+    _configure_application_logging()
+
+    logging.getLogger("app.http").info("测试请求耗时")
+
+    assert capsys.readouterr().err.count("测试请求耗时") == 1
+
+
+def test_request_wait_and_completion_are_info_logs(monkeypatch) -> None:
+    async def run():
+        loop = asyncio.get_running_loop()
+        pending_messages = []
+        messages = []
+        logger = logging.getLogger("app.http")
+        monkeypatch.setattr(logger, "info", lambda *args: messages.append(args))
+        monkeypatch.setattr(logger, "warning", lambda *_: (_ for _ in ()).throw(AssertionError("耗时记录不应使用 WARNING")))
+        monkeypatch.setattr(loop, "call_later", lambda delay, callback, *args: pending_messages.append((callback, args)) or SimpleNamespace(cancel=lambda: None))
+        times = iter([0.0, 2.0])
+        monkeypatch.setattr("app.application.time", SimpleNamespace(perf_counter=lambda: next(times)))
+
+        async def app(_scope, _receive, _send):
+            callback, args = pending_messages[0]
+            callback(*args)
+
+        await SlowRequestMiddleware(app)({"type": "http", "method": "POST", "path": "/api/acquisition/assets/reject"}, None, None)
+        assert len(messages) == 2
+        assert messages[0][0].startswith("请求仍在等待")
+        assert messages[1][0].startswith("请求已完成")
+
+    asyncio.run(run())
 
 

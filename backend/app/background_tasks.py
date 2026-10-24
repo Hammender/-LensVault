@@ -277,13 +277,16 @@ def process_person_import_task(
 
         def progress_callback(processed: int, total: int) -> None:
             progress = 0.05 + 0.9 * (processed / max(total, 1))
-            record_task_progress(
-                session_factory,
-                task_id,
-                status="running",
-                progress=min(progress, 1.0),
-                message=f"正在处理 {processed}/{total} 个样本",
-            )
+            try:
+                record_task_progress(
+                    session_factory,
+                    task_id,
+                    status="running",
+                    progress=min(progress, 1.0),
+                    message=f"正在处理 {processed}/{total} 个样本",
+                )
+            except Exception:
+                logger.exception("Person import progress update failed task_id=%s", task_id)
 
         result = picture_service.import_persons_from_zip(db, zip_source, workspace_id, progress_callback)
         message = (
