@@ -1371,7 +1371,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
     }
   }
 
-  async function rejectLightboxAsset(beforeReject: () => void): Promise<boolean> {
+  async function rejectLightboxAsset(beforeReject: () => void | Promise<void>): Promise<boolean> {
     if (!lightboxAsset || !canDelete || lightboxRejectPendingRef.current) return false;
     let rejected = false;
     try {
@@ -1392,7 +1392,7 @@ export default function AcquisitionCenter({ canEdit, canAdd, canDelete, canAdmin
       lightboxRejectPendingRef.current = true;
       setAssetActionBusy(true);
       setNotice(null);
-      beforeReject();
+      await beforeReject();
       await changeAcquisitionAssets("reject", [rejectedId]);
       rejected = true;
       setSelectedAssets((current) => removeAcquisitionSelection(current, [rejectedId]));
