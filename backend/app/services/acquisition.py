@@ -81,6 +81,7 @@ from app.services.similarity import (
     orb_feature_similarity,
 )
 from app.services.storage import MinioStorage
+from app.http.media import interrupt_storage_streams
 from app.services.preview_runtime import preview_source_guard, preview_source_exists
 from app.services.thumbnails import acquisition_preview_cache_prefix
 from app.services.telegram import TelegramRunAborted, TelegramService
@@ -1628,6 +1629,7 @@ class AcquisitionService:
                 lock_seconds += time.perf_counter() - stage_at
                 stage_at = time.perf_counter()
                 if asset.object_key:
+                    interrupt_storage_streams(asset.object_key)
                     self.storage.remove_object(asset.object_key)
                 original_seconds += time.perf_counter() - stage_at
                 stage_at = time.perf_counter()
@@ -2192,6 +2194,7 @@ class AcquisitionService:
         with preview_source_guard(asset.object_key) if asset.object_key else nullcontext():
             if asset.object_key:
                 try:
+                    interrupt_storage_streams(asset.object_key)
                     self.storage.remove_object(asset.object_key)
                 except Exception as exc:
                     pending_error = f"临时文件待清理：{exc}"

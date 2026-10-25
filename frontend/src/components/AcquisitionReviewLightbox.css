@@ -35,10 +35,38 @@
 .acquisition-review-fullscreen-notice { position: absolute; left: 16px; bottom: 100px; z-index: 8; max-width: calc(100% - 32px); }
 .acquisition-review-player:fullscreen { width: 100vw; height: 100vh; }
 .acquisition-review-player:fullscreen video { width: 100%; height: 100%; }
-.acquisition-review-progress-wrap { position: relative; height: 18px; display: flex; align-items: center; background: rgba(255, 255, 255, .12); }
-.acquisition-review-progress-buffer { position: absolute; height: 100%; left: 0; background: rgba(255, 255, 255, .18); pointer-events: none; }
-.acquisition-review-progress-range { position: relative; appearance: none; -webkit-appearance: none; width: 100%; height: 6px; margin: 0; padding: 0; border: 0; border-radius: 0; cursor: pointer; touch-action: none; }
-.acquisition-review-progress-range::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fffdf8; }
+.acquisition-review-progress-wrap {
+  position: relative;
+  height: 18px;
+  background: linear-gradient(rgba(255, 255, 255, .12), rgba(255, 255, 255, .12)) center / 100% 6px no-repeat;
+}
+.acquisition-review-progress-buffer {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  height: 6px;
+  background: rgba(255, 255, 255, .18);
+  pointer-events: none;
+}
+.acquisition-review-progress-range {
+  position: absolute;
+  inset: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+  touch-action: none;
+  background: linear-gradient(to right, #9fe0d8 var(--acquisition-progress, 0%), transparent var(--acquisition-progress, 0%))
+    center / 100% 6px no-repeat;
+}
+.acquisition-review-progress-range::-webkit-slider-runnable-track { height: 6px; background: transparent; }
+.acquisition-review-progress-range::-moz-range-track { height: 6px; background: transparent; }
+.acquisition-review-progress-range::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 12px; height: 12px; margin-top: -3px; border-radius: 50%; background: #fffdf8; }
 .acquisition-review-progress-range::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fffdf8; }
 .acquisition-review-capture-panel { flex-shrink: 0; display: grid; gap: 8px; padding: 12px; border: 1px solid rgba(35, 123, 117, .3); background: #e5f0ed; }
 .acquisition-review-capture-heading { display: flex; align-items: center; gap: 7px; color: #213a3d; font-size: .82rem; }
@@ -146,10 +174,11 @@
   pointer-events: none;
 }
 
-.acquisition-review-controls :is(button, input) { pointer-events: none; }
-.acquisition-review-player.show-controls .acquisition-review-controls :is(button, input),
-.acquisition-review-player:hover .acquisition-review-controls :is(button, input),
-.acquisition-review-controls:focus-within :is(button, input) { pointer-events: auto; }
+.acquisition-review-player.show-controls .acquisition-review-controls,
+.acquisition-review-player:hover .acquisition-review-controls,
+.acquisition-review-controls:focus-within {
+  pointer-events: auto;
+}
 
 .acquisition-review-player.show-controls .acquisition-review-controls,
 .acquisition-review-player:hover .acquisition-review-controls {

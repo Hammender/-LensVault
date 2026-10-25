@@ -9,6 +9,16 @@ export function getAcquisitionAssetPageOffset(
   return index < 0 ? null : Math.floor(index / pageSize) * pageSize;
 }
 
+
+export function pageOffsetFromGlobalIndex(
+  globalIndex: number,
+  pageSize = acquisitionAssetPageSize
+): number {
+  if (globalIndex < 0) return 0;
+  return Math.floor(globalIndex / pageSize) * pageSize;
+}
+
+
 export function getAcquisitionPreviewUrl(
   previewUrl: string,
   maxEdge: number
@@ -129,6 +139,17 @@ export function handleAcquisitionLightboxShortcut(
 
 export function isAcquisitionImportBatchActive(status: string): boolean {
   return status === "queued" || status === "running";
+}
+
+export function isAcquisitionImportPollAbortError(reason: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" && reason instanceof DOMException && reason.name === "AbortError")
+    || (reason instanceof Error && reason.name === "AbortError")
+  );
+}
+
+export function shouldImmediateImportPollRetry(elapsedMs: number, intervalMs = 2000): boolean {
+  return elapsedMs >= intervalMs;
 }
 
 export type AcquisitionPagination = {

@@ -41,6 +41,12 @@ def load_test_main() -> ModuleType:
         original_modules[module_name] = sys.modules.get(module_name)
         module = ModuleType(module_name)
         setattr(module, class_name, StubService)
+        if module_name == "app.services.importer":
+            # background_tasks 会从真实 importer 导入 PersonImportPartialError；桩模块也要带上。
+            class PersonImportPartialError(Exception):
+                pass
+
+            setattr(module, "PersonImportPartialError", PersonImportPartialError)
         sys.modules[module_name] = module
 
     sys.modules.pop("app.main", None)

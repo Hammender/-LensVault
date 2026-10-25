@@ -9,7 +9,7 @@ from typing import Annotated, Literal, cast
 import anyio
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy import exists, func, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.core.timezones import as_shanghai_naive, shanghai_isoformat, shanghai_now
@@ -42,6 +42,7 @@ from app.schemas import (
     AcquisitionAssetAction,
     AcquisitionAssetRead,
     AcquisitionAssetSummary,
+    AcquisitionAssetWindow,
     AcquisitionCaptureMetadata,
     AcquisitionCaptureRead,
     AcquisitionFrameLocate,
@@ -1193,6 +1194,78 @@ def get_asset_summary(
         status_counts=status_counts,
         media_counts=media_counts,
         status_media_counts=status_media_counts,
+    )
+
+
+
+@router.get("/assets/window", response_model=AcquisitionAssetWindow)
+def get_asset_window(
+    anchor_id: str = Query(...),
+    status: str | None = Query(default=None),
+    media_type: Annotated[Literal["image", "video"] | None, Query()] = None,
+    previewable: bool = False,
+    before: int = Query(default=60, ge=0, le=200),
+    after: int = Query(default=60, ge=0, le=200),
+    db: Session = Depends(get_db),
+    current: CurrentContext = Depends(require_context),
+) -> AcquisitionAssetWindow:
+    """返回锚点前后各一页可浏览 id，供审核灯箱窗口化导航。"""
+    filters = [AcquisitionAsset.workspace_id == current.workspace_id]
+    if status:
+        filters.append(AcquisitionAsset.status == status)
+    if media_type:
+        filters.append(AcquisitionAsset.media_type == media_type)
+    if previewable:
+        filters.append(AcquisitionAsset.object_key.is_not(None))
+
+    anchor = db.scalar(select(AcquisitionAsset).where(AcquisitionAsset.id == anchor_id, *filters))
+    if anchor is None:
+        raise HTTPException(status_code=404, detail="采集素材不在当前筛选中")
+
+    filtered = select(AcquisitionAsset.id).where(*filters)
+    total = db.scalar(select(func.count()).select_from(filtered.subquery())) or 0
+
+    ahead = or_(
+        AcquisitionAsset.created_at > anchor.created_at,
+        and_(AcquisitionAsset.created_at == anchor.created_at, AcquisitionAsset.id > anchor.id),
+    )
+    behind = or_(
+        AcquisitionAsset.created_at < anchor.created_at,
+        and_(AcquisitionAsset.created_at == anchor.created_at, AcquisitionAsset.id < anchor.id),
+    )
+    global_index = db.scalar(select(func.count()).select_from(filtered.where(ahead).subquery())) or 0
+
+    before_ids: list[str] = []
+    if before > 0:
+        ahead_rows = list(
+            db.scalars(
+                select(AcquisitionAsset.id)
+                .where(*filters, ahead)
+                .order_by(AcquisitionAsset.created_at.asc(), AcquisitionAsset.id.asc())
+                .limit(before)
+            ).all()
+        )
+        before_ids = list(reversed(ahead_rows))
+
+    after_ids: list[str] = []
+    if after > 0:
+        after_ids = list(
+            db.scalars(
+                select(AcquisitionAsset.id)
+                .where(*filters, behind)
+                .order_by(AcquisitionAsset.created_at.desc(), AcquisitionAsset.id.desc())
+                .limit(after)
+            ).all()
+        )
+
+    ids = before_ids + [anchor.id] + after_ids
+    return AcquisitionAssetWindow(
+        ids=ids,
+        index=len(before_ids),
+        global_index=global_index,
+        total=total,
+        has_previous=global_index > 0,
+        has_next=global_index + 1 < total,
     )
 
 

@@ -13,6 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zipfile import ZipFile
 
+from fastapi import HTTPException
+
 import numpy as np
 from PIL import Image
 from sqlalchemy import create_engine, inspect, select, text
@@ -21,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.db import Base
 from app.api.acquisition import (
     get_asset_summary,
+    get_asset_window,
     list_asset_ids,
     list_assets,
     list_category_page,
@@ -1253,6 +1256,115 @@ class AcquisitionSimilarityTests(unittest.TestCase):
         self.assertEqual([asset.id for asset in page.items], ["asset-c", "asset-b"])
         self.assertEqual(ids, ["asset-c", "asset-b", "asset-a"])
         self.assertEqual(previewable_ids, ["asset-c", "asset-b"])
+        db.close()
+        engine.dispose()
+
+
+    def test_asset_window_ranks_by_created_at_and_id_without_full_scan(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        early = datetime(2026, 8, 14, 9, 0, 0)
+        mid = datetime(2026, 8, 14, 10, 0, 0)
+        late = datetime(2026, 8, 14, 11, 0, 0)
+        rows = [
+            ("a1", early, "a"),
+            ("a2", early, "b"),
+            ("b1", mid, "c"),
+            ("b2", mid, "d"),
+            ("c1", late, "e"),
+            ("c2", late, "f"),
+            ("hidden", mid, "g"),
+        ]
+        db.add_all([
+            AcquisitionAsset(
+                id=asset_id,
+                sha256=character * 64,
+                filename=f"{asset_id}.jpg",
+                status="pending_review",
+                created_at=created_at,
+                object_key=None if asset_id == "hidden" else f"acquisition/{asset_id}.jpg",
+            )
+            for asset_id, created_at, character in rows
+        ])
+        db.commit()
+        context = SimpleNamespace(workspace_id=None)
+
+        # 全量可预览顺序：created_at DESC, id DESC → c2,c1,b2,b1,a2,a1
+        full = list_asset_ids(status="pending_review", previewable=True, db=db, current=context)
+        self.assertEqual(full, ["c2", "c1", "b2", "b1", "a2", "a1"])
+
+        window = get_asset_window(
+            anchor_id="b2",
+            status="pending_review",
+            previewable=True,
+            before=2,
+            after=2,
+            db=db,
+            current=context,
+        )
+        self.assertEqual(window.ids, ["c2", "c1", "b2", "b1", "a2"])
+        self.assertEqual(window.index, 2)
+        self.assertEqual(window.global_index, 2)
+        self.assertEqual(window.total, 6)
+        self.assertTrue(window.has_previous)
+        self.assertTrue(window.has_next)
+        self.assertEqual(window.ids, full[window.global_index - window.index : window.global_index - window.index + len(window.ids)])
+
+        tip = get_asset_window(
+            anchor_id="c2",
+            status="pending_review",
+            previewable=True,
+            before=0,
+            after=0,
+            db=db,
+            current=context,
+        )
+        self.assertEqual(tip.ids, ["c2"])
+        self.assertEqual(tip.index, 0)
+        self.assertEqual(tip.global_index, 0)
+        self.assertEqual(tip.total, 6)
+        self.assertFalse(tip.has_previous)
+        self.assertTrue(tip.has_next)
+
+        tail = get_asset_window(
+            anchor_id="a1",
+            status="pending_review",
+            previewable=True,
+            before=1,
+            after=1,
+            db=db,
+            current=context,
+        )
+        self.assertEqual(tail.ids, ["a2", "a1"])
+        self.assertEqual(tail.index, 1)
+        self.assertEqual(tail.global_index, 5)
+        self.assertFalse(tail.has_next)
+
+        with self.assertRaises(HTTPException) as raised:
+            get_asset_window(
+                anchor_id="hidden",
+                status="pending_review",
+                previewable=True,
+                before=0,
+                after=0,
+                db=db,
+                current=context,
+            )
+        self.assertEqual(raised.exception.status_code, 404)
+
+        with self.assertRaises(HTTPException) as raised:
+            get_asset_window(
+                anchor_id="b2",
+                status="pending_review",
+                previewable=True,
+                before=0,
+                after=0,
+                db=db,
+                current=SimpleNamespace(workspace_id=999),
+            )
+        self.assertEqual(raised.exception.status_code, 404)
+
         db.close()
         engine.dispose()
 
